@@ -1,0 +1,5 @@
+# Dual-runtime architecture (Python FastAPI + Node pi-coding-agent)
+
+`apps/api` (Python / FastAPI on port 8000) is the canonical service: it owns the workflow domain, the v2 event store, the asset library, the provider integrations, and the public HTTP boundary. `apps/api/agent` (Node / TypeScript on port 8765, image `agent` in `compose.yaml`) is a thin in-process client of the FastAPI service: it runs the `@earendil-works/pi-coding-agent` runtime against the Python HTTP boundary and is fronted by an `internal/v1` token-gated router so the FastAPI service is the only caller. In `compose.yaml` the `agent` service declares `AGENT_RUNTIME_BASE_URL=http://api:8000` and `AGENT_RUNTIME_PYTHON_BASE_URL=http://127.0.0.1:8000`; both runtimes share a private `adcraft-internal` docker network, the web tier never reaches the Node agent directly.
+
+This is a hard-to-reverse split: swapping either runtime for a polyglot alternative (e.g. moving the agent loop into Python, or moving the workflow into a Node service) is on the order of a quarter of work, not a sprint. The decision deserves a recorded rationale.
