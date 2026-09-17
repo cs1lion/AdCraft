@@ -1,4 +1,4 @@
-import {
+﻿import {
   applyNodeChanges,
   Controls,
   ReactFlow,
@@ -22,6 +22,7 @@ import {
   type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { Link } from "react-router-dom";
 
 import { agentCanvasApi } from "../../api/agentCanvasApi.ts";
 import { useApp } from "../../AppContextValue.ts";
@@ -36,6 +37,7 @@ import {
 import type {
   AgentCanvasWorkflowV2,
   CanvasBindingInputRoleV2,
+  WorkflowProgressResponse,
   CanvasConnectionPolicyV2,
   CanvasLayoutPositionV2,
   CanvasNodeV2,
@@ -51,10 +53,12 @@ import type {
 import { toImageBindingSource } from "./assets/assetSelection.ts";
 import {
   AgentCanvasNodeRenderer,
+  NODE_TYPE_LABELS,
   type AgentCanvasFlowNode,
   type AgentCanvasNodeCallbacks,
 } from "./canvas/AgentCanvasNode.tsx";
 import { AgentCanvasConnectedNodeMenu } from "./canvas/AgentCanvasConnectedNodeMenu.tsx";
+import { CreationFlowGuidance } from "./canvas/CreationFlowGuidance.tsx";
 import { AgentCanvasContextMenu } from "./canvas/AgentCanvasContextMenu.tsx";
 import { AgentCanvasLayoutConfirmation } from "./canvas/AgentCanvasLayoutConfirmation.tsx";
 import { AgentCanvasNodePicker } from "./canvas/AgentCanvasNodePicker.tsx";
@@ -131,7 +135,7 @@ import {
 } from "./model/nodeDefaults.ts";
 import { hasPromptReadyDraft } from "./model/promptPreparation.ts";
 import { useAgentCanvasProviderModels } from "./model/useAgentCanvasProviderModels.ts";
-import { useAgentCanvasRuntime } from "./runtime/useAgentCanvasRuntime.ts";
+import { NodeRunBlockedError, useAgentCanvasRuntime } from "./runtime/useAgentCanvasRuntime.ts";
 import { useAgentCanvasSession } from "./session/useAgentCanvasSession.ts";
 
 const nodeTypes = { agentCanvas: AgentCanvasNodeRenderer };
@@ -151,6 +155,9 @@ const AgentCanvasInlineWorkbench = lazy(() => import("./workbench/AgentCanvasInl
 })));
 const AgentCanvasVideoPreviewDialog = lazy(() => import("./canvas/AgentCanvasVideoPreviewDialog.tsx").then((module) => ({
   default: module.AgentCanvasVideoPreviewDialog,
+})));
+const GlobalTimelinePanel = lazy(() => import("./timeline/GlobalTimelinePanel.tsx").then((module) => ({
+  default: module.GlobalTimelinePanel,
 })));
 
 function reducedMotionPreference(): boolean {
@@ -208,6 +215,7 @@ export function AgentCanvasPage() {
     refreshAssets,
     refreshWorkflow,
     runAll,
+    retryAllFailed,
     runNode,
   } = live.actions;
   const [nodes, setNodes] = useNodesState<AgentCanvasFlowNode>([]);
@@ -254,6 +262,9 @@ export function AgentCanvasPage() {
   const edgeZoomControllerRef = useRef<CanvasEdgeZoomController | null>(null);
   const previewPrefetchRef = useRef<CanvasPreviewPrefetchHandle | null>(null);
   const activeWorkflowIdRef = useRef(workflow?.workflow_id ?? "no-workflow");
+  const [serverProgress, setServerProgress] = useState<WorkflowProgressResponse | null>(null);
+  const [diagnosticOpen, setDiagnosticOpen] = useState(false);
+  const [creationFlowOpen, setCreationFlowOpen] = useState(false);
   const workflowNodesRef = useRef(workflow?.nodes ?? []);
   const canonicalNodesRef = useRef<readonly AgentCanvasFlowNode[]>([]);
   const visibleCanonicalNodesRef = useRef<readonly AgentCanvasFlowNode[]>([]);
@@ -293,6 +304,31 @@ export function AgentCanvasPage() {
   const pendingDragNodeFrameRef = useRef<number | null>(null);
   const referenceUploadInputRef = useRef<HTMLInputElement>(null);
   activeWorkflowIdRef.current = workflow?.workflow_id ?? "no-workflow";
+
+  // Poll server progress when nodes are working or failed
+  useEffect(() => {
+    if (!workflow?.workflow_id) return;
+    const hasActiveNodes = workflow.nodes.some((n) => n.status === "working" || n.status === "failed");
+    if (!hasActiveNodes) {
+      setServerProgress(null);
+      return;
+    }
+    let cancelled = false;
+    const fetchProgress = async () => {
+      try {
+        const progress = await agentCanvasApi.getWorkflowProgress(workflow.workflow_id);
+        if (!cancelled) setServerProgress(progress);
+      } catch {
+        // Silent fail - fall back to local computation
+      }
+    };
+    void fetchProgress();
+    const interval = setInterval(() => void fetchProgress(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [workflow?.workflow_id, workflow?.nodes.some((n) => n.status === "working" || n.status === "failed")]);
   workflowNodesRef.current = workflow?.nodes ?? [];
   useEffect(() => {
     flowNodesRef.current = nodes;
@@ -427,7 +463,12 @@ export function AgentCanvasPage() {
   const runNodeById = useCallback((nodeId: string, retryFailed = false) => {
     const node = workflow?.nodes.find((candidate) => candidate.node_id === nodeId);
     if (node) void runNode(node, { retryFailed }).catch((error) => {
-      setSurfaceError(error instanceof Error ? error.message : "Node run failed.");
+      if (error instanceof NodeRunBlockedError) {
+        const hint = error.suggestedNext ? ` —${error.suggestedNext}` : "";
+        setSurfaceError(`Cannot run this node: ${error.message}${hint}`);
+      } else {
+        setSurfaceError(error instanceof Error ? error.message : "Node run failed.");
+      }
     });
   }, [runNode, workflow?.nodes]);
 
@@ -897,7 +938,7 @@ export function AgentCanvasPage() {
     if (!source || !target) return;
     const rule = connectionRuleForPair(connectionPolicy, source.node_type, target.node_type);
     if (!rule) {
-      setSurfaceError("These node types cannot be connected.");
+      setSurfaceError(`Node ${source.title ?? source.node_id} cannot be connected to Node ${target.title ?? target.node_id}. Check that the output type matches the input type.`);
       return;
     }
     setSurfaceError(null);
@@ -1481,6 +1522,122 @@ export function AgentCanvasPage() {
               <PlayIcon />
             </button>
           )}
+          {workflow.nodes.some((n) => n.status === "failed") ? (
+            <button
+              type="button"
+              className="agent-canvas-toolbar__retry-all"
+              aria-label="Retry all failed nodes"
+              title={`Retry ${workflow.nodes.filter((n) => n.status === "failed").length} failed node(s)`}
+              disabled={live.state.runPending}
+              onClick={() => void retryAllFailed().catch((error) => {
+                setSurfaceError(error instanceof Error ? error.message : "Batch retry failed.");
+              })}
+            >
+              <span className="agent-canvas-toolbar__retry-all-icon" aria-hidden="true">↻</span>
+              Retry all
+            </button>
+          ) : null}
+          {workflow.nodes.length > 0 ? (() => {
+            const totalNodes = serverProgress?.total_nodes ?? workflow.nodes.length;
+            const workingNodes = serverProgress?.working_count ?? workflow.nodes.filter((n) => n.status === "working").length;
+            const readyNodes = serverProgress?.ready_count ?? workflow.nodes.filter((n) => n.status === "ready").length;
+            const failedNodes = serverProgress?.failed_count ?? workflow.nodes.filter((n) => n.status === "failed").length;
+            const draftNodes = serverProgress?.draft_count ?? workflow.nodes.filter((n) => n.status === "draft").length;
+            const progressPercent = serverProgress?.progress_percent ?? (totalNodes > 0 ? Math.round((readyNodes / totalNodes) * 100) : 0);
+            const workingLabel = serverProgress?.working_nodes?.length
+              ? serverProgress.working_nodes.map((n) => NODE_TYPE_LABELS[n.node_type as keyof typeof NODE_TYPE_LABELS] ?? n.node_type).join(", ")
+              : workflow.nodes.filter((n) => n.status === "working").map((n) => NODE_TYPE_LABELS[n.node_type] ?? n.node_type).join(", ");
+            const blockedHint = serverProgress?.blocked_nodes?.length
+              ? serverProgress.blocked_nodes.map((n) => `${n.title}: ${n.next_action ?? "retry"}`).join("; ")
+              : null;
+            return (
+              <>
+              <div className="agent-canvas-toolbar__progress" aria-label="Generation progress">
+                {workingNodes > 0 ? (
+                  <span className="agent-canvas-toolbar__progress-label is-working">
+                    <span className="agent-canvas-toolbar__progress-dot" aria-hidden="true" />
+                    Generating: {workingLabel || "in progress"} ({workingNodes}/{totalNodes})
+                  </span>
+                ) : failedNodes > 0 ? (
+                  <span
+                    className="agent-canvas-toolbar__progress-label is-failed"
+                    title={blockedHint ?? undefined}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setDiagnosticOpen((v) => !v)}
+                  >
+                    {failedNodes} failed · {readyNodes}/{totalNodes} complete{blockedHint ? ` · ${blockedHint}` : ""}
+                    <span style={{ marginLeft: 6, fontSize: 10 }}>{diagnosticOpen ? "▲" : "▼"}</span>
+                  </span>
+                ) : draftNodes > 0 ? (
+                  <span className="agent-canvas-toolbar__progress-label is-draft">
+                    {draftNodes} ready to run · {readyNodes}/{totalNodes} complete
+                  </span>
+                ) : (
+                  <span className="agent-canvas-toolbar__progress-label is-complete">
+                    All {totalNodes} nodes complete ✓
+                  </span>
+                )}
+                <div className="agent-canvas-toolbar__progress-bar" role="progressbar" aria-valuenow={progressPercent} aria-valuemin={0} aria-valuemax={100}>
+                  <div className="agent-canvas-toolbar__progress-fill" style={{ width: `${progressPercent}%` }} />
+                </div>
+              </div>
+              {diagnosticOpen && failedNodes > 0 ? (
+                <div className="agent-canvas-diagnostic-panel" role="region" aria-label="Node diagnostic">
+                  <div className="agent-canvas-diagnostic-panel__header">
+                    <strong>Diagnostic —{failedNodes} failed node(s)</strong>
+                    <button type="button" onClick={() => setDiagnosticOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>✕</button>
+                  </div>
+                  <div className="agent-canvas-diagnostic-panel__stats">
+                    <span className="agent-canvas-diagnostic-panel__stat">
+                      <strong>{totalNodes}</strong> total
+                    </span>
+                    <span className="agent-canvas-diagnostic-panel__stat is-ready">
+                      <strong>{readyNodes}</strong> ready
+                    </span>
+                    <span className="agent-canvas-diagnostic-panel__stat is-working">
+                      <strong>{workingNodes}</strong> working
+                    </span>
+                    <span className="agent-canvas-diagnostic-panel__stat is-failed">
+                      <strong>{failedNodes}</strong> failed
+                    </span>
+                    <span className="agent-canvas-diagnostic-panel__stat is-draft">
+                      <strong>{draftNodes}</strong> draft
+                    </span>
+                    <span className="agent-canvas-diagnostic-panel__stat is-progress">
+                      <strong>{progressPercent}%</strong> complete
+                    </span>
+                  </div>
+                  <div className="agent-canvas-diagnostic-panel__body">
+                    {(serverProgress?.blocked_nodes ?? workflow.nodes.filter((n) => n.status === "failed")).map((node) => (
+                      <div key={node.node_id ?? (node as CanvasNodeV2).node_id} className="agent-canvas-diagnostic-panel__item">
+                        <span className="agent-canvas-diagnostic-panel__node-title">
+                          {node.title ?? (node as CanvasNodeV2).title}
+                        </span>
+                        <span className="agent-canvas-diagnostic-panel__node-type">
+                          ({NODE_TYPE_LABELS[(node.node_type ?? (node as CanvasNodeV2).node_type) as keyof typeof NODE_TYPE_LABELS] ?? (node.node_type ?? (node as CanvasNodeV2).node_type)})
+                        </span>
+                        {(node as { next_action?: string }).next_action ? (
+                          <span className="agent-canvas-diagnostic-panel__next-action">
+                            鈫?{(node as { next_action?: string }).next_action}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="agent-canvas-diagnostic-panel__retry-btn"
+                          onClick={() => {
+                            runNodeById((node.node_id ?? (node as CanvasNodeV2).node_id)!, true);
+                          }}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              </>
+            );
+          })() : null}
           <span className={`agent-canvas-toolbar__connection is-${live.state.connectionState}`} title={live.state.runtimeError ?? undefined}>
             <i aria-hidden="true" />
             {live.state.connectionState}
@@ -1488,22 +1645,52 @@ export function AgentCanvasPage() {
         </div>
 
         {workflow.nodes.length === 0 ? (
-          <div className="agent-canvas-empty">
-            <strong>Start with a node or talk to AdCraft Video Agent.</strong>
+          <div className="agent-canvas-empty agent-canvas-empty--guided">
+            <strong>Two ways to start —use either or both</strong>
+            <div className="agent-canvas-empty__modes">
+              <div className="agent-canvas-empty__mode">
+                <span className="agent-canvas-empty__mode-icon">💬</span>
+                <div>
+                  <b>Chat-guided</b>
+                  <p>Describe your idea in the chat panel and AI builds the full workflow automatically.</p>
+                </div>
+              </div>
+              <div className="agent-canvas-empty__mode">
+                <span className="agent-canvas-empty__mode-icon">✦</span>
+                <div>
+                  <b>Free-form</b>
+                  <p>Use the + button on the left to add nodes manually, arrange them your way.</p>
+                </div>
+              </div>
+            </div>
+            <p className="agent-canvas-empty-hint">You can switch between them anytime —they don't limit each other.</p>
           </div>
         ) : null}
 
         {(surfaceError || session.state.authoringError || live.state.runtimeError) ? (
-          <button
-            type="button"
-            className="agent-canvas-notice"
-            onClick={() => {
-              setSurfaceError(null);
-              clearAuthoringError();
-            }}
-          >
-            {surfaceError || session.state.authoringError || live.state.runtimeError}
-          </button>
+          <div className="agent-canvas-notice agent-canvas-notice--with-action" role="alert">
+            <span>{surfaceError || session.state.authoringError || live.state.runtimeError}</span>
+            {(() => {
+              const errorText = surfaceError || session.state.authoringError || live.state.runtimeError || "";
+              const isModelError = /model|provider|credential|config/i.test(errorText);
+              return isModelError ? (
+                <Link to="/api-space" className="agent-canvas-notice__action">
+                  Configure provider
+                </Link>
+              ) : null;
+            })()}
+            <button
+              type="button"
+              className="agent-canvas-notice__dismiss"
+              aria-label="Dismiss notice"
+              onClick={() => {
+                setSurfaceError(null);
+                clearAuthoringError();
+              }}
+            >
+              ×
+            </button>
+          </div>
         ) : null}
 
         {live.state.autoRunNotice ? (
@@ -1596,6 +1783,10 @@ export function AgentCanvasPage() {
           />
         ) : null}
       </div>
+
+      <Suspense fallback={null}>
+        <GlobalTimelinePanel workflowId={workflow.workflow_id} />
+      </Suspense>
 
       <Suspense fallback={null}>
         <AgentCanvasChatPanel

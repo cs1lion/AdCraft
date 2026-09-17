@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from hashlib import sha256
 from typing import Any
 
@@ -43,6 +44,8 @@ from app.schemas.v2_persistence import V2EventInsert
 
 APPLICABLE_NODE_TYPES = frozenset({"text", "script", "image", "video", "audio"})
 NON_TERMINAL_STATUSES = ("waiting_user", "queued", "leased")
+
+logger = logging.getLogger(__name__)
 
 
 class AgentCanvasPromptPreparationDispatchRepository:
@@ -1819,6 +1822,111 @@ class AgentCanvasPromptPreparationDispatchRepository:
                 },
             ),
         )
+
+    def repair_context_in_lease(
+        self,
+        dispatch_id: str,
+        *,
+        worker_id: str,
+        lease_generation: int,
+        context: Mapping[str, object],
+        now: datetime,
+    ) -> PromptPreparationDispatchV1:
+        """Persist a rebuilt immutable context snapshot on a snapshot-less row.
+
+        This is a one-shot repair: only rows that were enqueued without a
+        frozen snapshot (no ``context_digest`` and an empty ``context_json``)
+        may receive one.  Rows that already carry a snapshot are never
+        rewritten, and the write is fenced to the owning lease so a stale
+        worker cannot race the reconcile path.
+
+        The ``logical_key`` and ``dispatch_id`` stay frozen: they are the
+        deterministic identity of the preparation operation.  The rebuilt
+        context is deliberately *not* part of that identity — only the
+        persisted ``context_json``/``context_digest`` pair gains it — so a
+        row that once lacked a snapshot can have one written exactly once
+        without changing which operation it belongs to.
+        """
+
+        timestamp = _utc(now)
+        try:
+            with self._database.engine.begin() as connection:
+                row = _select_one(connection, dispatch_id)
+                if row is None:
+                    raise _not_found()
+                _require_owned(row, worker_id, lease_generation, timestamp)
+                if row["context_digest"] is not None:
+                    return _dispatch_from_row(row)
+                if row["context_json"] not in {"", "{}", None}:
+                    raise _error(
+                        "prompt_preparation_context_conflict",
+                        "Prompt-preparation dispatch already owns a context snapshot.",
+                    )
+                context_payload, context_digest = detached_context_payload(dict(context))
+                statement = (
+                    update(AgentCanvasPromptPreparationOutboxRow)
+                    .where(
+                        AgentCanvasPromptPreparationOutboxRow.dispatch_id == dispatch_id,
+                        AgentCanvasPromptPreparationOutboxRow.lease_owner == worker_id,
+                        AgentCanvasPromptPreparationOutboxRow.lease_generation
+                        == lease_generation,
+                    )
+                    .values(
+                        context_json=_json(context_payload),
+                        context_digest=context_digest,
+                        updated_at=_iso(timestamp),
+                    )
+                )
+                result = connection.execute(statement)
+                if result.rowcount == 1:
+                    self._events.append_in_transaction(
+                        connection,
+                        V2EventInsert(
+                            workflow_id=str(row["workflow_id"]),
+                            node_id=str(row["node_id"]),
+                            event_type="node_prompt_preparation_context_repaired",
+                            transition_key=(
+                                f"prompt-context-repair:{row['node_id']}:{row['operation_id']}"
+                            ),
+                            created_at=_iso(timestamp),
+                            payload={
+                                "dispatch_id": dispatch_id,
+                                "context_digest": context_digest,
+                            },
+                        ),
+                    )
+                if result.rowcount == 1:
+                    self._events.append_in_transaction(
+                        connection,
+                        V2EventInsert(
+                            workflow_id=str(row["workflow_id"]),
+                            node_id=str(row["node_id"]),
+                            event_type="node_prompt_preparation_context_repaired",
+                            transition_key=(
+                                f"prompt-context-repair:{row['node_id']}:{row['operation_id']}"
+                            ),
+                            created_at=_iso(timestamp),
+                            payload={
+                                "dispatch_id": dispatch_id,
+                                "context_digest": context_digest,
+                            },
+                        ),
+                    )
+                else:
+                    # A concurrent repair froze the snapshot between the check
+                    # and the write; its value is the authority from now on.
+                    logger.debug(
+                        "Prompt-preparation context repair already applied dispatch_id=%s",
+                        dispatch_id,
+                    )
+                repaired_row = _select_one(connection, dispatch_id)
+                if repaired_row is None:
+                    raise _not_found()
+                return _dispatch_from_row(repaired_row)
+        except V2PersistenceError:
+            raise
+        except SQLAlchemyError as error:
+            raise _persistence_error() from error
 
     def _project_terminal_failure_in_transaction(
         self,

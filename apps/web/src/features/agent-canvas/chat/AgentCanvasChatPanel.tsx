@@ -857,7 +857,33 @@ export function AgentCanvasChatPanel({
             {!chat.state.loading
               && !chat.state.items.length
               && !chat.state.currentSessionActions.length ? (
-              <div className="agent-chat__empty">Describe the ad you want to build.</div>
+              <div className="agent-chat__empty agent-chat__empty--guided">
+                <div className="agent-chat__empty-title">Describe the ad you want to build</div>
+                <div className="agent-chat__empty-subtitle">Try one of these examples, or write your own idea below:</div>
+                <div className="agent-chat__empty-examples">
+                  {[
+                    "30-second luxury perfume ad, high-end style, for Douyin",
+                    "15-second skincare product showcase, fresh and natural style",
+                    "Game promo video, sci-fi style, focus on combat scenes, 30s",
+                    "E-commerce seeding video, food category, warm and cozy style, 20s",
+                  ].map((example) => (
+                    <button
+                      key={example}
+                      type="button"
+                      className="agent-chat__empty-example"
+                      onClick={() => {
+                        setDraft(example);
+                        composerTextareaRef.current?.focus();
+                      }}
+                    >
+                      {example}
+                    </button>
+                  ))}
+                </div>
+                <div className="agent-chat__empty-tip">
+                  Tip: Include product type, style, duration, and target platform for best results.
+                </div>
+              </div>
             ) : null}
             {chat.state.continuations
               .filter((continuation) => ["queued", "leased", "retry_wait"].includes(continuation.delivery_status))
@@ -1135,7 +1161,7 @@ export function AgentCanvasChatPanel({
           value={draft}
           placeholder={conceptInteraction
             ? "Describe your own direction..."
-            : "Ask AdCraft Video Agent..."}
+            : "e.g. A 30-second luxury perfume ad for Douyin..."}
           aria-label="Message AdCraft Video Agent"
           onChange={(event) => {
             const nextDraft = event.target.value;

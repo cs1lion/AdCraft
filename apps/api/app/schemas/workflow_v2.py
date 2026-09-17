@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any, Literal
 
@@ -93,6 +93,7 @@ WorkflowAssetSemanticTypeV2 = Literal[
     "scene_multi_view",
     "shot_cell_image",
     "shot_video_segment",
+    "scene_script",
     "bgm",
     "final_video",
     "free_image",
@@ -232,6 +233,8 @@ class WorkflowNodeV2(BaseModel):
     position: dict[str, float] = Field(default_factory=dict)
     items: list[WorkflowItemV2] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    authoring_origin: str = "user_free"
+    intent_hint: str | None = None
 
 
 class WorkflowEdgeV2(BaseModel):

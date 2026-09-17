@@ -89,6 +89,7 @@ _PROPOSAL_OPERATIONS = {
 }
 _MATERIALIZATION_OPERATIONS = {
     "execute_canvas_text",
+    "execute_canvas_scene_3d",
     "materialize_storyboard_segment",
     "materialize_quick_media",
 }

@@ -123,6 +123,8 @@ def _role_registry() -> dict[str, _RegisteredRole]:
     add("general_audio", "audio", "audio")
     add("bgm", "audio", "audio", BgmContentV2)
     add("editing", "editing", "video")
+    add("scene_3d_previs", "scene-3d", "video")
+    add("voice_cast", "voice-cast", "audio")
     return roles
 
 

@@ -27,16 +27,30 @@ import {
 import { resolvePublishedAssets } from "./publishedAssets.ts";
 import { nodeRunRequest } from "./runRequest.ts";
 import { modelResolutionFromEvent } from "./modelResolution.ts";
-import type { AgentCanvasRuntimeRefreshPolicy } from "./runtimeEventPolicy.ts";
 import { runtimeEventPolicy } from "./runtimeEventPolicy.ts";
+
+/**
+ * Structured reason why a node run was blocked (not executed).
+ * Thrown by runNode instead of silently returning.
+ */
+export class NodeRunBlockedError extends Error {
+  constructor(
+    public readonly code:
+      | "no_workflow"
+      | "unsupported_node_type"
+      | "source_only_node"
+      | "not_runnable_status",
+    message: string,
+    public readonly suggestedNext?: string,
+  ) {
+    super(message);
+    this.name = "NodeRunBlockedError";
+  }
+}
 import {
-  isTerminalRuntimeEvent,
   runtimeRefreshIdentity,
-  runtimeReflectsTerminalEvent,
   sameRuntimePresentation,
 } from "./runtimeRefreshIdentity.ts";
-
-const NON_TERMINAL_RUNTIME_REFRESH_WINDOW_MS = 120;
 
 type RuntimeCallbacks = {
   applyWorkflow: (workflow: AgentCanvasWorkflowV2) => void;
@@ -73,17 +87,15 @@ export function useAgentCanvasRuntime(
   const [modelResolutionsByNodeId, setModelResolutionsByNodeId] = useState<Record<string, CanvasRuntimeModelResolutionV2>>({});
   const [inputReadinessIssue, setInputReadinessIssue] = useState<UpstreamInputReadinessIssueV2 | null>(null);
   const cursorRef = useRef(0);
-  const runtimeRefreshRef = useRef<Promise<CanvasRuntimeSnapshotV2 | null> | null>(null);
+  const runtimeRefreshRef = useRef<Promise<void> | null>(null);
   const workflowRefreshRef = useRef<Promise<void> | null>(null);
   const assetsRefreshRef = useRef<Promise<void> | null>(null);
   const runtimeRefreshQueuedRef = useRef(false);
-  const runtimeRefreshTimerRef = useRef<number | null>(null);
   const workflowRefreshQueuedRef = useRef(false);
   const assetsRefreshQueuedRef = useRef(false);
   const pendingAssetPublishesRef = useRef<Map<string, string | null>>(new Map());
   const seenTransitionKeysRef = useRef<Set<string>>(new Set());
   const lastRuntimeRefreshIdentityRef = useRef<string | null>(null);
-  const terminalReconcileTimersRef = useRef(new Map<string, number>());
 
   const workflowId = workflow?.workflow_id ?? null;
   const activeWorkflowIdRef = useRef<string | null>(workflowId);
@@ -94,17 +106,11 @@ export function useAgentCanvasRuntime(
     workflowRefreshRef.current = null;
     assetsRefreshRef.current = null;
     runtimeRefreshQueuedRef.current = false;
-    if (runtimeRefreshTimerRef.current !== null) {
-      window.clearTimeout(runtimeRefreshTimerRef.current);
-      runtimeRefreshTimerRef.current = null;
-    }
     workflowRefreshQueuedRef.current = false;
     assetsRefreshQueuedRef.current = false;
     pendingAssetPublishesRef.current.clear();
     seenTransitionKeysRef.current.clear();
     lastRuntimeRefreshIdentityRef.current = null;
-    terminalReconcileTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    terminalReconcileTimersRef.current.clear();
   }
 
   useEffect(() => {
@@ -121,30 +127,28 @@ export function useAgentCanvasRuntime(
     setInputReadinessIssue(null);
   }, [workflowId]);
 
-  const refreshRuntime = useCallback(async (): Promise<CanvasRuntimeSnapshotV2 | null> => {
-    if (!workflowId) return null;
+  const refreshRuntime = useCallback(async () => {
+    if (!workflowId) return;
     if (runtimeRefreshRef.current) {
       runtimeRefreshQueuedRef.current = true;
       return runtimeRefreshRef.current;
     }
     const request = (async () => {
-      let latest: CanvasRuntimeSnapshotV2 | null = null;
       do {
         runtimeRefreshQueuedRef.current = false;
         try {
           const next = await agentCanvasApi.agentCanvasRuntime(workflowId);
-          if (activeWorkflowIdRef.current !== workflowId) return latest;
-          latest = next;
+          if (activeWorkflowIdRef.current !== workflowId) return;
           setRuntime((current) => (
             sameRuntimePresentation(current, next) ? current : next
           ));
           setRuntimeError(null);
         } catch (error) {
-          if (activeWorkflowIdRef.current !== workflowId) return latest;
+          if (activeWorkflowIdRef.current !== workflowId) return;
           if (isV2ApiError(error) && [404, 405, 501].includes(error.status)) {
             setConnectionState("unavailable");
             setRuntimeError("Agent Canvas runtime requires the matching backend update.");
-            return latest;
+            return;
           }
           lastRuntimeRefreshIdentityRef.current = null;
           setRuntimeError(error instanceof Error ? error.message : "Runtime refresh failed.");
@@ -153,27 +157,12 @@ export function useAgentCanvasRuntime(
         runtimeRefreshQueuedRef.current
         && activeWorkflowIdRef.current === workflowId
       );
-      return latest;
     })().finally(() => {
         if (runtimeRefreshRef.current === request) runtimeRefreshRef.current = null;
       });
     runtimeRefreshRef.current = request;
     return request;
   }, [workflowId]);
-
-  const clearScheduledRuntimeRefresh = useCallback(() => {
-    if (runtimeRefreshTimerRef.current === null) return;
-    window.clearTimeout(runtimeRefreshTimerRef.current);
-    runtimeRefreshTimerRef.current = null;
-  }, []);
-
-  const scheduleRuntimeRefresh = useCallback(() => {
-    if (runtimeRefreshTimerRef.current !== null) return;
-    runtimeRefreshTimerRef.current = window.setTimeout(() => {
-      runtimeRefreshTimerRef.current = null;
-      void refreshRuntime();
-    }, NON_TERMINAL_RUNTIME_REFRESH_WINDOW_MS);
-  }, [refreshRuntime]);
 
   const refreshWorkflow = useCallback(async () => {
     if (!workflowId) return;
@@ -202,23 +191,6 @@ export function useAgentCanvasRuntime(
     workflowRefreshRef.current = request;
     return request;
   }, [callbacks, workflowId]);
-
-  const reconcileTerminalEvent = useCallback(async (
-    event: CanvasRuntimeEventV2,
-    policy: AgentCanvasRuntimeRefreshPolicy,
-  ) => {
-    const snapshot = await refreshRuntime();
-    if (policy.refreshWorkflow) await refreshWorkflow();
-    if (snapshot && runtimeReflectsTerminalEvent(snapshot, event)) return;
-    const key = `${event.event_type}:${event.node_id ?? "workflow"}:${event.seq}`;
-    if (terminalReconcileTimersRef.current.has(key)) return;
-    const timer = window.setTimeout(() => {
-      terminalReconcileTimersRef.current.delete(key);
-      void refreshRuntime();
-      if (policy.refreshWorkflow) void refreshWorkflow();
-    }, 250);
-    terminalReconcileTimersRef.current.set(key, timer);
-  }, [refreshRuntime, refreshWorkflow]);
 
   const refreshAssets = useCallback(async (event?: CanvasRuntimeEventV2) => {
     if (!workflowId) return;
@@ -299,20 +271,14 @@ export function useAgentCanvasRuntime(
       }));
     }
     const policy = runtimeEventPolicy(event);
-    const terminalRuntimeEvent = isTerminalRuntimeEvent(event.event_type);
     if (policy.refreshRuntime) {
       const refreshIdentity = runtimeRefreshIdentity(event);
       if (lastRuntimeRefreshIdentityRef.current !== refreshIdentity) {
         lastRuntimeRefreshIdentityRef.current = refreshIdentity;
-        if (terminalRuntimeEvent) {
-          clearScheduledRuntimeRefresh();
-          void reconcileTerminalEvent(event, policy);
-        } else {
-          scheduleRuntimeRefresh();
-        }
+        void refreshRuntime();
       }
     }
-    if (policy.refreshWorkflow && !terminalRuntimeEvent) void refreshWorkflow();
+    if (policy.refreshWorkflow) void refreshWorkflow();
     if (policy.refreshAssets) void refreshAssets(event);
     if (policy.refreshChat) {
       setChatEvents((current) => [...current, event].slice(-100));
@@ -354,7 +320,7 @@ export function useAgentCanvasRuntime(
         })
         .catch(() => {});
     }
-  }, [callbacks, clearScheduledRuntimeRefresh, refreshAssets, refreshWorkflow, reconcileTerminalEvent, scheduleRuntimeRefresh, workflowId]);
+  }, [callbacks, refreshAssets, refreshRuntime, refreshWorkflow, workflowId]);
 
   useEffect(() => {
     if (!workflowId) {
@@ -362,7 +328,6 @@ export function useAgentCanvasRuntime(
       setConnectionState("idle");
       return undefined;
     }
-    const terminalReconcileTimers = terminalReconcileTimersRef.current;
     let cancelled = false;
     let eventSource: EventSource | null = null;
     let reconnectTimer = 0;
@@ -380,17 +345,15 @@ export function useAgentCanvasRuntime(
     const replayEvents = async (
       afterSeq: number,
       isActive: () => boolean = () => !cancelled,
-    ): Promise<boolean> => {
+    ) => {
       let replayCursor = afterSeq;
-      let changed = false;
       for (;;) {
         const replay = await agentCanvasApi.agentCanvasEvents(workflowId, replayCursor, 200);
-        if (!isActive() || activeWorkflowIdRef.current !== workflowId) return changed;
-        if (replay.events.length) changed = true;
+        if (!isActive() || activeWorkflowIdRef.current !== workflowId) return;
         replay.events.forEach(processEvent);
         const nextCursor = Math.max(cursorRef.current, replay.next_cursor, replayCursor);
         cursorRef.current = nextCursor;
-        if (replay.events.length < 200 || nextCursor <= replayCursor) return changed;
+        if (replay.events.length < 200 || nextCursor <= replayCursor) return;
         replayCursor = nextCursor;
       }
     };
@@ -428,12 +391,10 @@ export function useAgentCanvasRuntime(
             // being assembled at the same time. Once the stream is truly open,
             // replay its boundary again and refresh the authoritative projections.
             try {
-              const replayChanged = await replayEvents(streamCursor, isCurrentConnection);
-              if (!isCurrentConnection()) return;
-              if (replayChanged) {
-                void refreshWorkflow();
-                setChatRevision((current) => current + 1);
-              }
+              await replayEvents(streamCursor, isCurrentConnection);
+              if (!isCurrentConnection() || !initialConnection) return;
+              void refreshWorkflow();
+              setChatRevision((current) => current + 1);
             } catch (error) {
               if (!isCurrentConnection()) return;
               setRuntimeError(
@@ -511,11 +472,8 @@ export function useAgentCanvasRuntime(
       cancelled = true;
       window.clearTimeout(reconnectTimer);
       eventSource?.close();
-      clearScheduledRuntimeRefresh();
-      terminalReconcileTimers.forEach((timer) => window.clearTimeout(timer));
-      terminalReconcileTimers.clear();
     };
-  }, [clearScheduledRuntimeRefresh, processEvent, refreshRuntime, refreshWorkflow, workflowId]);
+  }, [processEvent, refreshRuntime, refreshWorkflow, workflowId]);
 
   const runAll = useCallback(async () => {
     if (!workflowId || !workflow) return;
@@ -547,10 +505,18 @@ export function useAgentCanvasRuntime(
     node: CanvasNodeV2,
     options: { retryFailed?: boolean } = {},
   ) => {
-    if (!workflowId) return;
-    if (!["text", "script", "image", "video", "audio"].includes(node.node_type)) return;
-    if (isSourceOnlyNode(node)) return;
-    if (!new Set(["draft", "failed", "ready"]).has(node.status)) return;
+    if (!workflowId) {
+      throw new NodeRunBlockedError("no_workflow", "No active workflow selected.", "Select or create a project first.");
+    }
+    if (!["text", "script", "image", "video", "audio", "scene-3d"].includes(node.node_type)) {
+      throw new NodeRunBlockedError("unsupported_node_type", `Node type "${node.node_type}" cannot be run directly.`, "Use the editing panel or connect this node as input.");
+    }
+    if (isSourceOnlyNode(node)) {
+      throw new NodeRunBlockedError("source_only_node", "This is a source-only asset node.", "Use it as input for a generative node, or edit it directly.");
+    }
+    if (node.status !== "draft" && node.status !== "failed") {
+      throw new NodeRunBlockedError("not_runnable_status", `Node is already ${node.status}.`, node.status === "working" ? "Wait for generation to complete." : "No action needed.");
+    }
     setRunPending(true);
     try {
       const request = nodeRunRequest(node, options.retryFailed);
@@ -573,6 +539,26 @@ export function useAgentCanvasRuntime(
       setRunPending(false);
     }
   }, [refreshRuntime, workflowId]);
+
+  const retryAllFailed = useCallback(async () => {
+    if (!workflowId || !workflow) return;
+    const failedNodes = workflow.nodes.filter((n) => n.status === "failed");
+    if (failedNodes.length === 0) return;
+    setRunPending(true);
+    try {
+      for (const node of failedNodes) {
+        try {
+          await runNode(node, { retryFailed: true });
+        } catch (error) {
+          // Individual node failures are non-fatal for batch retry
+          console.warn(`Retry failed for node ${node.node_id}:`, error);
+        }
+      }
+      await refreshRuntime();
+    } finally {
+      setRunPending(false);
+    }
+  }, [refreshRuntime, runNode, workflow, workflowId]);
 
   const cancelRun = useCallback(async () => {
     if (!workflowId || !runtime?.active_execution_id) return;
@@ -601,12 +587,10 @@ export function useAgentCanvasRuntime(
       inputReadinessIssue,
     },
     actions: {
-      refreshRuntime: async () => {
-        await refreshRuntime();
-      },
+      refreshRuntime,
       refreshWorkflow,
-      refreshAssets,
       runAll,
+      retryAllFailed,
       runNode,
       cancelRun,
       clearAutoRunNotice: () => setAutoRunNotice(null),

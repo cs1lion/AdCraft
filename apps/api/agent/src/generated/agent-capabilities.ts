@@ -17,6 +17,7 @@ export const AGENT_CAPABILITY_CONTRACT = {
         "conversation_summary",
         "decide_next_action",
         "decide_turn_intent",
+        "execute_canvas_scene_3d",
         "execute_canvas_script",
         "execute_canvas_text",
         "free_audio",

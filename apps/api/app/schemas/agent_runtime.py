@@ -179,6 +179,19 @@ class AgentCanvasTextOutput(BaseModel):
     content: str = Field(min_length=1, max_length=32_768)
 
 
+class AgentCanvasScene3DOutput(BaseModel):
+    """Validated scene-3d previs output from the 3D Storyboard skill.
+
+    The skill returns a SceneScript JSON object, wrapped in a ```json fence per
+    the skill contract. ``raw_output`` carries the full LLM text; downstream
+    parsing is done by ``scene3d.parser.parse_llm_output``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_output: str = Field(min_length=1, max_length=128_000)
+
+
 class AgentRunPolicy(_StrictModel):
     operation_policy_id: str | None = Field(default=None, max_length=160)
     operation_class: Literal["routing", "proposal", "materialization", "long_form"] | None = None

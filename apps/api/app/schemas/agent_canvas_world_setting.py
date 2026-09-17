@@ -39,6 +39,12 @@ class WorldSettingCoreV2(_WorldSettingModel):
     era_and_place: str = Field(min_length=1, max_length=2_048)
     world_rules: tuple[_ProjectionItem, ...] = Field(min_length=1, max_length=8)
     visual_continuity: tuple[_ProjectionItem, ...] = Field(min_length=1, max_length=8)
+    # --- Multi-scene ownership (P4, 2026-09-15, per P0.5 audit) ---
+    owned_scene_ids: tuple[str, ...] = Field(
+        default=(),
+        max_length=32,
+        description="IDs of scene nodes owned by this world setting. Establishes world→scenes hierarchy for the structured-derivation flow (P0-P3).",
+    )
 
 
 class WorldSettingDocumentV2(_WorldSettingModel):

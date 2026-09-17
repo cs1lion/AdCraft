@@ -1,4 +1,4 @@
-import { Fragment, type ElementType, type ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 
@@ -161,11 +161,20 @@ function parseMarkdownBlocks(source: string): ReactNode[] {
       flushParagraph();
       const level = heading[1].length;
       const title = heading[2];
-      const Tag = `h${Math.min(level, 6)}` as ElementType;
+      const headingKey = `heading-${blocks.length}`;
+      const headingChildren = parseInline(title, headingKey);
       blocks.push(
-        <Tag key={`heading-${blocks.length}`}>
-          {parseInline(title, `heading-${blocks.length}`)}
-        </Tag>,
+        level <= 2 ? (
+          <h2 key={headingKey}>{headingChildren}</h2>
+        ) : level === 3 ? (
+          <h3 key={headingKey}>{headingChildren}</h3>
+        ) : level === 4 ? (
+          <h4 key={headingKey}>{headingChildren}</h4>
+        ) : level === 5 ? (
+          <h5 key={headingKey}>{headingChildren}</h5>
+        ) : (
+          <h6 key={headingKey}>{headingChildren}</h6>
+        ),
       );
       i += 1;
       continue;

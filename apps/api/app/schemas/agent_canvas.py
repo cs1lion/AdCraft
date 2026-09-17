@@ -21,9 +21,10 @@ from app.schemas.agent_canvas_video_parameters import CanvasParameterProvenanceV
 from app.schemas.agent_canvas_world_setting import WorldSettingResolvedInputV2
 
 
-CanvasNodeTypeV2 = Literal["text", "script", "image", "video", "audio", "editing"]
+CanvasNodeTypeV2 = Literal["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast"]
 CanvasNodeStatusV2 = Literal["draft", "working", "ready", "failed"]
 CanvasNodeExecutionModeV2 = Literal["generative", "source_only"]
+CanvasNodeAuthoringOriginV2 = Literal["user_free", "agent_guided", "template"]
 RoleContractVersionV2 = Literal["ad-media-role-v1", "ad-media-role-v2"]
 ModelSelectionModeV1 = Literal["default", "explicit"]
 CanvasCreativeRoleV2 = Literal[
@@ -42,6 +43,8 @@ CanvasCreativeRoleV2 = Literal[
     "general_video",
     "general_audio",
     "editing",
+    "scene_3d_previs",
+    "voice_cast",
 ]
 CanvasBindingInputRoleV2 = Literal[
     "text_context",
@@ -100,6 +103,8 @@ class CanvasNodeCreateRequestV2(_AgentCanvasModel):
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
     position: CanvasPositionV2
     source_asset_id: str | None = None
+    authoring_origin: CanvasNodeAuthoringOriginV2 = "user_free"
+    intent_hint: str | None = None
 
     @property
     def semantic_role(self) -> CanvasCreativeRoleV2:
@@ -210,6 +215,8 @@ class CanvasNodeV2(_AgentCanvasModel):
     position: CanvasPositionV2
     revision: int = Field(ge=1)
     error: CanvasNodeErrorV2 | None = None
+    authoring_origin: CanvasNodeAuthoringOriginV2 = "user_free"
+    intent_hint: str | None = None
     prompt_preparation: NodePromptPreparationV1 = Field(
         default_factory=NodePromptPreparationV1.legacy_ready
     )
@@ -451,6 +458,30 @@ class AgentCanvasWorkflowV2(_AgentCanvasModel):
     bindings: tuple[CanvasBindingV2, ...] = ()
     assets: tuple[ProjectAssetSummaryV2, ...] = ()
     active_style_skill: ActiveStyleSkillSummaryV2 | None = None
+
+
+class NodeProgressSummary(BaseModel):
+    """Summary of a single node for progress display."""
+    node_id: str
+    node_type: str
+    title: str
+    status: CanvasNodeStatusV2
+    error_code: str | None = None
+    next_action: str | None = None
+
+
+class WorkflowProgressResponse(BaseModel):
+    """Graph-aware progress response for a workflow."""
+    workflow_id: str
+    total_nodes: int
+    ready_count: int
+    working_count: int
+    failed_count: int
+    draft_count: int
+    progress_percent: float = Field(ge=0, le=100)
+    blocked_nodes: list[NodeProgressSummary] = Field(default_factory=list)
+    working_nodes: list[NodeProgressSummary] = Field(default_factory=list)
+    overall_status: str = Field(description="idle | running | blocked | complete")
 
 
 class ProjectCreateResponseV2(AgentCanvasWorkflowV2):

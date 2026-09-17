@@ -1,4 +1,4 @@
-"""Strict persisted authoring contracts for V2 Workflow revisions."""
+﻿"""Strict persisted authoring contracts for V2 Workflow revisions."""
 
 from __future__ import annotations
 
@@ -153,6 +153,8 @@ class WorkflowAuthoringNodeV2(_AuthoringModel):
     position: dict[str, float] = Field(default_factory=dict)
     authoring_metadata: dict[str, JsonValue] = Field(default_factory=dict)
     items: tuple[WorkflowAuthoringItemV2, ...] = ()
+    authoring_origin: str = "user_free"
+    intent_hint: str | None = None
 
 
 class WorkflowAuthoringEdgeV2(_AuthoringModel):

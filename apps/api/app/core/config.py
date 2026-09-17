@@ -117,6 +117,10 @@ class Settings:
     media_mode: str = "mock"
     skip_audio_agents: bool = False
     local_settings_allowed_origins: tuple[str, ...] = DEFAULT_LOCAL_SETTINGS_ALLOWED_ORIGINS
+    # CORS origins for the API (defaults to localhost frontend; set to "*" for development only)
+    cors_allowed_origins: tuple[str, ...] = DEFAULT_LOCAL_SETTINGS_ALLOWED_ORIGINS
+    # Optional API access token: when set, all /api/v1 and /api/v2 endpoints require Authorization: Bearer <token>
+    api_access_token: str | None = None
     image_generation_api_key: str | None = None
     image_generation_endpoint: str | None = None
     image_generation_model: str = "doubao-seedream-5-0-lite-260128"
@@ -132,21 +136,30 @@ class Settings:
     tts_api_key: str | None = None
     tts_endpoint: str | None = None
     tts_model: str = "volcengine-tts"
-    bgm_provider: str = "tianpuyue"
+    stepfun_api_key: str | None = None
+    stepfun_tts_endpoint: str = "https://api.stepfun.com/step_plan/v1/audio/speech"
+    stepfun_tts_model: str = "stepaudio-2.5-tts"
+    stepfun_tts_voice: str = "cixingnansheng"
+    fish_audio_api_key: str | None = None
+    fish_audio_tts_endpoint: str = "https://api.fish.audio/v1/audio/speech"
+    fish_audio_tts_model: str = "default"
+    fish_audio_tts_voice: str = "default"
+    bgm_provider: str = "stepfun_music"
     bgm_access_key_id: str | None = None
     bgm_secret_access_key: str | None = None
     bgm_api_key: str | None = None
-    bgm_endpoint: str | None = "https://api.tianpuyue.cn"
+    bgm_endpoint: str | None = "https://api.stepfun.com"
     bgm_submit_action: str = "GenBGMForTime"
     bgm_api_version: str = "2024-08-12"
     bgm_generation_version: str = "v5.0"
-    bgm_model: str | None = "TemPolor i3"
-    bgm_long_model: str | None = "TemPolor i3.5"
+    bgm_model: str | None = "stepaudio-3-music-preview"
+    bgm_long_model: str | None = None
     bgm_callback_mode: str = "auto"
     bgm_callback_base_url: str | None = None
     bgm_query_endpoint: str | None = None
     bgm_timeout_seconds: int = 60
     bgm_download_max_bytes: int = 100 * 1024 * 1024
+    bgm_response_format: str = "mp3"
     composition_api_key: str | None = None
     composition_endpoint: str | None = None
     composition_provider: str = "ffmpeg"
@@ -324,6 +337,16 @@ class Settings:
             tts_api_key=os.getenv("TTS_API_KEY") or None,
             tts_endpoint=os.getenv("TTS_ENDPOINT") or None,
             tts_model=os.getenv("TTS_MODEL", cls.tts_model),
+            stepfun_api_key=os.getenv("STEPFUN_API_KEY") or None,
+            stepfun_tts_endpoint=os.getenv("STEPFUN_TTS_ENDPOINT", cls.stepfun_tts_endpoint),
+            stepfun_tts_model=os.getenv("STEPFUN_TTS_MODEL", cls.stepfun_tts_model),
+            stepfun_tts_voice=os.getenv("STEPFUN_TTS_VOICE", cls.stepfun_tts_voice),
+            fish_audio_api_key=os.getenv("FISH_AUDIO_API_KEY") or None,
+            fish_audio_tts_endpoint=os.getenv(
+                "FISH_AUDIO_TTS_ENDPOINT", cls.fish_audio_tts_endpoint
+            ),
+            fish_audio_tts_model=os.getenv("FISH_AUDIO_TTS_MODEL", cls.fish_audio_tts_model),
+            fish_audio_tts_voice=os.getenv("FISH_AUDIO_TTS_VOICE", cls.fish_audio_tts_voice),
             bgm_provider=os.getenv("BGM_PROVIDER", cls.bgm_provider),
             bgm_access_key_id=os.getenv("BGM_ACCESS_KEY_ID") or None,
             bgm_secret_access_key=os.getenv("BGM_SECRET_ACCESS_KEY") or None,
@@ -339,6 +362,7 @@ class Settings:
             bgm_query_endpoint=os.getenv("BGM_QUERY_ENDPOINT") or None,
             bgm_timeout_seconds=_read_int("BGM_TIMEOUT_SECONDS", cls.bgm_timeout_seconds),
             bgm_download_max_bytes=_read_int("BGM_DOWNLOAD_MAX_BYTES", cls.bgm_download_max_bytes),
+            bgm_response_format=os.getenv("BGM_RESPONSE_FORMAT", cls.bgm_response_format),
             composition_api_key=os.getenv("COMPOSITION_API_KEY") or None,
             composition_endpoint=os.getenv("COMPOSITION_ENDPOINT") or None,
             composition_provider=os.getenv("COMPOSITION_PROVIDER", cls.composition_provider),

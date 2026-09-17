@@ -1,4 +1,4 @@
-"""Public V2 Agent Canvas authoring and project-media endpoints."""
+﻿"""Public V2 Agent Canvas authoring and project-media endpoints."""
 
 from __future__ import annotations
 
@@ -129,6 +129,8 @@ from app.schemas.agent_canvas import (
     ProjectCreateRequestV2,
     ProjectCreateResponseV2,
     SaveImageToLibraryRequestV2,
+    NodeProgressSummary,
+    WorkflowProgressResponse,
 )
 from app.schemas.agent_canvas_editing_output_reuse import (
     EditingExportOutputReuseRequestV2,
@@ -315,6 +317,10 @@ from app.services.agent_canvas_provider_prompts import (
 from app.services.agent_canvas_references import AdReferenceBundleResolver
 from app.services.agent_canvas_projects import AgentCanvasProjectService
 from app.services.agent_canvas_requirements import AgentCanvasRequirementService
+from app.persistence.database import create_v2_database
+from app.persistence.timeline_repository import TimelineRepository
+from app.services.timeline_clip_auto_creator import TimelineClipAutoCreator
+from app.services.timeline_editing_integration import TimelineEditingIntegrationService
 from app.services.agent_canvas_runtime import (
     AgentCanvasRunService,
     CanvasRuntimeSnapshotService,
@@ -370,6 +376,7 @@ from app.services.agent_canvas_prompt_preparation import NodePromptPreparationSe
 from app.services.agent_canvas_prompt_preparation_worker import (
     AgentCanvasPromptPreparationWorker,
 )
+from app.services.agent_canvas_prompt_context_rebuilder import PromptContextRebuilder
 from app.services.agent_canvas_presentation import PresentationStreamPublisher
 from app.services.agent_canvas_continuation_worker import (
     AgentCanvasContinuationWorker,
@@ -742,6 +749,12 @@ def create_agent_canvas_runtime(
         database,
         event_repository,
     )
+    prompt_context_rebuilder = PromptContextRebuilder(
+        workflows=workflow_repository,
+        conversations=conversation_repository,
+        requirements=requirement_repository,
+        documents=document_repository,
+    )
     guided_product_inputs.set_continuation_writer(
         conversation_repository.insert_continuation_in_transaction
     )
@@ -1105,6 +1118,40 @@ def create_agent_canvas_runtime(
         result_committer,
         owner_id=f"agent-canvas-result-publication:{uuid4().hex}",
     )
+
+
+    # Timeline auto-clip creator (ADR 0007)
+    def _create_timeline_repository() -> TimelineRepository:
+        timeline_db = create_v2_database(settings.media_data_dir)
+        return TimelineRepository(timeline_db.session_factory())
+
+    timeline_clip_auto_creator = TimelineClipAutoCreator(
+        repository_factory=_create_timeline_repository,
+        enabled=True,
+    )
+
+    # Timeline → Editing integration (ADR 0007, Phase 2)
+    timeline_editing_integration = TimelineEditingIntegrationService(
+        timeline_repository=_create_timeline_repository(),
+    )
+
+    def _media_ready_publisher(node):
+        """Auto-create timeline clips when media nodes complete."""
+        try:
+            timeline_clip_auto_creator.create_clip_from_node(
+                node,
+                output_asset_id=node.output_asset_id,
+            )
+        except Exception as error:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to auto-create timeline clip for node %s: %s",
+                node.node_id,
+                error,
+            )
+        return None
+
+
     scheduler = DynamicCanvasScheduler(
         workflow_repository,
         runtime_repository,
@@ -1155,6 +1202,8 @@ def create_agent_canvas_runtime(
         terminal_member_reconciler=guidance_awaiting.reconcile_terminal_member,
         prompt_preparation=prompt_preparation_service,
         guided_media_context_resolver=guided_media_contexts.resolve,
+        media_ready_publisher=_media_ready_publisher,
+
     )
 
     def poll_provider_task(task) -> ProviderPollResult:
@@ -1312,6 +1361,7 @@ def create_agent_canvas_runtime(
         renderer=AgentCanvasCompositionRenderer(settings),
         commit_service=editing_commit_service,
         on_completed=guided_final_completion.complete,
+        timeline_integration=timeline_editing_integration,
     )
     editing_output_reuse = EditingExportOutputReuseService(
         database,
@@ -1487,6 +1537,10 @@ def create_agent_canvas_runtime(
             workflow_repository,
             model_selection=model_selection,
             candidate_validator=editing_responses.validate_workflow,
+            authoring_context_provider=lambda workflow_id, node: (
+                prompt_context_rebuilder.build(workflow_id, node)
+            ),
+
         ),
         gateway=video_agent_gateway,
         video_skills=video_skills,
@@ -1759,9 +1813,16 @@ def create_agent_canvas_runtime(
             operation_id=dispatch.operation_id,
             context=context,
         ),
-        # Production recovery must reconstruct only the immutable snapshot
-        # persisted with the dispatch row.  The test-only loader hook remains
-        # intentionally unset here so incomplete legacy rows fail closed.
+        # A snapshot-less dispatch row (direct/legacy Node writers, successor
+        # rows from reconcile) is rebuilt from current workflow state and
+        # frozen onto the row once; workflows without a usable guidance
+        # session keep the legacy fail-closed error.
+        context_repairer=lambda dispatch, node: prompt_context_rebuilder.build(
+            dispatch.workflow_id, node
+        ),
+        node_loader=workflow_repository.get_node,
+        # The test-only loader hook stays unset: recovery reconstructs the
+        # immutable snapshot itself instead of trusting an ambient provider.
         context_loader=None,
         stale_dispatch_reconciler=(
             lambda dispatch, worker_id, lease_generation, reason, timestamp: (
@@ -1822,6 +1883,9 @@ def create_agent_canvas_runtime(
         nodes=AgentCanvasNodeService(
             workflow_repository,
             model_selection=model_selection,
+            authoring_context_provider=lambda workflow_id, node: (
+                prompt_context_rebuilder.build(workflow_id, node)
+            ),
         ),
         bindings=binding_service,
         connected_authoring=AgentCanvasConnectedAuthoringService(
@@ -2034,6 +2098,85 @@ def get_workflow(
         raise _persistence_http_error(error) from error
     response.headers["ETag"] = workflow_etag(workflow_id, workflow.revision)
     return workflow
+
+
+@router.get("/workflows/{workflow_id}/progress", response_model=WorkflowProgressResponse)
+def get_workflow_progress(
+    workflow_id: str,
+    runtime: Annotated[AgentCanvasRuntime, Depends(get_agent_canvas_runtime)],
+) -> WorkflowProgressResponse:
+    """Get graph-aware progress: node status counts, blocked/working nodes, next actions."""
+    try:
+        workflow = runtime.projects.get_workflow(workflow_id)
+    except V2PersistenceError as error:
+        raise _persistence_http_error(error) from error
+
+    nodes = workflow.nodes
+    total = len(nodes)
+    ready = sum(1 for n in nodes if n.status == "ready")
+    working = sum(1 for n in nodes if n.status == "working")
+    failed = sum(1 for n in nodes if n.status == "failed")
+    draft = sum(1 for n in nodes if n.status == "draft")
+    progress_pct = (ready / total * 100) if total > 0 else 0.0
+
+    # Determine overall status
+    if working > 0:
+        overall = "running"
+    elif failed > 0:
+        overall = "blocked"
+    elif total > 0 and ready == total:
+        overall = "complete"
+    else:
+        overall = "idle"
+
+    # Build blocked (failed) nodes list with next_action
+    blocked_nodes = []
+    for n in nodes:
+        if n.status == "failed":
+            error_code = None
+            if n.structured_content and isinstance(n.structured_content, dict):
+                error_code = n.structured_content.get("error_code")
+            # Generate authoring-origin-aware next_action
+            if n.authoring_origin == "user_free":
+                if n.intent_hint:
+                    next_action = f"Free node for: {n.intent_hint}. Retry or edit prompt first."
+                else:
+                    next_action = "Free-form node. Retry or edit the node content first."
+            else:
+                next_action = "Click retry to re-run this node"
+            blocked_nodes.append(NodeProgressSummary(
+                node_id=n.node_id,
+                node_type=n.node_type,
+                title=n.title,
+                status=n.status,
+                error_code=error_code,
+                next_action=next_action,
+            ))
+
+    # Build working nodes list
+    working_nodes = []
+    for n in nodes:
+        if n.status == "working":
+            working_nodes.append(NodeProgressSummary(
+                node_id=n.node_id,
+                node_type=n.node_type,
+                title=n.title,
+                status=n.status,
+                next_action="Generating...",
+            ))
+
+    return WorkflowProgressResponse(
+        workflow_id=workflow_id,
+        total_nodes=total,
+        ready_count=ready,
+        working_count=working,
+        failed_count=failed,
+        draft_count=draft,
+        progress_percent=round(progress_pct, 1),
+        blocked_nodes=blocked_nodes,
+        working_nodes=working_nodes,
+        overall_status=overall,
+    )
 
 
 @router.get(
@@ -4212,3 +4355,74 @@ def _provider_download_mime_type(media_type: str, path: Path | str) -> str:
 
 def _image_library_response(items) -> ImageLibraryListResponseV2:
     return ImageLibraryListResponseV2(items=tuple(item.model_dump(mode="json") for item in items))
+
+
+# ---------------------------------------------------------------------------
+# Creation flow guidance (P4 frontend integration)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/workflows/{workflow_id}/creation-flow",
+    summary="Get creation flow guidance assessment",
+    description=(
+        "Assess the structured-derivation 3D previs creation flow progress "
+        "(world_setting -> script -> storyboard -> scene_3d -> binding -> render). "
+        "Returns current stage, completed stages, progress percent, next action, "
+        "and per-stage status. Powers the guided creation-flow UX."
+    ),
+)
+def get_creation_flow_assessment(
+    workflow_id: str,
+    runtime: Annotated[AgentCanvasRuntime, Depends(get_agent_canvas_runtime)],
+) -> dict:
+    """Get creation flow guidance assessment for a workflow."""
+    try:
+        workflow = runtime.projects.get_workflow(workflow_id)
+    except V2PersistenceError as error:
+        raise _persistence_http_error(error) from error
+
+    from app.services.creation_flow_guidance import CreationFlowGuidanceService
+
+    service = CreationFlowGuidanceService()
+    assessment = service.assess_flow(nodes=list(workflow.nodes))
+
+    return {
+        "workflow_id": workflow_id,
+        "current_stage": assessment.current_stage.value,
+        "current_stage_index": assessment.current_stage_index,
+        "completed_stages": [s.value for s in assessment.completed_stages],
+        "progress_percent": assessment.progress_percent,
+        "next_action": assessment.next_action,
+        "next_action_detail": assessment.next_action_detail,
+        "blockers": list(assessment.blockers),
+        "warnings": list(assessment.warnings),
+        "is_complete": assessment.is_complete,
+        "stage_statuses": [
+            {
+                "stage": s.stage.value,
+                "display_name": s.display_name,
+                "description": s.description,
+                "completed": s.completed,
+                "has_nodes": s.has_nodes,
+                "ready_nodes": s.ready_nodes,
+                "total_nodes": s.total_nodes,
+                "blockers": list(s.blockers),
+            }
+            for s in assessment.stage_statuses
+        ],
+        "flow_stages": service.get_flow_stages(),
+    }
+
+
+@router.get(
+    "/creation-flow/stages",
+    summary="Get creation flow stage definitions",
+    description="Get all 6 creation flow stages with metadata.",
+)
+def get_creation_flow_stages() -> dict:
+    """Get creation flow stage definitions."""
+    from app.services.creation_flow_guidance import CreationFlowGuidanceService
+
+    service = CreationFlowGuidanceService()
+    return {"stages": service.get_flow_stages()}

@@ -45,7 +45,7 @@ class AgentCanvasSeedanceInputCompiler:
         effective_parameters: EffectiveMediaParameterSnapshotV2 | None = None,
         grounding_plan: StoryboardGridGroundingPlanV1 | None = None,
     ) -> tuple[SeedanceInputManifestV1, SeedanceInputManifestAuditV1]:
-        if node.node_type != "video":
+        if node.node_type not in {"video", "scene-3d"}:
             raise ValueError("Seedance manifests require a Video node.")
         # Grounded video prompts are rebuilt from the saved node prompt and the
         # typed grounding plan so generic identity diagnostics cannot leak into

@@ -46,6 +46,11 @@
       "skill_id": "video_agent_storyboard_design"
     },
     {
+      "path": "video_agent_3d_storyboard/SKILL.md",
+      "sha256": "1d95e0323328e9e7d44fb644ed21892f39fde7b2b066dcc3f0508976bd3c0caa",
+      "skill_id": "video_agent_3d_storyboard"
+    },
+    {
       "path": "video_agent_video_direction/SKILL.md",
       "sha256": "db4cfbf8428363fce0843add44813ec1e5bc8bc0caa89e0e8ed6c4f2c49d142f",
       "skill_id": "video_agent_video_direction"

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -185,7 +185,8 @@ class StructuredGenerationRuntime:
             )
             event_projector.consume(
                 event,
-                workflow_id=request.context.workflow_id,
+                workflow_id=getattr(request.context, "workflow_id", None)
+                or request.audit_metadata.get("workflow_id"),
                 model_id=spec.model_id,
             )
             persisted_sequences.add(event.seq)

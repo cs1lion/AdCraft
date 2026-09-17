@@ -360,6 +360,58 @@
   text-align: center;
 }
 
+.agent-chat__empty--guided {
+  padding: 24px 16px;
+  text-align: left;
+}
+
+.agent-chat__empty-title {
+  margin-bottom: 6px;
+  color: var(--agent-chat-primary);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.agent-chat__empty-subtitle {
+  margin-bottom: 14px;
+  color: var(--agent-chat-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.agent-chat__empty-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.agent-chat__empty-example {
+  padding: 10px 14px;
+  color: var(--agent-chat-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  background: var(--agent-chat-bg-elevated, rgb(255 255 255 / 6%));
+  border: 1px solid var(--agent-chat-border, rgb(255 255 255 / 10%));
+  border-radius: 8px;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.agent-chat__empty-example:hover {
+  background: var(--agent-chat-bg-hover, rgb(255 255 255 / 10%));
+  border-color: var(--brand, #6366f1);
+}
+
+.agent-chat__empty-tip {
+  color: var(--agent-chat-muted);
+  font-size: 11px;
+  font-style: italic;
+  text-align: center;
+}
+
 .agent-chat__message {
   display: grid;
   min-width: 0;

@@ -19,7 +19,7 @@
 
 <!-- 👇 在这里放核心功能演示 GIF：展示"从想法到成片"的全流程，或"无限画布"操作 -->
 <div align="center">
-  <img src="./assets/demo.gif" alt="AdCraft Demo" width="90%" />
+  <img src="./assets/demo.png" alt="AdCraft Demo" width="90%" />
 </div>
 
 <br/>
@@ -30,7 +30,7 @@
 
 ## 📰 News
 
-- **[2026-09-16]** ⚙️ Improved the deployment workflow and creation pipeline stability.
+- **[2026-09-15]** 🎬 Added 3D Low-Fidelity Previs: natural language → SceneScript → Blender-rendered animatics with camera moves, character blocking, and narration TTS.
 - **[2026-08-28]** ✨ Added Style Skill capabilities and optimized Agent conversation node generation.
 - **[2026-08-19]** 🚀 Strengthened and stabilized the Agent-guided creative workflow, alongside a visual refresh of the AdCraft frontend homepage.
 - **[2026-08-04]** ✨ Agent Canvas received a major upgrade, improving the interaction experience and introducing progressive AI-guided creation.
@@ -45,25 +45,12 @@
 ## 🌟 Showcase — Ad Videos Across Industries
 
 > Real ad videos produced with AdCraft, spanning multiple industries.
-> <!-- 在这里放你不同领域的广告案例，建议用视频封面缩略图 + 播放链接 -->
+> <!-- Showcase video demos coming soon — check back for industry-specific examples -->
 
-<table>
-  <tr>
-    <td align="center"><b>🚗 Automotive</b><br/><img src="./assets/cases/auto.gif" width="240"/></td>
-    <td align="center"><b>🍔 Food</b><br/><img src="./assets/cases/food.gif" width="240"/></td>
-    <td align="center"><b>🥤 Beverage</b><br/><img src="./assets/cases/beverage.gif" width="240"/></td>
-  </tr>
-  <tr>
-    <td align="center"><b>💄 Beauty</b><br/><img src="./assets/cases/beauty.gif" width="240"/></td>
-    <td align="center"><b>👗 Apparel</b><br/><img src="./assets/cases/apparel.gif" width="240"/></td>
-    <td align="center"><b>🧴 Daily Goods</b><br/><img src="./assets/cases/goods.gif" width="240"/></td>
-  </tr>
-  <tr>
-    <td align="center"><b>🔌 Appliances</b><br/><img src="./assets/cases/appliance.gif" width="240"/></td>
-    <td align="center"><b>📱 Electronics</b><br/><img src="./assets/cases/electronics.gif" width="240"/></td>
-    <td align="center"><b>➕ More coming</b><br/><img src="./assets/cases/more.gif" width="240"/></td>
-  </tr>
-</table>
+<div align="center">
+  <p><b>Automotive · Food · Beverage · Beauty · Apparel · Daily Goods · Appliances · Electronics</b></p>
+  <p>AdCraft supports ad creation across all major industries. Describe your product and target audience, and the agent will tailor the script, visuals, and style accordingly.</p>
+</div>
 
 ---
 
@@ -367,6 +354,30 @@ AdCraft isn't locked to a single model. It integrates multiple mainstream image,
 
 Manage API keys, default models, aspect ratios, resolution, duration, audio toggles, and watermark settings in one **configuration center.** Different stages can use different platforms, with default and fallback options — making production more flexible and reliable.
 
+### 14. 🎬 3D Low-Fidelity Previs (Camera-Controlled Storyboarding)
+
+Describe a scene in natural language — *characters, props, environment, spatial relationships, camera angles, and camera movement* — and AdCraft generates a **low-fidelity 3D animatic** that serves as a controllable pre-visualization (previs) for your video.
+
+**Why 3D previs matters:** Traditional AI video generators give you little control over camera movement, character positioning, or scene layout. AdCraft borrows the CG industry's previs workflow — build a rough 3D blocking first, lock the camera, then hand it to the video model for final rendering.
+
+**How it works:**
+
+1. **Natural language → SceneScript** — The LLM parses your description into a structured `SceneScript` format (characters, props, cameras, shots, keyframes, narration).
+2. **Dual-engine rendering** — Three.js for real-time frontend preview, Blender (headless) for high-quality frame rendering.
+3. **Camera & blocking control** — Define camera positions, look-at targets, movement keyframes, and shot transitions.
+4. **Narration & TTS** — Add voiceover narration with StepFun TTS, automatically synced to the video timeline.
+5. **Video model handoff** — Export keyframes (0%/25%/50%/75%/100%) as reference images for video models that don't support reference video, or pass the full animatic as reference video.
+
+**SceneScript features:**
+- 7 built-in shot templates (dialogue, monologue, walk-and-talk, product orbit, etc.)
+- 6 aspect ratio presets (16:9, 9:16, 1:1, 4:3, 3:4, 21:9)
+- Character position/rotation/scale keyframes
+- Camera position/look-at/fov keyframes
+- Multi-shot scenes with automatic transitions
+- Syllable-level lip sync for narration
+
+**Integration:** The `scene-3d` canvas node works alongside existing text, image, video, and audio nodes. Run it directly from the canvas, or let the Agent generate it from conversation.
+
 ---
 
 ## 🏗️ How It Works
@@ -380,6 +391,7 @@ All orchestrated by AI agents, fully editable on an infinite canvas.
 
 ## 🚀 Getting Started
 
+- **Quick start** — Only **3 API keys** required to launch. See [Quick Configuration Guide](./docs/quick-configuration-guide.md) (5-minute setup).
 - **Startup guide** — See [Getting Started](./docs/getting-started.md) for detailed startup instructions.
 - **Deployment options** — Follow [native deployment without Docker](./docs/deployment-without-docker.md) or [Docker deployment](./docs/deployment-with-docker.md).
 

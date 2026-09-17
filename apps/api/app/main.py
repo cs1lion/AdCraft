@@ -1,11 +1,13 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1.router import api_router as api_v1_router
 from app.api.internal.router import router as internal_agent_router
@@ -30,6 +32,49 @@ logger = logging.getLogger(__name__)
 AgentCanvasRuntimeFactory = Callable[[Settings], AgentCanvasRuntime]
 
 
+class AccessTokenMiddleware(BaseHTTPMiddleware):
+    """Optional API access token middleware.
+
+    When settings.api_access_token is set, all requests to /api/v1 and /api/v2
+    must include a valid Authorization: Bearer <token> header.
+    Internal routes (/internal, /media, /docs, /openapi.json) are exempt.
+    """
+
+    def __init__(self, app, access_token: str | None):
+        super().__init__(app)
+        self.access_token = access_token
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth if no token is configured (local development default)
+        if not self.access_token:
+            return await call_next(request)
+
+        # Exempt CORS preflight requests (OPTIONS) - critical for browser clients
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # Exempt paths: internal routes, media, docs, health, root
+        path = request.url.path
+        exempt_prefixes = ("/internal", "/media", "/docs", "/openapi.json", "/health")
+        if path == "/" or any(path == prefix or path.startswith(prefix + "/") for prefix in exempt_prefixes):
+            return await call_next(request)
+
+        # Only enforce auth on API routes
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        # Check Authorization header
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+        token = auth_header[7:]  # Remove "Bearer " prefix
+        if token != self.access_token:
+            raise HTTPException(status_code=401, detail="Invalid access token")
+
+        return await call_next(request)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -50,14 +95,19 @@ def create_app(
     if trace_session is not None:
         application.state.agent_model_trace_session = trace_session
 
+    # CORS: use configured origins (defaults to localhost), "*" only if explicitly set
+    cors_origins = list(resolved_settings.cors_allowed_origins)
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["ETag"],
     )
+
+    # Optional API access token middleware
+    application.add_middleware(AccessTokenMiddleware, access_token=resolved_settings.api_access_token)
 
     if settings is not None:
         application.dependency_overrides[get_settings] = lambda: resolved_settings
@@ -181,6 +231,8 @@ def _recover_agent_canvas_executions(
     """Resume persisted non-terminal Agent Canvas scheduler memberships."""
 
     runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    stale_timeout = timedelta(minutes=30)
+    now = datetime.now(timezone.utc)
     try:
         runtime.provider_recovery.recover_due_tasks()
         runtime.post_ready_effects.run_once()
@@ -193,7 +245,26 @@ def _recover_agent_canvas_executions(
                 workflows=runtime.workflows,
             )
         for execution in runtime.runtime_repository.list_active_executions():
-            runtime.scheduler.resume(execution.execution_id)
+            # Cancel stale executions that have not been updated within the timeout window.
+            # This handles the case where the backend was restarted while an execution
+            # was running, leaving it in a stuck "running" state with no active worker.
+            if execution.status in {"running", "waiting"} and execution.updated_at < now - stale_timeout:
+                logger.warning(
+                    "Cancelling stale execution %s (status=%s, updated_at=%s, age=%s)",
+                    execution.execution_id,
+                    execution.status,
+                    execution.updated_at.isoformat(),
+                    now - execution.updated_at,
+                )
+                try:
+                    runtime.scheduler.cancel(
+                        execution.execution_id,
+                        reason="Stale execution cancelled during startup recovery (no heartbeat for 30+ minutes)",
+                    )
+                except Exception:
+                    logger.exception("Failed to cancel stale execution %s", execution.execution_id)
+            else:
+                runtime.scheduler.resume(execution.execution_id)
     finally:
         runtime.database.dispose()
 

@@ -16,8 +16,6 @@ from app.services.provider_model_catalog import ProviderModelCatalogService
 
 
 _BOOTSTRAP_LOCK = Lock()
-_ARK_MINI_TEXT_MODEL_REF = "volcengine_ark:doubao-seed-2-0-mini-260428"
-_ARK_PRO_TEXT_MODEL_REF = "volcengine_ark:doubao-seed-2-1-pro-260628"
 
 
 @dataclass(frozen=True)
@@ -38,38 +36,24 @@ class ProviderModelBootstrapService:
             return self._bootstrap(now=now)
 
     def _bootstrap(self, *, now: str) -> ProviderModelBootstrapResult:
-        catalog = ProviderModelCatalogService(self._repository)
-        catalog.ensure_no_retired_defaults()
         registry = ProviderCredentialRegistry()
         connection_service = ProviderConnectionService(
             registry=registry,
             dotenv_store=DotenvCredentialStore(
                 PROJECT_ROOT,
                 allowed_fields={
-                    field
+                    binding.dotenv_field
                     for provider_id in registry.provider_ids
                     for binding in registry.get(provider_id).bindings.values()
-                    for field in (
-                        binding.dotenv_field,
-                        binding.endpoint_dotenv_field,
-                    )
-                    if field is not None
                 },
             ),
             metadata_repository=self._repository,
             settings_loader=lambda: self._settings,
         )
         connection_service.synchronize_metadata(updated_at=now)
-        catalog.reconcile_retired_models(now=now)
+        catalog = ProviderModelCatalogService(self._repository)
         seeded_providers: list[str] = []
-        for provider_id in (
-            "siliconflow",
-            "volcengine_ark",
-            "tianpuyue",
-            "openrouter",
-            "minimax",
-            "fake",
-        ):
+        for provider_id in ("siliconflow", "volcengine_ark", "tianpuyue", "stepfun", "fish_audio", "fake"):
             had_models = bool(self._repository.list_models(provider_id=provider_id))
             catalog.reconcile_trusted_models(provider_id, now=now)
             if not had_models:
@@ -90,21 +74,8 @@ class ProviderModelBootstrapService:
             if model.availability != "available":
                 continue
             valid_candidates[key] = model_ref
-        migrated_defaults: dict[str, str] = {}
-        try:
-            ark_pro = catalog.get_model(_ARK_PRO_TEXT_MODEL_REF)
-        except ValueError:
-            ark_pro = None
-        if ark_pro is not None and ark_pro.availability == "available":
-            migrated_defaults = {
-                key: _ARK_PRO_TEXT_MODEL_REF
-                for key in ("agent", "text")
-                if existing.get(key) is not None
-                and existing[key].model_ref == _ARK_MINI_TEXT_MODEL_REF
-            }
-        default_updates = {**migrated_defaults, **valid_candidates}
-        if default_updates:
-            catalog.set_defaults(default_updates, now=now)
+        if valid_candidates:
+            catalog.set_defaults(valid_candidates, now=now)
         return ProviderModelBootstrapResult(
             seeded_providers=tuple(seeded_providers),
             seeded_defaults=tuple(valid_candidates),
@@ -116,7 +87,7 @@ class ProviderModelBootstrapService:
             text_ref = (
                 "siliconflow:zai-org/GLM-5.2"
                 if self._settings.siliconflow_api_key
-                else _ARK_PRO_TEXT_MODEL_REF
+                else "volcengine_ark:doubao-seed-2-0-mini-260428"
             )
         if self._settings.media_mode == "mock":
             return {

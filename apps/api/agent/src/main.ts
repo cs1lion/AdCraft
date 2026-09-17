@@ -1,8 +1,57 @@
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { createAgentRuntimeServer } from "./server.js";
 import { PiModelAdapter } from "./pi-model-adapter.js";
 import { PythonInternalClient } from "./python-internal-client.js";
 import { SkillBundleError } from "./skills.js";
 import { startVerifiedServer } from "./startup.js";
+
+// Load apps/api/.env (single source of truth for keys + runtime config)
+// without overriding variables the operator already exported.  Parsed by
+// hand so the runtime does not need dotenv (or any new dependency) just
+// to pick up the shared project configuration.
+function loadSharedEnvFile(): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidatePaths = [
+    // dev: node_modules/tsx entry point resolves to src/main.ts alongside
+    // package-local .env if the operator dropped one in apps/api/agent/.
+    resolve(here, ".env"),
+    // repo layout: apps/api/agent/src/main.ts -> apps/api/.env
+    resolve(here, "..", "..", ".env"),
+    resolve(process.cwd(), ".env"),
+  ];
+  for (const path of candidatePaths) {
+    if (!existsSync(path)) continue;
+    let content: string;
+    try {
+      content = readFileSync(path, "utf-8");
+    } catch {
+      continue;
+    }
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+      if (!match) continue;
+      const key = match[1];
+      const rawValue = match[2];
+      if (key === undefined || rawValue === undefined) continue;
+      if (process.env[key] !== undefined) continue;
+      let value = rawValue.trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      process.env[key] = value;
+    }
+    return;
+  }
+}
+loadSharedEnvFile();
 
 const token = process.env.AGENT_RUNTIME_INTERNAL_TOKEN?.trim();
 if (!token) {

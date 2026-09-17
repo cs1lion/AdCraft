@@ -11,6 +11,7 @@ from app.persistence.agent_canvas_prompt_preparation_dispatch_repository import 
     AgentCanvasPromptPreparationDispatchRepository,
 )
 from app.persistence.errors import V2PersistenceError
+from app.schemas.agent_canvas import CanvasNodeV2
 from app.schemas.agent_canvas_progressive_authoring import StageAuthoringContextV1
 from app.schemas.agent_canvas_prompt_preparation_dispatch import PromptPreparationDispatchV1
 from app.services.agent_canvas_prompt_preparation_lease import (
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 PreparationCallback = Callable[[PromptPreparationDispatchV1, StageAuthoringContextV1], object]
 PreparationContextLoader = Callable[[PromptPreparationDispatchV1], StageAuthoringContextV1]
+# Receives the Node projection that owns the dispatch; returns a rebuilt
+# context snapshot or None when the workflow has no usable authoritative
+# state (keeping the legacy fail-closed behavior for that case).
+PreparationContextRepairer = Callable[
+    [PromptPreparationDispatchV1, CanvasNodeV2], StageAuthoringContextV1 | None
+]
+NodeLoader = Callable[[str, str], CanvasNodeV2 | None]
 BarrierCallback = Callable[[PromptPreparationDispatchV1, object], object]
 StaleDispatchReconciler = Callable[[PromptPreparationDispatchV1, str, int, str, datetime], object]
 
@@ -56,6 +64,8 @@ class AgentCanvasPromptPreparationWorker:
         maximum_backoff: timedelta = timedelta(minutes=5),
         barrier_callback: BarrierCallback | None = None,
         stale_dispatch_reconciler: StaleDispatchReconciler | None = None,
+        context_repairer: PreparationContextRepairer | None = None,
+        node_loader: NodeLoader | None = None,
         heartbeat_wait: HeartbeatWait = wait_for_prompt_preparation_heartbeat,
     ) -> None:
         if not worker_id:
@@ -65,6 +75,8 @@ class AgentCanvasPromptPreparationWorker:
         self._dispatches = dispatches
         self._prepare = prepare
         self._context_loader = context_loader
+        self._context_repairer = context_repairer
+        self._node_loader = node_loader
         self._worker_id = worker_id
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._batch_limit = batch_limit
@@ -153,11 +165,13 @@ class AgentCanvasPromptPreparationWorker:
                     # fail closed when immutable context proof is absent.
                     context = self._context_loader(dispatch)
                 else:
-                    raise V2PersistenceError(
-                        "prompt_preparation_context_missing",
-                        "Prompt-preparation dispatch has no immutable context snapshot.",
-                        stage="prompt_preparation_worker",
-                    )
+                    context = self._repair_context(dispatch)
+                    if context is None:
+                        raise V2PersistenceError(
+                            "prompt_preparation_context_missing",
+                            "Prompt-preparation dispatch has no immutable context snapshot.",
+                            stage="prompt_preparation_worker",
+                        )
                 if not isinstance(context, StageAuthoringContextV1):
                     raise V2PersistenceError(
                         "prompt_preparation_context_invalid",
@@ -204,6 +218,47 @@ class AgentCanvasPromptPreparationWorker:
             return self._handle_failure(dispatch, error)
         except Exception as error:  # noqa: BLE001 - bounded retry policy.
             return self._handle_failure(dispatch, error)
+
+    def _repair_context(
+        self,
+        dispatch: PromptPreparationDispatchV1,
+    ) -> StageAuthoringContextV1 | None:
+        """Rebuild the missing immutable context snapshot for one leased row.
+
+        The repairer names a Stage context from current workflow state; the
+        snapshot is then frozen onto the dispatch row so every later fence
+        and publication sees the identical immutable bytes.  A repairer that
+        cannot name a context leaves the row untouched and the legacy
+        fail-closed error still applies.
+        """
+
+        if self._context_repairer is None:
+            return None
+        if self._node_loader is None:
+            return None
+        node = self._node_loader(dispatch.workflow_id, dispatch.node_id)
+        if node is None:
+            return None
+        context = self._context_repairer(dispatch, node)
+        if context is None:
+            return None
+        repaired = self._dispatches.repair_context_in_lease(
+            dispatch.dispatch_id,
+            worker_id=self._worker_id,
+            lease_generation=dispatch.lease_generation,
+            context=context.model_dump(mode="json"),
+            now=self._clock(),
+        )
+        if repaired.context_digest:
+            logger.info(
+                "Rebuilt missing prompt-preparation context snapshot "
+                "dispatch_id=%s context_digest=%s",
+                dispatch.dispatch_id,
+                repaired.context_digest,
+            )
+            return context
+        # A concurrent path already froze a snapshot; use what is persisted.
+        return StageAuthoringContextV1.model_validate(repaired.context_json)
 
     def _supersede_stale(self, dispatch: PromptPreparationDispatchV1, reason: str) -> str:
         try:

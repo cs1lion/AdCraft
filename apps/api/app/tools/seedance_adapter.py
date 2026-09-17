@@ -18,11 +18,34 @@ from app.tools.media_provider_protocol import (
 )
 
 
+def _video_generation_task_url(endpoint: str, task_id: str) -> str:
+    """Derive the task query URL from the configured submit endpoint.
+
+    Agnes hosts task lookup on a dedicated sibling path (``/agnesapi``)
+    rather than appending the task id to the submit URL, so both endpoints
+    are derived from the submit endpoint's origin.
+    """
+
+    safe_task_id = quote(task_id.strip(), safe="")
+    parsed = urlparse(endpoint)
+    if parsed.netloc and parsed.netloc.endswith("agnes-ai.cn"):
+        return (
+            f"{parsed.scheme}://{parsed.netloc}/agnesapi"
+            f"?video_id={safe_task_id}"
+        )
+    return f"{endpoint.rstrip('/')}/{safe_task_id}"
+
+
 class VolcengineSeedanceAdapter:
     """Translate generic video segment tasks into Ark Seedance task payloads."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+
+    def _is_agnes_model(self, model_id: str | None = None) -> bool:
+        """Check if the configured model is Agnes (uses prompt field, not content)."""
+        model = (model_id or self._settings.video_generation_model or "").lower()
+        return model.startswith("agnes-video") or "agnes" in model
 
     def payload_for_segment(
         self,
@@ -42,6 +65,25 @@ class VolcengineSeedanceAdapter:
         normalized_ratio = _normalize_video_ratio(
             ratio or segment.get("ratio") or segment.get("aspect_ratio") or DEFAULT_VIDEO_RATIO
         )
+        if self._is_agnes_model():
+            # Agnes video API uses prompt field directly
+            agnes_payload: dict[str, Any] = {
+                "model": self._settings.video_generation_model,
+                "prompt": prompt,
+                "mode": "text",
+                "seconds": str(int(segment["duration_seconds"])),
+                "size": "720P",
+                "aspect_ratio": normalized_ratio,
+            }
+            # Add reference images if present (Agnes reference mode)
+            image_items = _seedance_image_content_items(segment.get("input_assets", []))
+            if image_items:
+                agnes_payload["mode"] = "reference"
+                agnes_payload["images"] = [
+                    item["image_url"]["url"] for item in image_items if item.get("type") == "image_url"
+                ]
+            return agnes_payload
+
         content: list[dict[str, Any]] = [
             {
                 "type": "text",
@@ -64,6 +106,26 @@ class VolcengineSeedanceAdapter:
 
     def payload_for_manifest(self, manifest: SeedanceInputManifestV1) -> dict[str, Any]:
         """Serialize the canonical Agent Canvas manifest without rediscovery."""
+
+        if self._is_agnes_model(manifest.model_id):
+            # Agnes video API uses prompt field directly
+            agnes_payload: dict[str, Any] = {
+                "model": manifest.model_id,
+                "prompt": manifest.prompt,
+                "mode": "text",
+                "seconds": str(int(manifest.effective_duration_seconds)),
+                "size": "720P",
+                "aspect_ratio": _normalize_video_ratio(manifest.aspect_ratio),
+            }
+            # Add reference images if present
+            image_urls = []
+            for item in manifest.media_inputs:
+                if item.media_type == "image" and item.provider_input_type in {"image_url", "provider_uploaded_url", "data_url"}:
+                    image_urls.append(item.provider_input_value)
+            if image_urls:
+                agnes_payload["mode"] = "reference"
+                agnes_payload["images"] = image_urls
+            return agnes_payload
 
         content: list[dict[str, Any]] = [{"type": "text", "text": manifest.prompt}]
         content.extend(_seedance_manifest_content_item(item) for item in manifest.media_inputs)
@@ -632,8 +694,3 @@ def _seedance_task_duration(duration_seconds: Any) -> int:
     raise ValueError(
         f"Seedance video generation duration must be 5 or 10 seconds; got {duration} seconds."
     )
-
-
-def _video_generation_task_url(endpoint: str, task_id: str) -> str:
-    safe_task_id = quote(task_id.strip(), safe="")
-    return f"{endpoint.rstrip('/')}/{safe_task_id}"

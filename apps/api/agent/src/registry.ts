@@ -126,6 +126,11 @@ metadata.set("execute_canvas_text", { context_contract_name: "AgentRunContext", 
 metadata.set("execute_canvas_script", creativeMetadata(
   "script_authoring", "AgentCanvasScriptOutput", "video_agent_script_authoring", "script", "Script Writer",
 ));
+metadata.set("execute_canvas_scene_3d", {
+  context_contract_name: "AgentRunContext",
+  result_contract_name: "AgentCanvasScene3DOutput",
+  required_skill: "video_agent_3d_storyboard",
+});
 metadata.set("compile_video_parameters", creativeMetadata(
   "video_direction", "VideoParameterIntentV3", "video_agent_video_direction", "video", "Video Director", "VideoParameterIntentContextV3",
 ));

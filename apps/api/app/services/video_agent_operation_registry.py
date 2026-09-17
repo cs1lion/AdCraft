@@ -235,6 +235,13 @@ _DEFINITIONS: tuple[VideoAgentOperationDefinitionV1, ...] = (
         display_name="Script Writer",
     ),
     _definition(
+        "execute_canvas_scene_3d",
+        "AgentRunContext",
+        "AgentCanvasScene3DOutput",
+        internal_skill_id="video_agent_3d_storyboard",
+        display_name="3D Storyboard",
+    ),
+    _definition(
         "compile_video_parameters",
         "VideoParameterIntentContextV3",
         "VideoParameterIntentV3",

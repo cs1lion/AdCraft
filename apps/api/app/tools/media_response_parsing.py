@@ -103,12 +103,18 @@ def _video_generation_task_id_from_response(response: dict[str, Any]) -> str:
     task_id = response.get("id") or response.get("task_id")
     if isinstance(task_id, str) and task_id.strip():
         return task_id
+    video_id = response.get("video_id")
+    if isinstance(video_id, str) and video_id.strip():
+        return video_id
 
     data = response.get("data")
     if isinstance(data, dict):
         task_id = data.get("id") or data.get("task_id")
         if isinstance(task_id, str) and task_id.strip():
             return task_id
+        video_id = data.get("video_id")
+        if isinstance(video_id, str) and video_id.strip():
+            return video_id
 
     raise ValueError("Volcengine video generation response did not include task id.")
 
@@ -125,6 +131,9 @@ def _video_url_from_response(response: dict[str, Any]) -> str | None:
         return response["url"]
     if isinstance(response.get("video_url"), str):
         return response["video_url"]
+    metadata = response.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("url"), str):
+        return metadata["url"]
     output = response.get("output")
     if isinstance(output, dict) and isinstance(output.get("url"), str):
         return output["url"]

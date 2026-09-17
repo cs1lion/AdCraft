@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   AgentCanvasChatMessageRequestV2,
   AgentCanvasChatTurnRetryRequestV2,
   AgentCanvasChatViewTimelineV2,
@@ -127,6 +127,9 @@ import type {
   WorkflowRevisionPage,
   WorkflowRevisionRestoreResponse,
   WorkflowRevisionV2Detail,
+  WorkflowProgressResponse,
+  CreationFlowAssessmentResponse,
+  CreationFlowStage,
 } from "../types-v2.ts";
 import {
   normalizeAssetOwnerResponseV2,
@@ -603,6 +606,35 @@ export const v2Api = {
       `/workflows/${encodeURIComponent(workflowId)}`,
       { signal: options.signal },
       normalizeAgentCanvasWorkflowV2,
+    );
+  },
+
+  getWorkflowProgress(
+    workflowId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<WorkflowProgressResponse> {
+    return requestV2<WorkflowProgressResponse>(
+      `/workflows/${encodeURIComponent(workflowId)}/progress`,
+      { signal: options.signal },
+    );
+  },
+
+  getCreationFlowAssessment(
+    workflowId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<CreationFlowAssessmentResponse> {
+    return requestV2<CreationFlowAssessmentResponse>(
+      `/workflows/${encodeURIComponent(workflowId)}/creation-flow`,
+      { signal: options.signal },
+    );
+  },
+
+  getCreationFlowStages(
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ stages: CreationFlowStage[] }> {
+    return requestV2<{ stages: CreationFlowStage[] }>(
+      "/creation-flow/stages",
+      { signal: options.signal },
     );
   },
 

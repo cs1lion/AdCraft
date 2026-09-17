@@ -10,6 +10,10 @@ from urllib.parse import urlparse
 from app.core.config import Settings
 from app.services.tianpuyue_callback_lease import TianpuyueCallbackLeaseService
 from app.tools.media_provider_protocol import MediaConfigurationError
+from app.tools.stepfun_music import (
+    StepfunMusicAdapter,
+    validate_stepfun_music_settings,
+)
 from app.tools.tianpuyue_pure_music import (
     TianpuyuePureMusicAdapter,
     validate_tianpuyue_bgm_settings,
@@ -50,6 +54,9 @@ def build_bgm_provider_adapter(
         raise MediaConfigurationError(
             "Resolved BGM provider does not match configured BGM_PROVIDER."
         )
+    if provider == "stepfun_music":
+        validate_stepfun_music_settings(settings)
+        return StepfunMusicAdapter(settings, data_dir)
     if provider == "tianpuyue":
         validate_tianpuyue_bgm_settings(settings)
         resolver = callback_base_url_resolver or _tianpuyue_callback_resolver(
@@ -73,12 +80,19 @@ def normalized_bgm_provider_id(settings: Settings) -> str:
 
 
 def is_supported_bgm_provider(settings: Settings) -> bool:
-    return normalized_bgm_provider_id(settings) in {"tianpuyue", "volcengine_ai_music"}
+    return normalized_bgm_provider_id(settings) in {
+        "stepfun_music",
+        "tianpuyue",
+        "volcengine_ai_music",
+    }
 
 
 def bgm_provider_configuration_error(settings: Settings) -> str | None:
     provider = normalized_bgm_provider_id(settings)
     try:
+        if provider == "stepfun_music":
+            validate_stepfun_music_settings(settings)
+            return None
         if provider == "tianpuyue":
             validate_tianpuyue_bgm_settings(settings)
             validate_tianpuyue_callback_settings(settings)

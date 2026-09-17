@@ -96,6 +96,30 @@ _Avoid_: "Editing" (video editing is a sub-step; final composition is the publis
 A v2 production acceptance fixture/validator pair that gates a release. Lives in `services/v2_production_acceptance_*`.
 _Avoid_: "E2E" (acceptance is the contractual surface; e2e is a test category that may or may not match an acceptance test).
 
+**Content Kind**:
+The top-level declaration of what a workflow produces: `ad` or `short_film`. The single switch every advertising-specific rule must consult (ADR 0002). Decides the duration cap, whether `product_main_image` is required, the default node chain, and which branch of the specialist skill contracts applies.
+_Avoid_: "Genre" (content kind is a production-mode switch, not a creative genre), "Template" (it is not a preset workflow).
+
+**Voice Cast**:
+The node type (planned, ADR 0003) that assigns voices to characters/dialogue lines and produces speech audio via a TTS provider. Its output is `speech_audio`.
+_Avoid_: "TTS Node" (TTS is the provider action; voice cast is the authoring step that binds voices to lines).
+
+**Speech Audio**:
+An asset type (planned, ADR 0003) carrying one dialogue line's spoken audio plus its text, voice id, measured duration, loudness, and `duration_mode`. Produced by the voice-cast execution, consumed by final composition.
+_Avoid_: "BGM" (music bed, separate track), "Narration Asset" (narration is a usage, not the type).
+
+**Duration Mode**:
+`bound` or `free` on shot dialogue (planned, ADR 0003). `bound`: the TTS-measured duration drives the shot's timing. `free`: the speech track is arranged independently of shot timing.
+_Avoid_: "Timing Mode" (the settled term is duration mode).
+
+**QA Registry**:
+The ordered registry of automated pre-commit checks (planned, ADR 0003) that runs before an execution result commits back to selected asset versions. Phase-1 checks are pure ffmpeg probes. A check returns pass/warn/fail with a structured reason; fail blocks the commit.
+_Avoid_: "Review" (media_review is the human gate; the QA registry is machine-side), "Validator" (prompt-contract validators run before dispatch, the QA registry runs on results).
+
+**Stateful Storyboard**:
+Recorded, unscheduled concept (ADR 0003 appendix, from project B): a storyboard whose shots carry a mutable-state layer (positions, holders, door states), explicit shot-relation enums, and plan-vs-actual verification of scripted end-states against generated frames.
+_Avoid_: promoting it to a planned feature — it is explicitly not scheduled.
+
 ## Out of scope
 
 - The frontend (Agent Canvas, asset browser, project list, designer shells) lives in `apps/web`.

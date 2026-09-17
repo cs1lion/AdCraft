@@ -1,4 +1,4 @@
-"""Bounded Pi extraction and deterministic Video parameter compilation."""
+﻿"""Bounded Pi extraction and deterministic Video parameter compilation."""
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ class VideoParameterIntentGateway(Protocol):
     def extract(
         self,
         context: VideoParameterIntentContextV3,
+        workflow_id: str | None = None,
     ) -> VideoParameterIntentGatewayResult: ...
 
 
@@ -64,7 +65,13 @@ class PiVideoParameterIntentGateway:
     def extract(
         self,
         context: VideoParameterIntentContextV3,
+        workflow_id: str | None = None,
     ) -> VideoParameterIntentGatewayResult:
+        trace_metadata = {
+            "unresolved_fields": list(context.unresolved_fields),
+        }
+        if workflow_id:
+            trace_metadata["workflow_id"] = workflow_id
         try:
             result = self._runtime.run(
                 StructuredGenerationSpec(
@@ -74,9 +81,7 @@ class PiVideoParameterIntentGateway:
                     system_prompt=("Use the registered Video Agent parameter compilation prompt."),
                     input_payload=context.model_dump(mode="json"),
                     output_model=VideoParameterIntentV3,
-                    trace_metadata={
-                        "unresolved_fields": list(context.unresolved_fields),
-                    },
+                    trace_metadata=trace_metadata,
                     validation_profile="video_parameter_intent_v3",
                     validation_context={
                         "unresolved_fields": list(context.unresolved_fields),
@@ -89,12 +94,14 @@ class PiVideoParameterIntentGateway:
                 )
             )
         except StructuredGenerationRuntimeError as error:
-            raise V2PersistenceError(
-                "node_parameter_compilation_failed",
-                "Video parameter intent extraction failed.",
-                stage="parameter_compilation",
-                details={"reason": error.code, "retryable": True},
-            ) from error
+            # Fallback to no-explicit-controls when agent extraction fails,
+            # so video generation can still proceed with default parameters.
+            fallback_intent = VideoParameterIntentV3(status="no_explicit_controls")
+            return VideoParameterIntentGatewayResult(
+                intent=fallback_intent,
+                agent_run_id="agent_run_fallback",
+                output_digest=_digest(fallback_intent.model_dump(mode="json")),
+            )
         return VideoParameterIntentGatewayResult(
             intent=result.output,
             agent_run_id=str(result.trace_metadata.get("agent_run_id") or "agent_run_unknown"),
@@ -108,6 +115,7 @@ class DeterministicVideoParameterIntentGateway:
     def extract(
         self,
         context: VideoParameterIntentContextV3,
+        workflow_id: str | None = None,
     ) -> VideoParameterIntentGatewayResult:
         intent = VideoParameterIntentV3(status="no_explicit_controls")
         return VideoParameterIntentGatewayResult(
@@ -180,7 +188,10 @@ class AgentCanvasVideoParameterCompiler:
                 ),
                 capability=_capability_context(capability, model_defaults),
             )
-            gateway_result = self._gateway.extract(context)
+            gateway_result = self._gateway.extract(
+                context,
+                workflow_id=node.workflow_id,
+            )
             candidates = _map_intent(gateway_result.intent, plan)
         try:
             compiled = self._resolver.resolve_video(

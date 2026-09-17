@@ -1,43 +1,44 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useHealth } from "../app/useHealth";
-import type { AppNavigate } from "../types";
+import { v2Api } from "../api/v2Client";
+import type { ProjectV2Summary } from "../types-v2";
+import type { RouteName } from "../types";
 import { HomeShowcase } from "./HomeShowcase";
-import { HomeRecentLoading } from "./HomeRecentLoading";
 import { useHomeHeroMotionReady } from "./useHomeHeroMotionReady";
 import { useHomeSectionReveal } from "./useHomeSectionReveal";
 import "./home.css";
 
 const homeProductVideoUrl = import.meta.env.VITE_HOME_PRODUCT_VIDEO_URL?.trim()
   || "/assets/home-product-film.mp4";
-const HomeRecentProjects = lazy(() => import("./home/HomeRecentProjects").then((module) => ({ default: module.HomeRecentProjects })));
-const recentLoading = <HomeRecentLoading />;
 
-export function HomePage({ navigate }: { navigate: AppNavigate }) {
+export function HomePage({ navigate }: { navigate: (route: RouteName, options?: { state?: unknown; projectId?: string }) => void }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [introVideoFailed, setIntroVideoFailed] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<ProjectV2Summary[]>([]);
   const isHeroMotionReady = useHomeHeroMotionReady();
   const recentReveal = useHomeSectionReveal();
-  const [recentEnabled, setRecentEnabled] = useState(false);
   const discoverReveal = useHomeSectionReveal({ replay: true });
   const { startNewProject } = useHealth();
   const hasIntroVideo = Boolean(homeProductVideoUrl) && !introVideoFailed;
 
   useEffect(() => {
-    const section = recentReveal.sectionRef.current;
-    if (!section) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setRecentEnabled(true);
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.target === section && entry.isIntersecting)) {
-        setRecentEnabled(true);
-        observer.disconnect();
+    let cancelled = false;
+    async function loadProjects() {
+      try {
+        const response = await v2Api.listProjects("active", 10, null);
+        if (cancelled) return;
+        const sorted = [...response.items]
+          .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+        setRecentProjects(sorted);
+      } catch {
+        // Home page stays usable with an empty recent-projects list if the API is unavailable.
       }
-    }, { rootMargin: "320px" });
-    observer.observe(section);
-    return () => observer.disconnect();
-  }, [recentReveal.sectionRef]);
+    }
+    void loadProjects();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function createProject() {
     await startNewProject();
@@ -54,20 +55,17 @@ export function HomePage({ navigate }: { navigate: AppNavigate }) {
       productVideoUrl={homeProductVideoUrl}
       onProductVideoError={() => setIntroVideoFailed(true)}
       previewOpen={modalOpen}
-      recentContent={(
-        recentEnabled ? <Suspense fallback={recentLoading}>
-          <HomeRecentProjects
-            loadingContent={recentLoading}
-            onOpenProject={(projectId) => navigate("workflow", { projectId })}
-            onCreateProject={() => void createProject()}
-          />
-        </Suspense> : recentLoading
-      )}
       interactions={{
         createProject: () => void createProject(),
+        openWorkflow: () => navigate("workflow"),
+        openProject: (projectId: string, _workflowId: string) => {
+          navigate("workflow", { projectId });
+        },
         openPreview: () => setModalOpen(true),
         closePreview: () => setModalOpen(false),
       }}
+      recentProjects={recentProjects}
+      activeProjectId={null}
     />
   );
 }

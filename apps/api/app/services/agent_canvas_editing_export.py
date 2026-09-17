@@ -1,4 +1,4 @@
-"""Durable explicit Export lifecycle for Agent Canvas Editing nodes."""
+﻿"""Durable explicit Export lifecycle for Agent Canvas Editing nodes."""
 
 from __future__ import annotations
 
@@ -111,6 +111,7 @@ class EditingExportService:
         worker_id_factory: Callable[[], str] = lambda: f"editing_worker_{uuid4().hex}",
         commit_service: AgentCanvasEditingExportCommitService | None = None,
         on_completed: Callable[[str, str, str], object] | None = None,
+        timeline_integration: object | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._workflows = workflows
@@ -124,6 +125,7 @@ class EditingExportService:
         self._lease_ttl = lease_ttl
         self._worker_id_factory = worker_id_factory
         self._on_completed = on_completed
+        self._timeline_integration = timeline_integration
         self._commits = commit_service or AgentCanvasEditingExportCommitService(
             AgentCanvasEditingExportCommitRepository(
                 exports.database,
@@ -142,6 +144,14 @@ class EditingExportService:
     ) -> EditingExportAcceptedV2:
         content = self._nodes.content(workflow_id, node_id)
         manifest = content.manifest
+        # Apply global timeline if available (ADR 0007, Phase 2)
+        if self._timeline_integration is not None:
+            integration_result = self._timeline_integration.build_export_manifest(
+                workflow_id=workflow_id,
+                editing_node_id=node_id,
+                node_manifest=manifest,
+            )
+            manifest = integration_result.manifest
         if request.expected_manifest_revision != manifest.manifest_revision:
             raise _error(
                 "editing_manifest_revision_conflict",

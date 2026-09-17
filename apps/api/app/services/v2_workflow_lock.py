@@ -2,10 +2,30 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import sys
 import threading
 from typing import Iterator, TextIO
 
-from app.services._file_lock_compat import lock_exclusive, unlock
+if sys.platform == "win32":
+    import msvcrt
+
+    def _flock_exclusive(file_object: TextIO) -> None:
+        file_object.seek(0)
+        msvcrt.locking(file_object.fileno(), msvcrt.LK_LOCK, 1)
+
+    def _flock_release(file_object: TextIO) -> None:
+        file_object.seek(0)
+        msvcrt.locking(file_object.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _flock_exclusive(file_object: TextIO) -> None:
+        fcntl.flock(file_object.fileno(), fcntl.LOCK_EX)
+
+    def _flock_release(file_object: TextIO) -> None:
+        fcntl.flock(file_object.fileno(), fcntl.LOCK_UN)
+
 from app.services.v2_data_boundary import validate_v2_data_path
 
 
@@ -47,11 +67,11 @@ def v2_workflow_lock(data_dir: Path, workflow_id: str) -> Iterator[None]:
         workflow_root.mkdir(parents=True, exist_ok=True)
         lock_path = workflow_root / ".workflow.lock"
         handle = lock_path.open("a+", encoding="utf-8")
-        lock_exclusive(handle)
+        _flock_exclusive(handle)
         held[key] = (1, handle)
         try:
             yield
         finally:
             _, outer_handle = held.pop(key)
-            unlock(outer_handle)
+            _flock_release(outer_handle)
             outer_handle.close()

@@ -8,6 +8,7 @@ OPTIMIZER_AGENT_BY_NODE: dict[str, str] = {
     "character-generation": "Character Designer Agent",
     "scene-generation": "Scene Designer Agent",
     "storyboard": "Storyboard Agent",
+    "scene-3d": "3D Storyboard Agent",
     "storyboard-video-generation": "Video Generation / Composition Agent",
     "bgm": "BGM Agent",
 }
@@ -17,6 +18,7 @@ OUTPUT_CONTRACT_MEDIA_NODES = {
     "character-generation",
     "scene-generation",
     "storyboard",
+    "scene-3d",
     "storyboard-video-generation",
 }
 
@@ -41,6 +43,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
             "character-generation",
             "scene-generation",
             "storyboard",
+            "scene-3d",
             "bgm",
             "final-composition",
         ],
@@ -63,6 +66,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
         downstream_nodes=[
             "scene-generation",
             "storyboard",
+            "scene-3d",
             "storyboard-video-generation",
             "final-composition",
         ],
@@ -82,7 +86,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
         input_asset_roles=["character_reference"],
         output_asset_roles=["character_main", "character_avatar", "character_turnaround"],
         supports_override_prompt=True,
-        downstream_nodes=["storyboard", "storyboard-video-generation"],
+        downstream_nodes=["storyboard", "scene-3d", "storyboard-video-generation"],
     ),
     WorkflowNodeCatalogItem(
         node_type="scene-generation",
@@ -99,7 +103,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
         input_asset_roles=["scene_reference"],
         output_asset_roles=["scene_main", "scene_reference"],
         supports_override_prompt=True,
-        downstream_nodes=["storyboard", "storyboard-video-generation"],
+        downstream_nodes=["storyboard", "scene-3d", "storyboard-video-generation"],
     ),
     WorkflowNodeCatalogItem(
         node_type="storyboard",
@@ -116,7 +120,31 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
         input_asset_roles=["character_turnaround", "scene_reference"],
         output_asset_roles=["storyboard"],
         supports_override_prompt=True,
-        downstream_nodes=["storyboard-video-generation", "bgm"],
+        downstream_nodes=["scene-3d", "storyboard-video-generation", "bgm"],
+    ),
+    WorkflowNodeCatalogItem(
+        node_type="scene-3d",
+        display_name="3D Previs Scene",
+        category="visual_planning",
+        description=(
+            "Convert natural-language scene description into a structured SceneScript "
+            "for low-fidelity 3D previsualization with controllable camera, character "
+            "blocking, and shot timing."
+        ),
+        optional_inputs=[
+            "director_context",
+            "script",
+            "storyboard",
+            "character_design",
+            "scene_design",
+            "system_suggested_prompt",
+            "user_prompt",
+            "override_prompt",
+        ],
+        input_asset_roles=["character_turnaround", "scene_reference", "storyboard"],
+        output_asset_roles=["scene_script"],
+        supports_override_prompt=True,
+        downstream_nodes=["storyboard-video-generation", "bgm", "final-composition"],
     ),
     WorkflowNodeCatalogItem(
         node_type="storyboard-video-generation",
@@ -127,6 +155,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
             "director_context",
             "script",
             "storyboard",
+            "scene_script",
             "scene_prompts",
             "duration_seconds",
             "aspect_ratio",
@@ -140,6 +169,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
             "character_turnaround",
             "scene_reference",
             "storyboard",
+            "scene_script",
         ],
         output_asset_roles=["video_segment"],
         supports_override_prompt=True,
@@ -154,6 +184,7 @@ NODE_CATALOG: list[WorkflowNodeCatalogItem] = [
             "director_context",
             "script",
             "storyboard",
+            "scene_script",
             "system_suggested_prompt",
             "user_prompt",
             "override_prompt",

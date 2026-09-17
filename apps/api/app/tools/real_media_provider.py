@@ -930,7 +930,7 @@ class RealMediaProvider:
         )
         asset = adapter.generate_bgm_audio(bgm_plan, workflow_id)
         return {
-            "provider": "volcengine_ai_music",
+            "provider": self._settings.bgm_provider,
             "model": self._settings.bgm_model,
             "asset_id": "bgm-audio",
             "assets": [asset],

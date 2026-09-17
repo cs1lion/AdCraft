@@ -14,6 +14,18 @@ vi.mock("../app/useHealth", () => ({
   useHealth: () => ({ startNewProject }),
 }));
 
+vi.mock("../api/v2Client", () => ({
+  v2Api: {
+    listProjects: vi.fn().mockResolvedValue({
+      items: [
+        { project_id: "test-project-1", workflow_id: "test-workflow-1", name: "Test Project One", is_favorite: false, updated_at: new Date(Date.now() - 86400000).toISOString() },
+        { project_id: "test-project-2", workflow_id: "test-workflow-2", name: "Test Project Two", is_favorite: true, updated_at: new Date(Date.now() - 172800000).toISOString() },
+        { project_id: "test-project-3", workflow_id: "test-workflow-3", name: "Test Project Three", is_favorite: false, updated_at: new Date(Date.now() - 259200000).toISOString() },
+      ],
+    }),
+  },
+}));
+
 describe("HomePage hero title", () => {
   beforeEach(() => {
     startNewProject.mockReset();

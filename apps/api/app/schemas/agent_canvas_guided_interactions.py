@@ -393,6 +393,7 @@ class GuidanceAwaitingV2(_GuidedInteractionModel):
         "media_review",
         "manual_node_run",
         "milestone_idle",
+        "free_node_advisory",
     ]
     requires_user_action: bool
     resume_policy: Literal[
@@ -400,6 +401,7 @@ class GuidanceAwaitingV2(_GuidedInteractionModel):
         "node_terminal",
         "next_user_message",
         "explicit_resume",
+        "free_node_completed",
     ]
     interaction_id: str | None = Field(default=None, min_length=1, max_length=160)
     node_ids: tuple[str, ...] = Field(default=(), max_length=32)

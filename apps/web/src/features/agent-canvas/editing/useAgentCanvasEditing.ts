@@ -550,9 +550,12 @@ export function useAgentCanvasEditing(
       const url = URL.createObjectURL(response.blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = response.filename ?? (
-        response.mimeType.includes("mp4") ? "adcraft-export.mp4" : "adcraft-export"
-      );
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const safeTitle = (node.title || "adcraft-export")
+        .replace(/[^\w\u4e00-\u9fa5-]/g, "_")
+        .slice(0, 50);
+      const defaultExtension = response.mimeType.includes("mp4") ? ".mp4" : "";
+      anchor.download = response.filename ?? `${safeTitle}_${timestamp}${defaultExtension}`;
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (downloadError) {
@@ -560,7 +563,7 @@ export function useAgentCanvasEditing(
     } finally {
       setDownloading(false);
     }
-  }, [downloading]);
+  }, [downloading, node.title]);
 
   return {
     content,

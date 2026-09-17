@@ -28,6 +28,8 @@ AdMediaSemanticRoleV2 = Literal[
     "general_video",
     "general_audio",
     "editing",
+    "scene_3d_previs",
+    "voice_cast",
 ]
 VideoRepresentationModeV2 = Literal["illustrated", "illustration_to_live_action"]
 SemanticReferenceRoleV2 = Literal[
@@ -140,6 +142,18 @@ class StoryboardPanelV2(_AdMediaModel):
     camera: str = Field(min_length=1, max_length=1_024)
     subject_action: str = Field(min_length=1, max_length=2_048)
     continuity_from_previous: str = Field(min_length=1, max_length=2_048)
+    # --- Structured derivation fields (P0, 2026-09-15) ---
+    scene_id: str | None = Field(default=None, max_length=160)
+    character_ids: tuple[str, ...] = Field(default=(), max_length=16)
+    prop_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    shot_type: Literal["wide", "medium", "close-up", "ecu", "ots"] | None = None
+    camera_move: Literal["static", "pan", "tilt", "dolly", "zoom", "crane", "handheld"] | None = None
+    duration_seconds: float | None = Field(default=None, ge=0.5, le=60)
+    scene_script_id: str | None = Field(default=None, max_length=160)
+    character_speech_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps character_id to speech_audio asset_id for lip-sync and bound-mode timing (P2, per ADR bulletin Objection 3)",
+    )
 
 
 class StoryboardGridContentV2(_AdMediaModel):
@@ -204,7 +218,7 @@ class ReferenceRequirementV2(_AdMediaModel):
 
 class AdMediaRoleContractV2(_AdMediaModel):
     semantic_role: AdMediaSemanticRoleV2
-    node_type: Literal["text", "script", "image", "video", "audio", "editing"]
+    node_type: Literal["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast"]
     output_media_type: Literal["text", "image", "video", "audio"]
     role_contract_version: Literal["ad-media-role-v2"] = "ad-media-role-v2"
     content_schema_ref: str

@@ -38,6 +38,7 @@
         "free_audio",
         "execute_canvas_text",
         "execute_canvas_script",
+        "execute_canvas_scene_3d",
         "compile_video_parameters",
         "workflow_creation",
         "intent_contract_planner",

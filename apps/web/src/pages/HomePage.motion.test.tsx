@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./HomePage";
 
@@ -15,11 +15,17 @@ const originalFontsDescriptor = Object.getOwnPropertyDescriptor(document, "fonts
 vi.mock("../app/useHealth", () => ({
   useHealth: () => ({ startNewProject }),
 }));
-vi.mock("./home/useRecentProjects", () => ({
-  useRecentProjects: () => ({
-    projects: [1, 2, 3, 4].map((id) => ({ project_id: `project-${id}`, workflow_id: `workflow-${id}`, name: `Campaign ${id}`, updated_at: "2026-09-07T00:00:00Z", status: "active", cover_state: "none" })),
-    loading: false, error: false, refresh: vi.fn(),
-  }),
+
+vi.mock("../api/v2Client", () => ({
+  v2Api: {
+    listProjects: vi.fn().mockResolvedValue({
+      items: [
+        { project_id: "test-project-1", workflow_id: "test-workflow-1", name: "Test Project One", is_favorite: false, updated_at: new Date(Date.now() - 86400000).toISOString() },
+        { project_id: "test-project-2", workflow_id: "test-workflow-2", name: "Test Project Two", is_favorite: true, updated_at: new Date(Date.now() - 172800000).toISOString() },
+        { project_id: "test-project-3", workflow_id: "test-workflow-3", name: "Test Project Three", is_favorite: false, updated_at: new Date(Date.now() - 259200000).toISOString() },
+      ],
+    }),
+  },
 }));
 
 type IntersectionCallback = IntersectionObserverCallback;
@@ -36,12 +42,11 @@ class IntersectionObserverMock {
   readonly disconnect = vi.fn();
   readonly takeRecords = vi.fn(() => []);
   readonly root = null;
-  readonly rootMargin: string;
+  readonly rootMargin = "0px";
   readonly thresholds = [0];
 
-  constructor(callback: IntersectionCallback, options?: IntersectionObserverInit) {
+  constructor(callback: IntersectionCallback) {
     this.callback = callback;
-    this.rootMargin = options?.rootMargin ?? "0px";
     IntersectionObserverMock.instances.push(this);
   }
 
@@ -162,12 +167,12 @@ describe("HomePage motion", () => {
     expect(discoverSection).not.toBeNull();
     expect(recentSection?.getAttribute("data-reveal-state")).toBe("pending");
     expect(discoverSection?.getAttribute("data-reveal-state")).toBe("pending");
-    expect(recentSection?.querySelectorAll("[data-project-id]")).toHaveLength(0);
-    const loadObserver = IntersectionObserverMock.instances.find((observer) => observer.rootMargin === "320px");
-    expect(loadObserver).toBeDefined();
-    act(() => loadObserver?.setIntersection(recentSection as Element, { isIntersecting: true, ratio: 0 }));
-    await waitFor(() => expect(recentSection?.querySelectorAll("[data-project-id][data-reveal-item]")).toHaveLength(4));
-    expect(IntersectionObserverMock.instances).toHaveLength(5);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(recentSection?.querySelectorAll(".recent-card[data-reveal-item]")).toHaveLength(4);
+    expect(IntersectionObserverMock.instances).toHaveLength(3);
 
     const recentObserver = IntersectionObserverMock.instances.find(
       (observer) => observer.observedTarget === recentSection,
@@ -247,9 +252,7 @@ describe("HomePage motion", () => {
 
     expect(recentSection?.getAttribute("data-reveal-state")).toBe("visible");
     expect(discoverSection?.getAttribute("data-reveal-state")).toBe("visible");
-    expect(IntersectionObserverMock.instances).toHaveLength(2);
-    expect(IntersectionObserverMock.instances[0]?.observedTarget?.classList.contains("discover-orbit")).toBe(true);
-    expect(IntersectionObserverMock.instances.find((observer) => observer.rootMargin === "320px")?.observedTarget).toBe(recentSection);
+    expect(IntersectionObserverMock.instances).toHaveLength(0);
   });
 
   it("queues title lines from opposite edges without collision effects", () => {

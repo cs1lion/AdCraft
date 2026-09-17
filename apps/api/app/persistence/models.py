@@ -847,7 +847,7 @@ class AgentCanvasNodeRow(Base):
     __tablename__ = "agent_canvas_nodes"
     __table_args__ = (
         CheckConstraint(
-            "node_type IN ('text', 'script', 'image', 'video', 'audio', 'editing')",
+            "node_type IN ('text', 'script', 'image', 'video', 'audio', 'editing', 'scene-3d', 'voice-cast')",
             name="ck_agent_canvas_nodes_type",
         ),
         CheckConstraint(
@@ -881,6 +881,10 @@ class AgentCanvasNodeRow(Base):
     execution_mode: Mapped[str] = mapped_column(
         Text, nullable=False, default="generative", server_default="generative"
     )
+    authoring_origin: Mapped[str] = mapped_column(
+        Text, nullable=False, default="user_free", server_default="user_free"
+    )
+    intent_hint: Mapped[str | None] = mapped_column(Text)
     summary_prompt: Mapped[str | None] = mapped_column(Text)
     generation_prompt: Mapped[str | None] = mapped_column(Text)
     structured_content_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2539,3 +2543,96 @@ class AgentCanvasGuidedProductionReceiptRow(Base):
     payload_digest: Mapped[str] = mapped_column(Text, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TimelineRow(Base):
+    """One Timeline for a V2 Workflow — the orchestration layer above nodes."""
+
+    __tablename__ = "timelines"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", name="uq_timelines_workflow"),
+        CheckConstraint("fps > 0", name="ck_timelines_positive_fps"),
+        CheckConstraint("duration_seconds >= 0", name="ck_timelines_nonnegative_duration"),
+    )
+
+    timeline_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_canvas_workflows.workflow_id"), nullable=False
+    )
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    fps: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TimelineTrackRow(Base):
+    """One track within a Timeline (video / voice / bgm / sfx / camera / subtitle)."""
+
+    __tablename__ = "timeline_tracks"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('video','voice','bgm','sfx','camera','subtitle')",
+            name="ck_timeline_tracks_type",
+        ),
+        CheckConstraint("volume >= 0 AND volume <= 1", name="ck_timeline_tracks_volume_range"),
+        CheckConstraint("display_order >= 0", name="ck_timeline_tracks_display_order"),
+        Index("ix_timeline_tracks_timeline_order", "timeline_id", "display_order"),
+    )
+
+    track_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timeline_id: Mapped[str] = mapped_column(
+        ForeignKey("timelines.timeline_id"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    muted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    volume: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TimelineClipRow(Base):
+    """One clip on a Timeline track — references an asset produced by a canvas node."""
+
+    __tablename__ = "timeline_clips"
+    __table_args__ = (
+        CheckConstraint("start_time >= 0", name="ck_timeline_clips_start_time"),
+        CheckConstraint("duration > 0", name="ck_timeline_clips_positive_duration"),
+        CheckConstraint("source_start >= 0", name="ck_timeline_clips_source_start"),
+        CheckConstraint(
+            "transition_in_type IS NULL OR transition_in_type IN ('fade','dissolve','wipe')",
+            name="ck_timeline_clips_transition_in_type",
+        ),
+        CheckConstraint(
+            "transition_out_type IS NULL OR transition_out_type IN ('fade','dissolve','wipe')",
+            name="ck_timeline_clips_transition_out_type",
+        ),
+        Index("ix_timeline_clips_track_start", "track_id", "start_time"),
+        Index("ix_timeline_clips_source_node", "source_node_id"),
+        Index("ix_timeline_clips_asset", "asset_id"),
+    )
+
+    clip_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    track_id: Mapped[str] = mapped_column(
+        ForeignKey("timeline_tracks.track_id"), nullable=False
+    )
+    asset_id: Mapped[str | None] = mapped_column(Text)
+    asset_version_id: Mapped[str | None] = mapped_column(Text)
+    source_node_id: Mapped[str | None] = mapped_column(Text)
+    start_time: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    duration: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    source_start: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    source_duration: Mapped[float | None] = mapped_column(Float)
+    fade_in: Mapped[float | None] = mapped_column(Float)
+    fade_out: Mapped[float | None] = mapped_column(Float)
+    transition_in_type: Mapped[str | None] = mapped_column(Text)
+    transition_in_duration: Mapped[float | None] = mapped_column(Float)
+    transition_out_type: Mapped[str | None] = mapped_column(Text)
+    transition_out_duration: Mapped[float | None] = mapped_column(Float)
+    bound_character_id: Mapped[str | None] = mapped_column(Text)
+    label: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)

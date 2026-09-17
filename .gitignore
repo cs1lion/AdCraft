@@ -45,6 +45,17 @@ apps/*/.env
 apps/*/.env.*
 !apps/*/.env.example
 
+# Security and secrets (never commit private keys or credentials)
+*.pem
+*.key
+*.p12
+*.pfx
+sshkey*
+id_rsa*
+id_ed25519*
+*.crt
+*.cer
+
 # Python backend local runtime
 apps/api/.venv/
 apps/api/data/

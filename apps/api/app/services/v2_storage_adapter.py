@@ -31,7 +31,8 @@ class StorageAdapter:
             raise _storage_error(
                 "v2_storage_content_invalid", "Storage content could not be verified."
             )
-        storage_key = self.content_storage_key(expected_sha256, extension)
+        normalized_extension = _normalized_extension(extension)
+        storage_key = _storage_key(expected_sha256, normalized_extension)
         target = self.resolve_local_path(storage_key)
         target.parent.mkdir(parents=True, exist_ok=True)
         if self.content_exists(storage_key, expected_sha256):
@@ -57,12 +58,6 @@ class StorageAdapter:
         finally:
             temporary.unlink(missing_ok=True)
         return storage_key
-
-    @staticmethod
-    def content_storage_key(sha256: str, extension: str) -> str:
-        """Return the canonical key before an object is written."""
-
-        return _storage_key(_validated_sha256(sha256), _normalized_extension(extension))
 
     def resolve_local_path(self, storage_key: str) -> Path:
         """Resolve one local object key without accepting arbitrary filesystem paths."""
@@ -141,12 +136,11 @@ def _sha256(path: Path) -> str:
 
 
 def _fsync_file(path: Path) -> None:
-    # Open with write access: Windows FlushFileBuffers rejects read-only handles.
-    descriptor = os.open(path, os.O_RDWR)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    # Open read-write so fsync flushes the bytes we just copied; on Windows
+    # ``fsync`` is a no-op best-effort rather than a POSIX durability barrier,
+    # so a failure here must not block a successful copy+replace.
+    with path.open("r+b") as source:
+        os.fsync(source.fileno())
 
 
 def _storage_error(code: str, message: str) -> V2PersistenceError:

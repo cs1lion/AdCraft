@@ -18,6 +18,8 @@ export const AGENT_CANVAS_VISIBLE_NODE_TYPES: readonly AgentCanvasVisibleNodeTyp
   "video",
   "audio",
   "editing",
+  "scene-3d",
+  "voice-cast",
 ];
 
 export function isAgentCanvasVisibleNodeType(
@@ -33,6 +35,8 @@ export const AGENT_CANVAS_NODE_LABELS: Record<CanvasNodeTypeV2, string> = {
   video: "Video",
   audio: "Audio",
   editing: "Editing",
+  "scene-3d": "3D Previs",
+  "voice-cast": "Voice Cast",
 };
 
 const DEFAULT_CREATIVE_ROLES: Record<CanvasNodeTypeV2, CanvasCreativeRoleV2> = {
@@ -42,6 +46,8 @@ const DEFAULT_CREATIVE_ROLES: Record<CanvasNodeTypeV2, CanvasCreativeRoleV2> = {
   video: "general_video",
   audio: "bgm",
   editing: "editing",
+  "scene-3d": "scene_3d_previs",
+  "voice-cast": "voice_cast",
 };
 
 function bgmContent(summary: string, durationSeconds = 30): Record<string, unknown> {

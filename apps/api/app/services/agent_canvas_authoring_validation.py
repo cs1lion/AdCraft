@@ -74,6 +74,7 @@ def validate_node_binding(
         "image": {"image_reference"},
         "video": {"video_reference"},
         "audio": {"audio_reference"},
+        "scene-3d": {"video_reference"},
     }
     if target_node_type != "editing":
         if binding_kind not in compatible.get(source_node_type, set()):

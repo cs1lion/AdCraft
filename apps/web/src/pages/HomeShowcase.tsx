@@ -6,9 +6,9 @@ import {
   useState,
   type CSSProperties,
   type RefObject,
-  type ReactNode,
 } from "react";
 import { demoProjects, images, imageSrc } from "../data";
+import type { ProjectV2Summary } from "../types-v2";
 import { DiscoverOrbit, type DiscoverOrbitItem } from "./DiscoverOrbit";
 
 const homeProductPoster = "/assets/card1.webp";
@@ -37,6 +37,8 @@ type RevealSection = {
 
 type HomeShowcaseInteractions = {
   createProject: () => void;
+  openWorkflow: () => void;
+  openProject: (projectId: string, workflowId: string) => void;
   openPreview: () => void;
   closePreview: () => void;
 };
@@ -46,19 +48,20 @@ export type HomeShowcaseProps = {
   interactions?: HomeShowcaseInteractions;
   heroMotionReady?: boolean;
   recentReveal?: RevealSection;
-  recentContent?: ReactNode;
   discoverReveal?: RevealSection;
   hasIntroVideo?: boolean;
   productVideoUrl?: string;
   onProductVideoError?: () => void;
   previewOpen?: boolean;
+  recentProjects?: ProjectV2Summary[];
+  activeProjectId?: string | null;
 };
 
-function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div className="section-title">
       <h2 data-home-typography-region="sectionHeading">{title}</h2>
-      {subtitle && <p data-home-typography-region="sectionBody">{subtitle}</p>}
+      <p data-home-typography-region="sectionBody">{subtitle}</p>
     </div>
   );
 }
@@ -264,6 +267,75 @@ function CreateProjectButtonContent() {
   );
 }
 
+function formatRelativeTime(isoDate: string): string {
+  const date = new Date(isoDate);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) return "Updated today";
+  if (diffDays === 1) return "Updated yesterday";
+  if (diffDays < 7) return `Updated ${diffDays} days ago`;
+  if (diffDays < 30) return `Updated ${Math.floor(diffDays / 7)} weeks ago`;
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function InteractiveRecentCards({
+  openWorkflow,
+  openProject,
+  recentProjects,
+  activeProjectId,
+}: {
+  openWorkflow: () => void;
+  openProject: (projectId: string, workflowId: string) => void;
+  recentProjects: ProjectV2Summary[];
+  activeProjectId: string | null;
+}) {
+  const sortedProjects = [...recentProjects]
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+    .slice(0, 3);
+
+  const activeProject = activeProjectId
+    ? recentProjects.find((p) => p.project_id === activeProjectId) ?? null
+    : null;
+
+  const featuredTitle = activeProject ? activeProject.name : "New fragrance product reel";
+  const featuredSubtitle = activeProject
+    ? "Continue editing this project."
+    : "Continue editing the current workflow canvas.";
+  const featuredOnClick = activeProject
+    ? () => openProject(activeProject.project_id, activeProject.workflow_id)
+    : openWorkflow;
+
+  return (
+    <div className="recent-strip" data-reveal-item style={motionStyle("--home-reveal-delay", "100ms")}>
+      <button
+        className="recent-card featured"
+        data-reveal-item
+        style={motionStyle("--home-reveal-delay", "170ms")}
+        onClick={featuredOnClick}
+      >
+        <div className="featured-glass">
+          <h3 data-home-typography-region="cardTitle">{featuredTitle}</h3>
+          <p data-home-typography-region="cardMeta">{featuredSubtitle}</p>
+        </div>
+      </button>
+      {sortedProjects.map((project, index) => (
+        <button
+          key={project.project_id}
+          className="recent-card"
+          data-reveal-item
+          style={motionStyle("--home-reveal-delay", `${240 + index * 70}ms`)}
+          onClick={() => openProject(project.project_id, project.workflow_id)}
+        >
+          <h3 data-home-typography-region="cardTitle">{project.name}</h3>
+          <p data-home-typography-region="cardMeta">{formatRelativeTime(project.updated_at)}</p>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function StaticRecentCards() {
   return (
     <div className="recent-strip" data-reveal-item style={motionStyle("--home-reveal-delay", "100ms")}>
@@ -301,12 +373,13 @@ export function HomeShowcase({
   interactions,
   heroMotionReady = false,
   recentReveal,
-  recentContent,
   discoverReveal,
   hasIntroVideo = false,
   productVideoUrl,
   onProductVideoError,
   previewOpen = false,
+  recentProjects,
+  activeProjectId,
 }: HomeShowcaseProps) {
   const isInteractive = mode === "interactive";
   const recentState = recentReveal?.revealState ?? "visible";
@@ -401,9 +474,18 @@ export function HomeShowcase({
           aria-label="Recent Projects"
         >
           <div data-reveal-item style={motionStyle("--home-reveal-delay", "0ms")}>
-            <SectionTitle title="Recent Projects" />
+            <SectionTitle title="Recent Projects" subtitle="Pick up the latest creative thread." />
           </div>
-          {isInteractive ? recentContent : <StaticRecentCards />}
+          {isInteractive && interactions ? (
+            <InteractiveRecentCards
+              openWorkflow={interactions.openWorkflow}
+              openProject={interactions.openProject}
+              recentProjects={recentProjects ?? []}
+              activeProjectId={activeProjectId ?? null}
+            />
+          ) : (
+            <StaticRecentCards />
+          )}
         </section>
 
         <section
@@ -413,7 +495,7 @@ export function HomeShowcase({
           aria-label="Discover"
         >
           <div data-reveal-item style={motionStyle("--home-reveal-delay", "0ms")}>
-            <SectionTitle title="Discover" />
+            <SectionTitle title="Discover" subtitle="References, templates, and generated video ideas." />
           </div>
           {isInteractive && interactions ? <InteractiveDiscover openPreview={interactions.openPreview} /> : <StaticDiscover />}
         </section>

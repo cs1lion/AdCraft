@@ -6,6 +6,7 @@ from app.api.v2.endpoints import (
     health,
     media_toolchain,
     provider_callbacks,
+    timeline,
 )
 
 
@@ -14,3 +15,4 @@ api_router.include_router(health.router)
 api_router.include_router(agent_canvas.router)
 api_router.include_router(media_toolchain.router)
 api_router.include_router(provider_callbacks.router)
+api_router.include_router(timeline.router)

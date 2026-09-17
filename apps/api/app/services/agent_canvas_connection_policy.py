@@ -22,9 +22,11 @@ class AgentCanvasConnectionPolicyService:
         "text": ("text", "script"),
         "script": ("text", "script"),
         "image": ("text", "script", "image"),
-        "video": ("text", "script", "image", "video", "audio", "editing"),
+        "video": ("text", "script", "image", "video", "audio", "editing", "scene-3d"),
         "audio": ("text", "script"),
         "editing": ("video", "audio", "editing"),
+        "scene-3d": ("text", "script", "image", "video"),
+        "voice-cast": ("text", "script"),
     }
     _binding_kinds: dict[CanvasNodeTypeV2, CanvasBindingKindV2] = {
         "text": "text_context",
@@ -33,6 +35,8 @@ class AgentCanvasConnectionPolicyService:
         "video": "video_reference",
         "audio": "audio_reference",
         "editing": "video_reference",
+        "scene-3d": "video_reference",
+        "voice-cast": "audio_reference",
     }
     _input_types = {
         "text": "text",
@@ -41,6 +45,8 @@ class AgentCanvasConnectionPolicyService:
         "video": "video",
         "audio": "audio",
         "editing": "video",
+        "scene-3d": "video",
+        "voice-cast": "audio",
     }
     _roles: dict[tuple[CanvasNodeTypeV2, CanvasNodeTypeV2], tuple[CanvasInputRoleV2, ...]] = {
         ("text", "text"): ("text_context",),
@@ -48,19 +54,28 @@ class AgentCanvasConnectionPolicyService:
         ("text", "image"): ("text_context",),
         ("text", "video"): ("text_context",),
         ("text", "audio"): ("text_context",),
+        ("text", "scene-3d"): ("text_context",),
         ("script", "text"): ("text_context",),
         ("script", "script"): ("text_context",),
         ("script", "image"): ("text_context",),
         ("script", "video"): ("text_context",),
         ("script", "audio"): ("text_context",),
+        ("script", "scene-3d"): ("text_context",),
         ("image", "image"): ("image_reference",),
         ("image", "video"): ("image_reference",),
+        ("image", "scene-3d"): ("image_reference",),
         ("video", "video"): ("video_reference",),
         ("video", "editing"): ("video_reference",),
+        ("video", "scene-3d"): ("video_reference",),
         ("audio", "video"): ("audio_reference",),
         ("audio", "editing"): ("audio_reference",),
         ("editing", "video"): ("video_reference",),
         ("editing", "editing"): ("video_reference",),
+        ("scene-3d", "video"): ("video_reference",),
+        ("text", "voice-cast"): ("text_context",),
+        ("script", "voice-cast"): ("text_context",),
+        ("voice-cast", "video"): ("audio_reference",),
+        ("voice-cast", "editing"): ("audio_reference",),
     }
 
     def public_policy(self) -> CanvasConnectionPolicyV2:

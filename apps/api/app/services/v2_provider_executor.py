@@ -27,6 +27,10 @@ from app.schemas.seedance_inputs import (
     SeedanceInputManifestV1,
 )
 from app.services.llm_context_sanitizer import sanitize_context_for_llm_text
+from app.services.scene3d.prompt_builder import (
+    PREVIS_CONTROL_LEVELS,
+    previs_control_level,
+)
 from app.services.v2_asset_store import V2AssetStoreService
 from app.services.v2_bgm_policy import (
     BGM_SOFT_SKIP_CODE,
@@ -131,6 +135,59 @@ V2_IMAGE_SLOT_TYPES = {
 }
 
 V2_PROMPT_SOURCE_CONTRACT = "v2_canonical_provider_prompt"
+
+
+def _previs_control_level_from_payload(payload: dict[str, Any]) -> str | None:
+    """Derive the queryable ADR 0005 §4a degradation marker for a video run.
+
+    Returns the effective ``previs_control_level`` when the payload carries
+    previs-derived guidance (scene3d prompt bundle + reference mode), else
+    None — non-previs video runs carry no previs marker. Unknown mode values
+    fail closed to ``text_only`` so a malformed payload never reports higher
+    control than was actually applied.
+
+    The ``video`` → ``full`` flip additionally requires the provider
+    capability fingerprint ``previs_control_signal_support`` (ADR 0005 §4,
+    catalog manifest field) to accept at least one control pass; a model
+    that consumes reference video but ignores depth/normal/flow stays at
+    ``video_only``.
+    """
+    bundle = payload.get("scene3d_prompt_bundle")
+    if not isinstance(bundle, dict):
+        return None
+    reference_mode = str(bundle.get("reference_mode") or payload.get("scene3d_reference_mode") or "")
+    control_signals = payload.get("previs_control_signals_available")
+    if control_signals is None:
+        control_signals = bool((bundle.get("model_capabilities") or {}).get("control_signals_available"))
+    elif isinstance(control_signals, dict):
+        # Fingerprint shape (catalog `previs_control_signal_support`):
+        # {"depth": bool, "normal": bool, "flow": bool} — available iff any
+        # pass is accepted by the target model.
+        control_signals = any(bool(v) for v in control_signals.values())
+    control_signals = bool(control_signals)
+    if reference_mode == "video":
+        # "full" additionally requires the model's capability fingerprint to
+        # accept geometric control signals (catalog §4). Without it the run
+        # degrades to video_only — queryable, never silent.
+        supports_signals = _provider_previs_signal_support(payload)
+        return "full" if (control_signals and supports_signals) else "video_only"
+    return previs_control_level(reference_mode, control_signals)
+
+
+def _provider_previs_signal_support(payload: dict[str, Any]) -> bool:
+    """Read the provider capability fingerprint from the payload (ADR 0005 §4).
+
+    The orchestration layer stamps ``previs_control_signal_support`` (dict of
+    pass → bool) onto the provider payload when a resolved model carries the
+    catalog fingerprint. Absent → conservatively False (no signal support
+    claimed), so the marker can only ever be lifted, never inflated.
+    """
+    support = payload.get("previs_control_signal_support")
+    if isinstance(support, dict):
+        return any(bool(v) for v in support.values())
+    if isinstance(support, bool):
+        return support
+    return False
 V2_LEGACY_PROMPT_FIELDS = {
     "location",
     "lighting",
@@ -2225,6 +2282,14 @@ class V2ProviderExecutor:
             },
             "reference_input_delivery": delivery.audit,
         }
+        previs_level = _previs_control_level_from_payload(payload)
+        if previs_level is not None:
+            payload["previs_control_level"] = previs_level
+            payload["previs_control_level_reason"] = (
+                "ADR 0005 §4a degradation marker: effective previs control for "
+                "this video run, derived from the scene3d reference mode and "
+                "control-signal availability."
+            )
         provider = self._media_provider()
         output = provider.generate_storyboard_video(
             {
@@ -3271,6 +3336,20 @@ def _provider_asset_metadata(
         metadata["reference_input_delivery"] = sanitize_context_for_llm_text(
             provider_payload["reference_input_delivery"]
         )
+    # ADR 0005 §4a: previs runs carry a queryable degradation marker
+    # (full/video_only/images_only/text_only); never silent.
+    previs_level = provider_payload.get("previs_control_level")
+    if isinstance(previs_level, str):
+        if previs_level in PREVIS_CONTROL_LEVELS:
+            metadata["previs_control_level"] = previs_level
+        else:
+            # Fail closed: a misspelled/unknown level must never report
+            # higher control than was actually applied.
+            metadata["previs_control_level"] = "text_only"
+            metadata["previs_control_level_code"] = "previs_control_level_unknown"
+        reason = provider_payload.get("previs_control_level_reason")
+        if isinstance(reason, str):
+            metadata["previs_control_level_reason"] = reason
     reference_wire_audit = asset.get("reference_wire_audit") or provider_payload.get(
         "reference_wire_audit"
     )

@@ -7,6 +7,8 @@ const NODE_ICON_ASSETS: Record<CanvasNodeTypeV2, string> = {
   video: "/imgs/node-icons/video.svg",
   audio: "/imgs/node-icons/audio.svg",
   editing: "/imgs/node-icons/video.svg",
+  "scene-3d": "/imgs/node-icons/video.svg",
+  "voice-cast": "/imgs/node-icons/audio.svg",
 };
 
 export function AgentCanvasNodeIcon({ nodeType }: { nodeType: CanvasNodeTypeV2 }) {

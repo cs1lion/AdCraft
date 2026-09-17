@@ -38,7 +38,7 @@ const definitions = Object.freeze([
   definition(
     "AgentRunContext",
     "agent-run-user-input-v1",
-    primaryOnly,
+    primaryPlusTypedContext,
     topLevelString("user_input"),
   ),
   ...[

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import hashlib
 import ipaddress
 import json
 import os
@@ -28,7 +27,6 @@ from app.schemas.provider_settings import (
     ProviderCredentialConsumerStatus,
     VolcengineCredentialSetStatus,
 )
-from app.schemas.provider_models import ProviderEndpointMetadataV1
 
 
 class CredentialSettingsError(ValueError):
@@ -78,7 +76,6 @@ class ConsumerCredentialBinding:
     settings_field: str
     endpoint_field: str
     test_capability: CredentialTestCapability
-    endpoint_dotenv_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,9 +115,8 @@ class ProviderCredentialRegistry:
             _siliconflow_definition(),
             _tianpuyue_definition(),
             _volcengine_ark_definition(),
-            _openrouter_definition(),
-            _minimax_definition(),
-            _fake_definition(),
+            _stepfun_definition(),
+            _fish_audio_definition(),
         )
         self._definitions = MappingProxyType(
             {definition.provider_id: definition for definition in provider_definitions}
@@ -289,8 +285,7 @@ class DotenvCredentialStore:
         )
         temporary_path = Path(temporary_path_string)
         try:
-            if hasattr(os, "fchmod"):
-                os.fchmod(descriptor, mode)
+            os.fchmod(descriptor, mode)
             with os.fdopen(descriptor, "wb") as temporary_file:
                 temporary_file.write(content)
                 temporary_file.flush()
@@ -345,9 +340,8 @@ def _dotenv_assignment(field: str, value: str, line_ending: str) -> str:
 
 
 def _fsync_directory(directory: Path) -> None:
-    if not hasattr(os, "O_DIRECTORY"):
-        return  # Windows cannot open directory handles for fsync.
-    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, os.O_RDONLY | directory_flag)
     try:
         os.fsync(descriptor)
     finally:
@@ -370,7 +364,7 @@ class RuntimeSettingsReloader:
         self,
         bindings: Iterable[ConsumerCredentialBinding],
     ) -> ManagedEnvironmentSnapshot:
-        fields = _managed_dotenv_fields(bindings)
+        fields = tuple(binding.dotenv_field for binding in bindings)
         return ManagedEnvironmentSnapshot(values={field: os.environ.get(field) for field in fields})
 
     def apply(
@@ -378,9 +372,7 @@ class RuntimeSettingsReloader:
         values: Mapping[str, str | None],
         bindings: Iterable[ConsumerCredentialBinding],
     ) -> Settings:
-        bindings_by_field = {
-            field: binding for binding in bindings for field in _binding_dotenv_fields(binding)
-        }
+        bindings_by_field = {binding.dotenv_field: binding for binding in bindings}
         _validate_runtime_values(values, bindings_by_field)
         for field, value in values.items():
             if value is None:
@@ -390,9 +382,7 @@ class RuntimeSettingsReloader:
         self._cache_clear()
         refreshed_settings = self._settings_loader()
         for field, value in values.items():
-            binding = bindings_by_field[field]
-            setting_field = _setting_field_for_dotenv_field(binding, field)
-            setting_value = getattr(refreshed_settings, setting_field)
+            setting_value = getattr(refreshed_settings, bindings_by_field[field].settings_field)
             if setting_value != value:
                 raise CredentialSettingsError(
                     code="credential_runtime_reload_failed",
@@ -409,30 +399,6 @@ class RuntimeSettingsReloader:
                 os.environ[field] = value
         self._cache_clear()
         return self._settings_loader()
-
-
-def _binding_dotenv_fields(binding: ConsumerCredentialBinding) -> tuple[str, ...]:
-    fields = [binding.dotenv_field]
-    if binding.endpoint_dotenv_field is not None:
-        fields.append(binding.endpoint_dotenv_field)
-    return tuple(fields)
-
-
-def _managed_dotenv_fields(
-    bindings: Iterable[ConsumerCredentialBinding],
-) -> tuple[str, ...]:
-    fields: list[str] = []
-    for binding in bindings:
-        for field in _binding_dotenv_fields(binding):
-            if field not in fields:
-                fields.append(field)
-    return tuple(fields)
-
-
-def _setting_field_for_dotenv_field(binding: ConsumerCredentialBinding, field: str) -> str:
-    if field == binding.endpoint_dotenv_field:
-        return binding.endpoint_field
-    return binding.settings_field
 
 
 def _validate_runtime_values(
@@ -604,7 +570,6 @@ class ProviderCredentialCapabilitySnapshot:
     source: str
     test_capability: CredentialTestCapability
     masked_api_key: str | None = None
-    endpoint: ProviderEndpointMetadataV1 | None = None
 
 
 @dataclass(frozen=True)
@@ -733,30 +698,17 @@ class ProviderConnectionService:
         provider_id: str,
         *,
         api_keys: Mapping[str, str],
-        base_urls: Mapping[str, str] | None = None,
         clear_capabilities: Iterable[str] = (),
     ) -> ProviderConnectionUpdateResult:
         definition = self._registry.get(provider_id)
-        endpoint_candidates = dict(base_urls or {})
         cleared = tuple(dict.fromkeys(clear_capabilities))
-        normalized_api_keys = {
-            capability: normalize_credential_value(credential)
-            for capability, credential in api_keys.items()
-        }
-        if provider_id == "openrouter":
-            normalized_api_keys, cleared = _normalize_openrouter_shared_key_mutation(
-                api_keys=normalized_api_keys,
-                clear_capabilities=cleared,
-            )
-        if set(normalized_api_keys).intersection(cleared) or set(endpoint_candidates).intersection(
-            cleared
-        ):
+        if set(api_keys).intersection(cleared):
             raise CredentialSettingsError(
                 code="credential_update_invalid",
                 message="Credential capabilities cannot be set and cleared together.",
                 status_code=422,
             )
-        requested = tuple(dict.fromkeys((*normalized_api_keys, *endpoint_candidates, *cleared)))
+        requested = tuple(dict.fromkeys((*api_keys, *cleared)))
         if not requested:
             raise CredentialSettingsError(
                 code="credential_update_invalid",
@@ -770,25 +722,12 @@ class ProviderConnectionService:
         except CredentialSettingsError:
             raise
         values_by_field: dict[str, str | None] = {}
-        for capability, credential in normalized_api_keys.items():
-            values_by_field[definition.binding_for_capability(capability).dotenv_field] = credential
-        for capability, endpoint in endpoint_candidates.items():
-            binding = definition.binding_for_capability(capability)
-            if binding.endpoint_dotenv_field is None:
-                raise CredentialSettingsError(
-                    code="credential_endpoint_not_supported",
-                    message="The requested provider endpoint cannot be configured.",
-                    status_code=422,
-                )
-            values_by_field[binding.endpoint_dotenv_field] = _normalize_provider_base_url(
-                endpoint,
-                definition.allowed_test_origins,
+        for capability, credential in api_keys.items():
+            values_by_field[definition.binding_for_capability(capability).dotenv_field] = (
+                normalize_credential_value(credential)
             )
         for capability in cleared:
-            binding = definition.binding_for_capability(capability)
-            values_by_field[binding.dotenv_field] = None
-            if binding.endpoint_dotenv_field is not None:
-                values_by_field[binding.endpoint_dotenv_field] = None
+            values_by_field[definition.binding_for_capability(capability).dotenv_field] = None
 
         with self._dotenv_store.locked():
             dotenv_snapshot = self._dotenv_store.snapshot()
@@ -826,7 +765,7 @@ class ProviderConnectionService:
         )
         return ProviderConnectionUpdateResult(
             provider=provider,
-            updated_capabilities=tuple(dict.fromkeys((*normalized_api_keys, *endpoint_candidates))),
+            updated_capabilities=tuple(api_keys),
             cleared_capabilities=cleared,
             applied_at=self._clock(),
         )
@@ -906,19 +845,13 @@ class ProviderConnectionService:
         settings: Settings,
     ) -> dict[str, ProviderCredentialCapabilitySnapshot]:
         dotenv_values_by_field = self._dotenv_store.values(
-            _managed_dotenv_fields(definition.bindings.values())
+            binding.dotenv_field for binding in definition.bindings.values()
         )
         snapshots: dict[str, ProviderCredentialCapabilitySnapshot] = {}
         for capability in definition.capabilities:
             binding = definition.binding_for_capability(capability)
             value = getattr(settings, binding.settings_field)
             dotenv_value = dotenv_values_by_field[binding.dotenv_field]
-            endpoint = _endpoint_metadata(
-                provider_id=definition.provider_id,
-                capability=capability,
-                value=getattr(settings, binding.endpoint_field, None),
-                allowed_origins=definition.allowed_test_origins,
-            )
             source = "unconfigured"
             if value:
                 source = "project_dotenv" if dotenv_value == value else "process_environment"
@@ -936,7 +869,6 @@ class ProviderConnectionService:
                 source=source,
                 test_capability=binding.test_capability,
                 masked_api_key=mask_credential_value(value) if value else None,
-                endpoint=endpoint,
             )
         return snapshots
 
@@ -952,7 +884,6 @@ class ProviderConnectionService:
                 "fingerprint": status.fingerprint,
                 "source": status.source,
                 "test_capability": status.test_capability,
-                "endpoint": status.endpoint.model_dump(mode="json") if status.endpoint else None,
             }
         return result
 
@@ -1059,15 +990,6 @@ class ProviderHttpResponse:
 
 
 class ProviderHttpTransport(Protocol):
-    def get(
-        self,
-        *,
-        url: str,
-        headers: dict[str, str],
-        timeout_seconds: float,
-        max_response_bytes: int,
-    ) -> ProviderHttpResponse: ...
-
     def post_json(
         self,
         *,
@@ -1093,21 +1015,6 @@ class _NoRedirectHandler(HTTPRedirectHandler):
 class UrllibProviderHttpTransport:
     """Minimal standard-library transport with redirects disabled for credential probes."""
 
-    def get(
-        self,
-        *,
-        url: str,
-        headers: dict[str, str],
-        timeout_seconds: float,
-        max_response_bytes: int,
-    ) -> ProviderHttpResponse:
-        request = Request(url, headers=headers, method="GET")
-        return self._open(
-            request=request,
-            timeout_seconds=timeout_seconds,
-            max_response_bytes=max_response_bytes,
-        )
-
     def post_json(
         self,
         *,
@@ -1123,19 +1030,6 @@ class UrllibProviderHttpTransport:
             headers=headers,
             method="POST",
         )
-        return self._open(
-            request=request,
-            timeout_seconds=timeout_seconds,
-            max_response_bytes=max_response_bytes,
-        )
-
-    @staticmethod
-    def _open(
-        *,
-        request: Request,
-        timeout_seconds: float,
-        max_response_bytes: int,
-    ) -> ProviderHttpResponse:
         opener = build_opener(_NoRedirectHandler())
         try:
             with opener.open(request, timeout=timeout_seconds) as response:
@@ -1189,14 +1083,6 @@ class VolcengineArkConnectionTester:
                 status_code=409,
             )
         credential = normalize_credential_value(raw_value)
-        if definition.provider_id == "openrouter":
-            return self._test_openrouter_key(
-                definition=definition,
-                binding=binding,
-                credential=credential,
-                settings=settings,
-                model_id=model_id,
-            )
         endpoint = _allowlisted_chat_completions_url(
             getattr(settings, binding.endpoint_field),
             definition.allowed_test_origins,
@@ -1246,47 +1132,6 @@ class VolcengineArkConnectionTester:
             status_code=503,
         )
 
-    def _test_openrouter_key(
-        self,
-        *,
-        definition: ProviderCredentialDefinition,
-        binding: ConsumerCredentialBinding,
-        credential: str,
-        settings: Settings,
-        model_id: str | None,
-    ) -> CredentialTestResult:
-        endpoint = _allowlisted_endpoint_url(
-            base_url=getattr(settings, binding.endpoint_field),
-            suffix="key",
-            allowed_origins=definition.allowed_test_origins,
-        )
-        try:
-            response = self._transport.get(
-                url=endpoint,
-                headers={"Authorization": f"Bearer {credential}"},
-                timeout_seconds=self._timeout_seconds,
-                max_response_bytes=self._max_response_bytes,
-            )
-        except (OSError, TimeoutError, URLError) as exc:
-            raise CredentialSettingsError(
-                code="provider_transport_failed",
-                message="The provider connection test is temporarily unavailable.",
-                status_code=503,
-            ) from exc
-        if 200 <= response.status_code < 300:
-            return CredentialTestResult(accepted=True, model_id=model_id)
-        if response.status_code in {401, 403}:
-            raise CredentialSettingsError(
-                code="provider_credential_rejected",
-                message="The provider rejected the supplied credential.",
-                status_code=422,
-            )
-        raise CredentialSettingsError(
-            code="provider_transport_failed",
-            message="The provider connection test is temporarily unavailable.",
-            status_code=503,
-        )
-
 
 def _allowlisted_chat_completions_url(
     base_url: str | None,
@@ -1332,95 +1177,6 @@ def _allowlisted_chat_completions_url(
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def _allowlisted_endpoint_url(
-    *,
-    base_url: str | None,
-    suffix: str,
-    allowed_origins: tuple[str, ...],
-) -> str:
-    if base_url is None:
-        raise CredentialSettingsError(
-            code="credential_test_configuration_invalid",
-            message="The configured provider test endpoint is not valid.",
-            status_code=409,
-        )
-    try:
-        normalized = _normalize_provider_base_url(base_url, allowed_origins)
-        parsed = urlsplit(normalized)
-    except CredentialSettingsError as exc:
-        raise CredentialSettingsError(
-            code="credential_test_configuration_invalid",
-            message="The configured provider test endpoint is not valid.",
-            status_code=409,
-        ) from exc
-    path = f"{parsed.path.rstrip('/')}/{suffix.lstrip('/')}"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
-def _normalize_provider_base_url(
-    value: str,
-    allowed_origins: tuple[str, ...],
-) -> str:
-    try:
-        normalized = normalize_credential_value(value)
-    except CredentialSettingsError as exc:
-        raise CredentialSettingsError(
-            code="credential_endpoint_invalid",
-            message="The provider endpoint is not valid.",
-            status_code=422,
-        ) from exc
-    try:
-        parsed = urlsplit(normalized)
-        port = parsed.port
-    except ValueError as exc:
-        raise CredentialSettingsError(
-            code="credential_endpoint_invalid",
-            message="The provider endpoint is not valid.",
-            status_code=422,
-        ) from exc
-    origin = f"{parsed.scheme}://{parsed.hostname}" if parsed.hostname is not None else None
-    if (
-        parsed.scheme != "https"
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or port not in {None, 443}
-        or origin not in allowed_origins
-    ):
-        raise CredentialSettingsError(
-            code="credential_endpoint_invalid",
-            message="The provider endpoint is not valid.",
-            status_code=422,
-        )
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
-
-
-def _endpoint_metadata(
-    *,
-    provider_id: str,
-    capability: str,
-    value: str | None,
-    allowed_origins: tuple[str, ...],
-) -> ProviderEndpointMetadataV1 | None:
-    if not value:
-        return None
-    try:
-        normalized = _normalize_provider_base_url(value, allowed_origins)
-        parsed = urlsplit(normalized)
-    except CredentialSettingsError:
-        return None
-    fingerprint = hashlib.sha256(
-        f"adcraft-provider-endpoint-v1:{provider_id}:{capability}:{normalized}".encode("utf-8")
-    ).hexdigest()
-    return ProviderEndpointMetadataV1(
-        scheme=parsed.scheme,
-        host=parsed.hostname or "",
-        path=parsed.path,
-        fingerprint=fingerprint,
-    )
-
-
 def _volcengine_ark_definition() -> ProviderCredentialDefinition:
     bindings: Mapping[ProviderCredentialConsumer, ConsumerCredentialBinding] = MappingProxyType(
         {
@@ -1430,7 +1186,6 @@ def _volcengine_ark_definition() -> ProviderCredentialDefinition:
                 settings_field="llm_api_key",
                 endpoint_field="llm_base_url",
                 test_capability="minimal_request",
-                endpoint_dotenv_field="LLM_BASE_URL",
             ),
             "image": ConsumerCredentialBinding(
                 consumer="image",
@@ -1438,7 +1193,6 @@ def _volcengine_ark_definition() -> ProviderCredentialDefinition:
                 settings_field="image_generation_api_key",
                 endpoint_field="image_generation_endpoint",
                 test_capability="unsupported",
-                endpoint_dotenv_field="IMAGE_GENERATION_ENDPOINT",
             ),
             "video": ConsumerCredentialBinding(
                 consumer="video",
@@ -1446,14 +1200,16 @@ def _volcengine_ark_definition() -> ProviderCredentialDefinition:
                 settings_field="video_generation_api_key",
                 endpoint_field="video_generation_endpoint",
                 test_capability="unsupported",
-                endpoint_dotenv_field="VIDEO_GENERATION_ENDPOINT",
             ),
         }
     )
     return ProviderCredentialDefinition(
         provider_id="volcengine_ark",
         bindings=bindings,
-        allowed_test_origins=("https://ark.cn-beijing.volces.com",),
+        allowed_test_origins=(
+            "https://ark.cn-beijing.volces.com",
+            "https://api.agnes-ai.cn",
+        ),
         display_name="Volcengine Ark",
         capability_consumers=MappingProxyType({"text": "llm", "image": "image", "video": "video"}),
     )
@@ -1468,7 +1224,6 @@ def _siliconflow_definition() -> ProviderCredentialDefinition:
                 settings_field="siliconflow_api_key",
                 endpoint_field="siliconflow_base_url",
                 test_capability="minimal_request",
-                endpoint_dotenv_field="SILICONFLOW_BASE_URL",
             ),
         }
     )
@@ -1490,7 +1245,6 @@ def _tianpuyue_definition() -> ProviderCredentialDefinition:
                 settings_field="bgm_api_key",
                 endpoint_field="bgm_endpoint",
                 test_capability="unsupported",
-                endpoint_dotenv_field="BGM_ENDPOINT",
             ),
         }
     )
@@ -1503,85 +1257,45 @@ def _tianpuyue_definition() -> ProviderCredentialDefinition:
     )
 
 
-def _openrouter_definition() -> ProviderCredentialDefinition:
+def _stepfun_definition() -> ProviderCredentialDefinition:
     bindings: Mapping[ProviderCredentialConsumer, ConsumerCredentialBinding] = MappingProxyType(
         {
-            "text": ConsumerCredentialBinding(
-                consumer="text",
-                dotenv_field="OPENROUTER_API_KEY",
-                settings_field="openrouter_api_key",
-                endpoint_field="openrouter_text_base_url",
-                endpoint_dotenv_field="OPENROUTER_TEXT_BASE_URL",
-                test_capability="minimal_request",
-            ),
-            "image": ConsumerCredentialBinding(
-                consumer="image",
-                dotenv_field="OPENROUTER_API_KEY",
-                settings_field="openrouter_api_key",
-                endpoint_field="openrouter_image_base_url",
-                endpoint_dotenv_field="OPENROUTER_IMAGE_BASE_URL",
-                test_capability="minimal_request",
+            "audio": ConsumerCredentialBinding(
+                consumer="audio",
+                dotenv_field="STEPFUN_API_KEY",
+                settings_field="stepfun_api_key",
+                endpoint_field="stepfun_tts_endpoint",
+                test_capability="unsupported",
             ),
         }
     )
     return ProviderCredentialDefinition(
-        provider_id="openrouter",
+        provider_id="stepfun",
         bindings=bindings,
-        allowed_test_origins=("https://openrouter.ai",),
-        display_name="OpenRouter",
-        capability_consumers=MappingProxyType({"text": "text", "image": "image"}),
+        allowed_test_origins=("https://api.stepfun.com",),
+        display_name="StepFun",
+        capability_consumers=MappingProxyType({"audio": "audio"}),
     )
 
 
-def _normalize_openrouter_shared_key_mutation(
-    *,
-    api_keys: Mapping[str, str],
-    clear_capabilities: tuple[str, ...],
-) -> tuple[dict[str, str], tuple[str, ...]]:
-    supplied_values = set(api_keys.values())
-    if len(supplied_values) > 1:
-        raise CredentialSettingsError(
-            code="credential_update_invalid",
-            message="OpenRouter text and image credentials must use the same API key.",
-            status_code=422,
-        )
-    if clear_capabilities and set(clear_capabilities) != {"text", "image"}:
-        raise CredentialSettingsError(
-            code="credential_update_invalid",
-            message="The shared OpenRouter API key must be cleared for both capabilities.",
-            status_code=422,
-        )
-    if supplied_values:
-        shared_value = next(iter(supplied_values))
-        return {"text": shared_value, "image": shared_value}, clear_capabilities
-    return dict(api_keys), clear_capabilities
-
-
-def _minimax_definition() -> ProviderCredentialDefinition:
-    binding = ConsumerCredentialBinding(
-        consumer="video",
-        dotenv_field="MINIMAX_API_KEY",
-        settings_field="minimax_api_key",
-        endpoint_field="minimax_base_url",
-        endpoint_dotenv_field="MINIMAX_BASE_URL",
-        test_capability="unsupported",
+def _fish_audio_definition() -> ProviderCredentialDefinition:
+    bindings: Mapping[ProviderCredentialConsumer, ConsumerCredentialBinding] = MappingProxyType(
+        {
+            "audio": ConsumerCredentialBinding(
+                consumer="audio",
+                dotenv_field="FISH_AUDIO_API_KEY",
+                settings_field="fish_audio_api_key",
+                endpoint_field="fish_audio_tts_endpoint",
+                test_capability="unsupported",
+            ),
+        }
     )
     return ProviderCredentialDefinition(
-        provider_id="minimax",
-        bindings=MappingProxyType({"video": binding}),
-        allowed_test_origins=("https://api.minimaxi.chat",),
-        display_name="MiniMax",
-        capability_consumers=MappingProxyType({"video": "video"}),
-    )
-
-
-def _fake_definition() -> ProviderCredentialDefinition:
-    return ProviderCredentialDefinition(
-        provider_id="fake",
-        bindings=MappingProxyType({}),
-        allowed_test_origins=(),
-        display_name="Fake",
-        capability_consumers=MappingProxyType({}),
+        provider_id="fish_audio",
+        bindings=bindings,
+        allowed_test_origins=("https://api.fish.audio",),
+        display_name="Fish Audio",
+        capability_consumers=MappingProxyType({"audio": "audio"}),
     )
 
 

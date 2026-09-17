@@ -73,7 +73,7 @@ class ModelSelectionService:
     ) -> SelectedModelV1 | None:
         """Validate a persisted selection without requiring a complete Canvas Node."""
 
-        if node_type == "editing":
+        if node_type in {"editing", "scene-3d"}:
             if model_selection_mode != "default" or model_ref is not None:
                 raise _model_error(
                     "model_capability_mismatch",
@@ -128,7 +128,7 @@ class ModelSelectionService:
             if model_ref is None:
                 raise _model_error("model_selection_invalid", "A model reference is required.")
             return self._record(model_ref)
-        default_key = "agent" if node_type == "script" else node_type
+        default_key = "agent" if node_type == "script" else "audio" if node_type == "voice-cast" else node_type
         defaults = self._catalog.get_default_records()
         default = defaults.get(default_key)
         if default is None:
@@ -139,7 +139,7 @@ class ModelSelectionService:
         preferred = self._record(default.model_ref)
         if default.selection_mode != "automatic":
             return preferred
-        if node_type != "audio":
+        if node_type not in ("audio", "voice-cast"):
             raise _model_error(
                 "model_automatic_policy_unsupported",
                 "Automatic model routing is currently supported only for Audio Nodes.",
@@ -174,7 +174,7 @@ class ModelSelectionService:
 
     @staticmethod
     def _validate_node_capability(node_type: str, record: ProviderModelRecord) -> None:
-        required_capability = "text" if node_type in {"text", "script"} else node_type
+        required_capability = "text" if node_type in {"text", "script"} else "audio" if node_type == "voice-cast" else node_type
         if record.capability != required_capability:
             raise _model_error(
                 "model_capability_mismatch",

@@ -270,7 +270,7 @@ export function useNodeWorkbenchDraft({
     if (!node.output_asset_id) return;
     const displayName = libraryName.trim();
     if (!displayName) {
-      setError("Enter a name before saving this image.");
+      setError("Enter a name before saving this media.");
       return;
     }
     const saved = await perform(() => onSaveImageToLibrary(node.output_asset_id!, {

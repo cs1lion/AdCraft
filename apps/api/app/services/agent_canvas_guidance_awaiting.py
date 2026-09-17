@@ -87,6 +87,33 @@ class GuidanceAwaitingService:
             expected_session_revision=expected_session_revision,
         )
 
+
+    def enter_free_node_advisory(
+        self,
+        awaiting: GuidanceAwaitingV2,
+        *,
+        expected_session_revision: int,
+        free_node_id: str,
+    ) -> GuidanceAwaitingV2:
+        if awaiting.kind != "free_node_advisory":
+            raise _error(
+                "guidance_awaiting_conflict",
+                "Free node advisory requires kind=free_node_advisory.",
+            )
+        if awaiting.resume_policy != "free_node_completed":
+            raise _error(
+                "guidance_awaiting_conflict",
+                "Free node advisory requires resume_policy=free_node_completed.",
+            )
+        if free_node_id not in awaiting.node_ids:
+            raise _error(
+                "guidance_awaiting_conflict",
+                f"Free node {free_node_id} not in awaiting node_ids.",
+            )
+        return self.enter(
+            awaiting,
+            expected_session_revision=expected_session_revision,
+        )
     def resume(
         self,
         workflow_id: str,

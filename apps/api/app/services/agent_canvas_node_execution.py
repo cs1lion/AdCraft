@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -31,30 +31,19 @@ from app.schemas.agent_canvas_ad_media import (
 from app.schemas.agent_canvas_runtime import (
     EffectiveMediaParameterSnapshotV2,
     ResolvedModelExecutionV1,
-    ResolvedModelExecutionV2,
 )
 from app.schemas.workflow_v2 import V2ProviderResult
 from app.schemas.seedance_inputs import (
     SeedanceDeliveredMediaInputV1,
     SeedanceInputManifestAuditV1,
     SeedanceInputManifestV1,
-    StoryboardGridGroundingPlanV1,
 )
 from app.schemas.agent_canvas_world_setting import WorldSettingContextEnvelopeV2
 from app.services.agent_canvas_seedance_inputs import AgentCanvasSeedanceInputCompiler
-from app.services.agent_canvas_execution_mode import (
-    CanvasExecutionModeV2,
-    CanvasSemanticExtractionModeV2,
-)
-from app.services.agent_canvas_storyboard_grounding import (
-    GroundingPlanError,
-    build_storyboard_grid_grounding_plan,
-)
-from app.services.agent_canvas_grounding_roles import canonical_storyboard_reference_role
 from app.services.durable_pi_run import DurablePiRunService
 from app.services.agent_operation_policy import AgentRunRequestFactory
 from app.services.agent_run_context_registry import validate_video_agent_operation_context
-from app.services.pi_agent_runtime_client import PiAgentRuntimeClient
+from app.services.pi_agent_runtime_client import PiAgentRuntimeClient, PiAgentRuntimeError
 from app.services.v2_provider_reference_input_delivery import (
     V2DeliveredProviderReference,
     V2ReferenceInputDeliveryFailure,
@@ -69,7 +58,6 @@ from app.tools.mock_media_fixtures import (
     MockMediaFixtureError,
     deterministic_mock_media_bytes,
 )
-from app.tools.seedance_adapter import VolcengineSeedanceAdapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +68,15 @@ class GeneratedMediaPayload:
     metadata: dict[str, object] = field(default_factory=dict)
 
 
-def _deadline_cap(timeout_seconds: float) -> datetime:
+def _deadline_cap(timeout_seconds: float | None = None) -> datetime:
+    """Deadline for one Agent run, defaulting to the configured run timeout.
+
+    The effective deadline is the larger of the class hard deadline and the
+    call-site cap, so a cap smaller than the policy budget cannot shorten
+    the frozen budget below what the operation policy grants.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = get_settings().agent_runtime_run_timeout_seconds
     return datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
 
 
@@ -106,8 +102,8 @@ class NodeExecutionContext:
     input_manifest: ResolvedNodeInputManifestV2 | None = None
     optional_input_omissions: tuple[dict[str, str], ...] = ()
     world_setting: WorldSettingContextEnvelopeV2 | None = None
-    execution_mode: CanvasExecutionModeV2 = "agent_assisted"
-    semantic_extraction: CanvasSemanticExtractionModeV2 = "agent"
+    durable_runner: DurablePiRunService | None = None
+    model_defaults: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,8 +197,6 @@ def generated_asset_publication_metadata(
             if context.effective_parameters is not None
             else []
         ),
-        "execution_mode": context.execution_mode,
-        "semantic_extraction": context.semantic_extraction,
     }
     if context.world_setting is not None:
         metadata["world_setting_context"] = {
@@ -269,10 +263,6 @@ def generated_asset_publication_metadata(
                 ),
             }
         )
-    if context.seedance_input_audit is not None:
-        grounding_audit = context.seedance_input_audit.grounding_audit
-        if grounding_audit is not None:
-            metadata["storyboard_grid_grounding"] = grounding_audit.model_dump(mode="json")
     return {key: value for key, value in metadata.items() if value is not None}
 
 
@@ -429,7 +419,13 @@ class MediaNodeExecutor:
         """Resolve provider-safe media before the scheduler starts provider work."""
 
         require_node_runnable(context.node)
-        if context.node.node_type not in {"image", "video", "audio"}:
+        if context.node.node_type not in {"image", "video", "audio", "scene-3d"}:
+            return context
+        # P0-2: scene-3d nodes that already carry a Seedance manifest have
+        # their media references pre-delivered; the Blender path (no
+        # manifest) needs no provider-side reference delivery, only the
+        # LLM SceneScript generation + Blender render.
+        if context.node.node_type == "scene-3d" and context.seedance_manifest is None:
             return context
         _require_character_identity_master_input(context)
         media_inputs = tuple(
@@ -438,20 +434,12 @@ class MediaNodeExecutor:
         AgentCanvasRoleReferencePolicyService().require_derivative_runtime_inputs(
             context.node,
             media_inputs,
-            (
-                context.input_manifest.omitted_optional_inputs
-                if context.input_manifest is not None
-                else ()
-            ),
         )
-        if context.node.node_type == "video" and context.seedance_manifest is not None:
-            return context
-        if context.node.node_type != "video" and context.delivered_references:
-            return context
-        try:
-            grounding_plan = _seedance_grounding_plan(context, media_inputs)
-        except GroundingPlanError as error:
-            raise _error(error.code, str(error)) from error
+        if context.node.node_type in {"video", "scene-3d"}:
+            if context.seedance_manifest is not None:
+                return context
+            if context.delivered_references:
+                return context
         delivery = None
         if media_inputs:
             if context.model_resolution is None:
@@ -461,11 +449,7 @@ class MediaNodeExecutor:
                 )
             delivery = self._reference_delivery.deliver_canvas_inputs(
                 model_resolution=context.model_resolution,
-                inputs=_delivery_inputs_with_validated_character_identity_semantics(
-                    context.node,
-                    media_inputs,
-                ),
-                grounding_plan=grounding_plan,
+                inputs=media_inputs,
             )
             try:
                 delivery.raise_for_canvas_failures()
@@ -498,13 +482,7 @@ class MediaNodeExecutor:
             *context.optional_input_omissions,
             *optional_delivery_omissions,
         )
-        if context.node.node_type != "video":
-            return replace(
-                context,
-                delivered_references=delivered_references,
-                optional_input_omissions=optional_input_omissions,
-            )
-        if getattr(context.model_resolution, "transport_kind", "") == "minimax_video_native":
+        if context.node.node_type not in {"video", "scene-3d"}:
             return replace(
                 context,
                 delivered_references=delivered_references,
@@ -514,7 +492,6 @@ class MediaNodeExecutor:
             SeedanceDeliveredMediaInputV1(
                 binding_id=reference.binding_id or f"asset_{reference.asset_id}",
                 asset_id=reference.asset_id,
-                version_id=reference.version_id,
                 media_type=reference.media_type,  # type: ignore[arg-type]
                 input_role=reference.input_role,  # type: ignore[arg-type]
                 source_semantic_role=reference.source_semantic_role,
@@ -530,13 +507,15 @@ class MediaNodeExecutor:
         )
         try:
             if context.model_resolution is None or not context.model_id:
-                raise _error(
-                    "model_resolution_missing",
-                    "Video execution requires a frozen model resolution.",
-                )
+                if context.node.node_type == "video":
+                    raise _error(
+                        "model_resolution_missing",
+                        "Video execution requires a frozen model resolution.",
+                    )
             manifest, audit = self._seedance_inputs.compile(
                 context.node,
-                model_id=context.model_id,
+                model_id=context.model_id
+                or (context.model_resolution.model_ref if context.model_resolution else "none"),
                 resolved_inputs=tuple(
                     item
                     for item in context.inputs
@@ -550,15 +529,10 @@ class MediaNodeExecutor:
                     context.compiled_prompt.prompt if context.compiled_prompt is not None else None
                 ),
                 effective_parameters=context.effective_parameters,
-                grounding_plan=grounding_plan,
             )
-        except (GroundingPlanError, ValueError) as error:
+        except ValueError as error:
             code = str(error)
-            if isinstance(error, GroundingPlanError):
-                pass
-            elif code != "v2_video_prompt_empty" and not code.startswith(
-                "v2_storyboard_reference_"
-            ):
+            if code != "v2_video_prompt_empty":
                 code = "provider_inputs_unsupported"
             raise _error(code, str(error)) from error
         return replace(
@@ -579,11 +553,7 @@ class MediaNodeExecutor:
                 "model_resolution_missing",
                 "Media execution requires a frozen model resolution.",
             )
-        if media_type == "video" and getattr(
-            context.model_resolution, "transport_kind", ""
-        ) not in {
-            "minimax_video_native",
-        }:
+        if media_type == "video":
             return self._execute_seedance_video(self.prepare(context))
         effective_parameters = (
             context.effective_parameters.effective
@@ -593,22 +563,9 @@ class MediaNodeExecutor:
         if context.node.semantic_role == "bgm":
             _require_bgm_duration(effective_parameters)
         prompt = _saved_prompt(context)
-        prepared = self.prepare(context)
-        provider_only_instructions = tuple(
-            reference.reference_instruction
-            for reference in prepared.delivered_references
-            if (
-                reference.reference_instruction is not None
-                and reference.reference_instruction_transport == "provider_only"
-            )
-        )
-        provider_prompt = _provider_prompt_with_reference_instructions(
-            prompt,
-            provider_only_instructions,
-        )
         provider_payload: dict[str, Any] = {
-            "provider_prompt": provider_prompt,
-            "prompt": provider_prompt,
+            "provider_prompt": prompt,
+            "prompt": prompt,
             "node_id": context.node.node_id,
             "semantic_role": context.node.semantic_role,
             "model_id": context.model_resolution.provider_model_id,
@@ -621,7 +578,7 @@ class MediaNodeExecutor:
                 "provider_model_id": context.model_resolution.provider_model_id,
             }
         )
-        provider_payload.update(_frozen_adapter_identity_payload(context.model_resolution))
+        prepared = self.prepare(context)
         if prepared.delivered_references:
             provider_payload["reference_assets"] = [
                 reference.provider_asset() for reference in prepared.delivered_references
@@ -629,10 +586,6 @@ class MediaNodeExecutor:
             provider_payload["reference_asset_ids"] = [
                 reference.asset_id for reference in prepared.delivered_references
             ]
-            if provider_only_instructions:
-                provider_payload["provider_only_reference_instructions"] = list(
-                    provider_only_instructions
-                )
         intent = self._prepare_submission_intent(context, provider_payload)
         if intent is not None and intent.provider_idempotency_token is not None:
             provider_payload["idempotency_token"] = intent.provider_idempotency_token
@@ -716,10 +669,6 @@ class MediaNodeExecutor:
                 "provider_reference_delivery_unavailable",
                 "The configured provider does not support Agent Canvas Seedance manifests.",
             )
-        try:
-            VolcengineSeedanceAdapter(self._settings).payload_for_manifest(manifest)
-        except ValueError as error:
-            raise _error(str(error), str(error)) from error
         intent = self._prepare_submission_intent(
             context,
             {
@@ -748,6 +697,18 @@ class MediaNodeExecutor:
                 )
             if intent is not None:
                 self._submission_intents.complete(intent, now=self._clock())
+            structured_content = None
+            if context.node.node_type == "scene-3d":
+                existing = dict(context.node.structured_content)
+                reference_video = manifest.video_inputs[0] if manifest.video_inputs else None
+                structured_content = {
+                    **existing,
+                    "scene_3d_provenance": {
+                        "previs_asset_id": reference_video.asset_id if reference_video else None,
+                        "model_id": result.provider_model,
+                        "provider": result.provider,
+                    },
+                }
             return NodeExecutionOutcome(
                 media=GeneratedMediaPayload(
                     content=content,
@@ -762,6 +723,7 @@ class MediaNodeExecutor:
                 provider=result.provider,
                 remote_task_id=result.remote_task_id,
                 result_descriptor=dict(result.metadata),
+                structured_content=structured_content,
                 prompt_metadata=audit_payload,
                 submission_intent_id=(intent.intent_id if intent is not None else None),
             )
@@ -838,24 +800,6 @@ def _require_bgm_duration(parameters: dict[str, object]) -> None:
         )
 
 
-def _frozen_adapter_identity_payload(
-    resolution: ResolvedModelExecutionV1,
-) -> dict[str, object]:
-    """Expose only adapter identity already frozen in the V2 resolution."""
-
-    if not isinstance(resolution, ResolvedModelExecutionV2):
-        return {}
-    return {
-        "adapter_id": resolution.adapter_id,
-        "transport_kind": resolution.transport_kind,
-        "conformance_status": resolution.conformance_status,
-        "capability_revision": resolution.capability_revision,
-        "adapter_revision": resolution.adapter_revision,
-        "requested_parameter_fingerprint": resolution.requested_parameter_fingerprint,
-        "effective_parameter_fingerprint": resolution.effective_parameter_fingerprint,
-    }
-
-
 def _generated_media_identity(media_type: str, content: bytes) -> tuple[str, str]:
     if media_type == "image" and content.startswith(b"\xff\xd8\xff"):
         return "image/jpeg", "image.jpg"
@@ -877,6 +821,8 @@ class NodeExecutionDispatcher:
         image_executor: NodeExecutor | None = None,
         video_executor: NodeExecutor | None = None,
         audio_executor: NodeExecutor | None = None,
+        scene_3d_executor: NodeExecutor | None = None,
+        voice_cast_executor: NodeExecutor | None = None,
     ) -> None:
         self._executors = {
             "text": text_executor,
@@ -884,6 +830,8 @@ class NodeExecutionDispatcher:
             "image": image_executor,
             "video": video_executor,
             "audio": audio_executor,
+            "scene-3d": scene_3d_executor,
+            "voice-cast": voice_cast_executor,
         }
 
     def execute(self, context: NodeExecutionContext) -> NodeExecutionOutcome:
@@ -1014,12 +962,44 @@ def build_default_node_dispatcher(
             submission_intents=submission_intents,
         )
 
+        def fake_scene_3d(context: NodeExecutionContext) -> NodeExecutionOutcome:
+            """Fake scene-3d: return a minimal placeholder with scene_script."""
+            prompt = (
+                context.node.generation_prompt
+                or context.node.summary_prompt
+                or context.node.title
+            )
+            scene_script = context.node.structured_content.get("scene_script") or {
+                "scene": {
+                    "environment": "indoor",
+                    "duration": 1,
+                    "frame_rate": 24,
+                    "characters": [],
+                    "objects": [],
+                    "camera": {"keyframes": []},
+                }
+            }
+            return NodeExecutionOutcome(
+                media=GeneratedMediaPayload(
+                    content=b"\x00\x00\x00\x18ftypmp42FAKE_SCENE3D",
+                    mime_type="video/mp4",
+                    filename="scene_3d_fake.mp4",
+                    metadata={"source_prompt": prompt},
+                ),
+                structured_content={
+                    "scene_script": scene_script,
+                    "frame_count": 24,
+                    "fake": True,
+                },
+            )
+
         return NodeExecutionDispatcher(
             text_executor=fake_text,
             script_executor=fake_script,
             image_executor=fake_media,
             video_executor=fake_video,
             audio_executor=fake_media,
+            scene_3d_executor=fake_scene_3d,
         )
 
     media = MediaNodeExecutor(
@@ -1035,22 +1015,41 @@ def build_default_node_dispatcher(
             "Agent Canvas Script Writer runtime is not configured.",
         )
 
+    def _build_durable_runner() -> DurablePiRunService:
+        return DurablePiRunService(
+            settings=settings,
+            client=PiAgentRuntimeClient(
+                base_url=settings.agent_runtime_base_url,
+                internal_token=settings.agent_runtime_internal_token,
+                protocol_version=settings.agent_runtime_protocol_version,
+                connect_timeout_seconds=settings.agent_runtime_connect_timeout_seconds,
+                read_timeout_seconds=settings.agent_runtime_read_timeout_seconds,
+                run_timeout_seconds=settings.agent_runtime_run_timeout_seconds,
+                max_event_bytes=settings.agent_runtime_max_event_bytes,
+                max_stream_bytes=settings.agent_runtime_max_stream_bytes,
+            ),
+        )
+
+    def _scene_3d_executor(context: NodeExecutionContext) -> NodeExecutionOutcome:
+        """scene-3d executor.
+
+        Two paths:
+        - seeded manifest present -> the previs render has already been
+          published upstream and the scheduler now wants the video model to
+          consume it (P0-2); run the provider Seedance flow instead;
+        - no manifest -> Blender render (generate SceneScript via LLM when
+          the node only carries a prompt).
+        """
+        if context.seedance_manifest is not None:
+            return media._execute_seedance_video(media.prepare(context))
+        if context.durable_runner is None and settings.agent_runtime_internal_token:
+            context = replace(context, durable_runner=_build_durable_runner())
+        return execute_scene_3d(context)
+
     return NodeExecutionDispatcher(
         text_executor=(
             TextNodeExecutor(
-                DurablePiRunService(
-                    settings=settings,
-                    client=PiAgentRuntimeClient(
-                        base_url=settings.agent_runtime_base_url,
-                        internal_token=settings.agent_runtime_internal_token,
-                        protocol_version=settings.agent_runtime_protocol_version,
-                        connect_timeout_seconds=settings.agent_runtime_connect_timeout_seconds,
-                        read_timeout_seconds=settings.agent_runtime_read_timeout_seconds,
-                        run_timeout_seconds=settings.agent_runtime_run_timeout_seconds,
-                        max_event_bytes=settings.agent_runtime_max_event_bytes,
-                        max_stream_bytes=settings.agent_runtime_max_stream_bytes,
-                    ),
-                ),
+                _build_durable_runner(),
                 timeout_seconds=settings.agent_runtime_run_timeout_seconds,
             )
             if settings.agent_runtime_internal_token
@@ -1058,19 +1057,7 @@ def build_default_node_dispatcher(
         ),
         script_executor=(
             ScriptNodeExecutor(
-                DurablePiRunService(
-                    settings=settings,
-                    client=PiAgentRuntimeClient(
-                        base_url=settings.agent_runtime_base_url,
-                        internal_token=settings.agent_runtime_internal_token,
-                        protocol_version=settings.agent_runtime_protocol_version,
-                        connect_timeout_seconds=settings.agent_runtime_connect_timeout_seconds,
-                        read_timeout_seconds=settings.agent_runtime_read_timeout_seconds,
-                        run_timeout_seconds=settings.agent_runtime_run_timeout_seconds,
-                        max_event_bytes=settings.agent_runtime_max_event_bytes,
-                        max_stream_bytes=settings.agent_runtime_max_stream_bytes,
-                    ),
-                ),
+                _build_durable_runner(),
                 timeout_seconds=settings.agent_runtime_run_timeout_seconds,
             )
             if settings.agent_runtime_internal_token
@@ -1079,6 +1066,8 @@ def build_default_node_dispatcher(
         image_executor=media,
         video_executor=media,
         audio_executor=media,
+        scene_3d_executor=_scene_3d_executor,
+        voice_cast_executor=execute_voice_cast,
     )
 
 
@@ -1141,101 +1130,480 @@ def _saved_prompt(context: NodeExecutionContext) -> str:
     return "\n\n".join(parts)
 
 
-def _seedance_grounding_plan(
-    context: NodeExecutionContext,
-    media_inputs: tuple[ResolvedMediaInputSnapshotV2, ...],
-) -> StoryboardGridGroundingPlanV1 | None:
-    """Build grounding only for persisted sequence video nodes with a grid binding."""
-
-    if context.node.creative_role != "storyboard_video":
-        return None
-    sequence_id = context.node.metadata.get("source_sequence_id")
-    if not isinstance(sequence_id, str) or not sequence_id.strip():
-        return None
-    grid_input = next(
-        (
-            item
-            for item in media_inputs
-            if item.media_type == "image"
-            and (
-                item.source_semantic_role in {"storyboard_grid", "storyboard_sequence"}
-                or item.binding_metadata.get("semantic_reference_role")
-                == "storyboard_visual_reference"
-            )
-        ),
-        None,
-    )
-    if context.model_resolution is None:
-        raise GroundingPlanError("v2_storyboard_grid_provider_payload_invalid")
-    limits = context.model_resolution.capability_metadata.get("reference_limits")
-    provider_reference_limit = limits.get("image") if isinstance(limits, dict) else None
-    if not isinstance(provider_reference_limit, int):
-        raise GroundingPlanError("v2_storyboard_grid_provider_payload_invalid")
-    if grid_input is None:
-        # A persisted storyboard-video prompt already contains the ordered
-        # storyboard direction.  When the optional grid image is still a
-        # Draft output, continue with that prompt and the other available
-        # references; a published grid remains the strict grounding path.
-        return None
-    revision = context.node.metadata.get("source_plan_revision")
-    grid_with_revision = grid_input.model_copy(
-        update={
-            "binding_metadata": {
-                **grid_input.binding_metadata,
-                "storyboard_revision": str(revision) if revision is not None else "",
-            }
-        }
-    )
-    try:
-        ordered_references = tuple(
-            {
-                "asset_id": item.asset_id,
-                "version_id": item.asset_version_id,
-                "checksum": item.asset_checksum,
-                "semantic_role": canonical_storyboard_reference_role(
-                    binding_role=item.binding_metadata.get("semantic_reference_role"),
-                    source_role=item.source_semantic_role,
-                ),
-                "binding_id": item.binding_id or f"asset:{item.asset_id}",
-                "media_type": item.media_type,
-                "required": True,
-                "display_order": item.display_order,
-            }
-            for item in media_inputs
-            if item is not grid_input and item.media_type == "image"
-        )
-    except ValueError as error:
-        raise GroundingPlanError(str(error)) from error
-    return build_storyboard_grid_grounding_plan(
-        node=context.node,
-        grid_input=grid_with_revision,
-        storyboard_content=grid_input.source_structured_content,
-        target_shot_id=sequence_id,
-        prompt_snapshot=context.node.generation_prompt or "",
-        ordered_references=ordered_references,
-        provider_reference_limit=provider_reference_limit,
-        expected_storyboard_revision=(str(revision) if revision is not None else None),
-    )
-
-
-def _provider_prompt_with_reference_instructions(
-    prompt: str,
-    instructions: tuple[str, ...],
-) -> str:
-    """Append bounded provider-only semantics without changing Node prompt authority."""
-
-    if not instructions:
-        return prompt
-    section = "Provider-only reference instructions:\n" + "\n".join(
-        f"{index}. {instruction}" for index, instruction in enumerate(instructions, start=1)
-    )
-    return f"{prompt}\n\n{section}"
-
-
 def _json_input(value: object) -> object:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     return value
+
+
+
+def execute_voice_cast(context: NodeExecutionContext) -> NodeExecutionOutcome:
+    """Generate speech audio from dialogue lines via TTS.
+
+    Expects a list of speech segments in node.structured_content["speech_segments"],
+    each with: character_id, text, start_time (optional), end_time (optional),
+    emotion (optional), voice_id (optional).
+
+    If no speech_segments are found, falls back to using generation_prompt as
+    a single dialogue line.
+
+    Execution chain:
+      speech_segments -> TTS per segment -> ffmpeg concat -> GeneratedMediaPayload (audio/wav)
+    """
+    import os
+    import tempfile
+    import subprocess
+
+    from app.core.config import get_settings
+    from app.services.scene3d.tts_engine_factory import create_tts_engine_from_settings
+
+    settings = get_settings()
+
+    # 1. Get speech segments from structured_content; fall back to prompt
+    speech_segments = context.node.structured_content.get("speech_segments")
+    if not speech_segments:
+        prompt = context.node.generation_prompt or context.node.summary_prompt or context.node.title
+        if not prompt or not prompt.strip():
+            raise _error(
+                "speech_segments_missing",
+                "No speech segments found. Add dialogue lines to the node prompt "
+                "or structured_content.speech_segments.",
+            )
+        speech_segments = [{"character_id": "narrator", "text": prompt.strip()}]
+
+    # 2. Create TTS engine
+    try:
+        tts_engine = create_tts_engine_from_settings(settings)
+    except Exception as exc:
+        raise _error("tts_engine_creation_failed", f"Failed to create TTS engine: {exc}") from exc
+
+    # 3. Generate audio for each segment
+    output_dir = tempfile.mkdtemp(prefix="voice_cast_")
+    audio_files = []
+    segment_metadata = []
+
+    for idx, segment in enumerate(speech_segments):
+        character_id = segment.get("character_id", f"character_{idx}")
+        text = segment.get("text", "").strip()
+        emotion = segment.get("emotion")
+        voice_id = segment.get("voice_id")
+
+        if not text:
+            continue
+
+        output_path = os.path.join(output_dir, f"segment_{idx:04d}.mp3")
+        try:
+            result_path = tts_engine.synthesize(
+                text=text,
+                character_id=character_id,
+                output_path=output_path,
+                emotion=emotion,
+                voice_id=voice_id,
+            )
+            if os.path.exists(result_path) and os.path.getsize(result_path) > 0:
+                audio_files.append(result_path)
+                segment_metadata.append({
+                    "character_id": character_id,
+                    "text": text,
+                    "emotion": emotion,
+                    "voice_id": voice_id,
+                    "index": idx,
+                })
+        except Exception as exc:
+            # Log but continue with other segments
+            print(f"Warning: TTS failed for segment {idx}: {exc}")
+            continue
+
+    if not audio_files:
+        raise _error(
+            "tts_all_segments_failed",
+            "All TTS segments failed. Check your TTS API key and provider configuration.",
+        )
+
+    # 4. Convert MP3 to WAV and concatenate
+    wav_files = []
+    for i, mp3_file in enumerate(audio_files):
+        wav_file = os.path.join(output_dir, f"segment_{i:04d}_converted.wav")
+        convert_cmd = [
+            "ffmpeg", "-y", "-i", mp3_file,
+            "-acodec", "pcm_s16le", "-ar", "24000", "-ac", "1",
+            wav_file
+        ]
+        try:
+            result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0 and os.path.exists(wav_file):
+                wav_files.append(wav_file)
+            else:
+                print(f"Warning: ffmpeg convert failed for {mp3_file}: {result.stderr[:200]}")
+                wav_files.append(mp3_file)  # fallback to original
+        except Exception as e:
+            print(f"Warning: ffmpeg convert exception: {e}")
+            wav_files.append(mp3_file)  # fallback
+
+    final_output = os.path.join(output_dir, "voice_cast_final.wav")
+    if len(wav_files) == 1:
+        # Single segment: just copy
+        import shutil
+        shutil.copy2(wav_files[0], final_output)
+    else:
+        # Multiple segments: use ffmpeg concat
+        concat_file = os.path.join(output_dir, "concat_list.txt")
+        with open(concat_file, "w", encoding="utf-8") as f:
+            for wav_file in wav_files:
+                # Use absolute paths with forward slashes for ffmpeg
+                safe_path = wav_file.replace("\\", "/")
+                f.write(f"file '{safe_path}'\n")
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", concat_file, "-c:a", "pcm_s16le", final_output
+        ]
+        try:
+            result = subprocess.run(
+                ffmpeg_cmd, capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0 or not os.path.exists(final_output):
+                # Fallback: use first wav file
+                import shutil
+                shutil.copy2(wav_files[0], final_output)
+        except Exception:
+            # Fallback: use first wav file
+            import shutil
+            shutil.copy2(wav_files[0], final_output)
+
+    # 5. Read final audio and return payload
+    with open(final_output, "rb") as f:
+        audio_content = f.read()
+
+    return NodeExecutionOutcome(
+        media=GeneratedMediaPayload(
+            content=audio_content,
+            mime_type="audio/wav",
+            filename="voice_cast.wav",
+            metadata={
+                "segment_count": len(segment_metadata),
+                "segments": segment_metadata,
+                "tts_provider": getattr(tts_engine, "__class__", type(tts_engine)).__name__,
+            },
+        ),
+        structured_content={
+            "speech_segments": speech_segments,
+            "generated_segments": segment_metadata,
+        },
+    )
+
+
+def execute_scene_3d(context: NodeExecutionContext) -> NodeExecutionOutcome:
+    """Render a SceneScript to video via Blender headless, with optional narration.
+
+    Expects scene_script JSON in node.structured_content["scene_script"].
+    Optional narration in node.structured_content["narration"] (text) and
+    "narration_voice" (voice id, default "default").
+
+    For sync execution, limits to 30 frames; longer scenes should use
+    the POST /scene-3d/render/async endpoint.
+
+    Execution chain:
+      scene_script -> Blender PNG frames -> ffmpeg MP4
+        -> (optional) TTS narration -> ffmpeg audio mux -> GeneratedMediaPayload
+    """
+    import os
+    import tempfile
+
+    from app.schemas.scene_script import SceneScriptRoot
+
+    # 1. Get scene_script from structured_content; fall back to NL prompt
+    #    generation (LLM) when the node only carries a generation_prompt.
+    scene_script_data = context.node.structured_content.get("scene_script")
+    if scene_script_data is None:
+        scene_script_data = _generate_scene_script_from_prompt(context)
+        # Persist the generated SceneScript on the outcome so _complete_member
+        # publishes it with the node (frozen_node stays immutable; the live
+        # node is what gets updated).
+    if scene_script_data is None:
+        raise _error(
+            "scene_script_missing",
+            "No SceneScript found and generation failed. Describe your scene "
+            "in the node prompt to generate one, or use POST /scene-3d/parse "
+            "with your prompt.",
+        )
+    try:
+        scene_script = SceneScriptRoot.model_validate(scene_script_data)
+    except Exception as exc:
+        raise _error("scene_script_invalid", f"Invalid SceneScript: {exc}") from exc
+
+    # 3. Sync executions render with a bounded frame budget; longer scenes
+    # should go through the async render endpoint instead of blocking the
+    # scheduler for minutes.  240 frames @ 30fps = 8s, well within the
+    # 300s sync render budget (Eevee renders at ~0.8s/frame on CPU).
+    total_frames = scene_script.total_frames
+    sync_frame_limit = 300
+    if total_frames > sync_frame_limit:
+        raise _error(
+            "scene_too_long_for_sync",
+            f"Scene has {total_frames} frames (> {sync_frame_limit}). "
+            "Use POST /scene-3d/render/async for long scenes.",
+        )
+
+    # 4. Render via Blender (PNG frames), with the geometric control passes
+    #    (depth/normal/flow) produced in the same pass so downstream video
+    #    models can consume them as control signals (ADR 0005 §4, P5).
+    from app.services.scene3d.blender_renderer import render_scene_script
+    from app.services.scene3d.control_passes import collect_control_passes
+
+    # BLENDER_EXECUTABLE is an operator-local path, read from the process
+    # environment; apps/api/.env supplies it via load_dotenv at startup.
+    blender_exe = os.environ.get("BLENDER_EXECUTABLE")
+    output_dir = tempfile.mkdtemp(prefix="scene3d_")
+    render_result = render_scene_script(
+        scene_script=scene_script,
+        output_dir=output_dir,
+        executable=blender_exe,
+        timeout_seconds=300,
+        include_control_passes=True,
+    )
+    if not render_result.success:
+        raise _error(
+            "blender_render_failed",
+            render_result.error or "Blender render failed",
+        )
+    control_result = collect_control_passes(scene_script, output_dir)
+    control_signals = {
+        "completeness": control_result.completeness,
+        "degradation_markers": control_result.degradation_markers,
+    }
+
+    # 5. Encode PNG frames to MP4
+    from app.services.scene3d.encoder import encode_png_sequence
+
+    video_path = os.path.join(output_dir, "output.mp4")
+    encode_result = encode_png_sequence(
+        input_dir=output_dir,
+        output_path=video_path,
+        fps=scene_script.scene.frame_rate,
+    )
+    if not encode_result.success or encode_result.output_path is None:
+        raise _error(
+            "video_encode_failed",
+            encode_result.error or "Video encoding failed",
+        )
+
+    # 5b. Optional: generate narration audio via TTS and mux into video
+    narration = context.node.structured_content.get("narration")
+    narration_voice = context.node.structured_content.get("narration_voice", "default")
+    has_narration = bool(narration and str(narration).strip())
+    final_video_path = encode_result.output_path
+
+    if has_narration:
+        try:
+            from app.core.config import get_settings
+            from app.services.scene3d.tts_engine_factory import create_tts_engine_from_settings
+            from app.services.scene3d.encoder import mux_audio_to_video
+
+            settings = get_settings()
+            tts_engine = create_tts_engine_from_settings(settings)
+            audio_path = os.path.join(output_dir, "narration.mp3")
+            tts_engine.synthesize(str(narration), str(narration_voice), audio_path)
+
+            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                muxed_path = os.path.join(output_dir, "output_with_audio.mp4")
+                mux_result = mux_audio_to_video(
+                    video_path=encode_result.output_path,
+                    audio_path=audio_path,
+                    output_path=muxed_path,
+                )
+                if mux_result.success and mux_result.output_path:
+                    final_video_path = mux_result.output_path
+        except Exception as exc:
+            # TTS/audio mux is best-effort; video without narration still works
+            import logging
+            logging.getLogger(__name__).warning(
+                "Narration TTS/mux failed, continuing with video-only: %s", exc
+            )
+
+    # 6. Read video content
+    with open(final_video_path, "rb") as f:
+        video_content = f.read()
+
+    if len(video_content) == 0:
+        raise _error("video_empty", "Rendered video file is empty")
+
+    # 7. Return outcome with media + structured_content.  The outcome's
+    # structured_content is a full replacement at publish time, so it must
+    # carry every key the user may have set directly (narration, etc.) plus
+    # the new render results.
+    existing_structured = dict(context.node.structured_content)
+    return NodeExecutionOutcome(
+        media=GeneratedMediaPayload(
+            content=video_content,
+            mime_type="video/mp4",
+            filename="scene_3d_output.mp4",
+            metadata={
+                "frame_count": render_result.frame_count,
+                "render_duration_seconds": getattr(
+                    render_result, "duration_seconds", None
+                ),
+                "has_narration": has_narration,
+                "narration_voice": str(narration_voice) if has_narration else None,
+            },
+        ),
+        structured_content={
+            **existing_structured,
+            "scene_script": scene_script.model_dump(mode="json"),
+            "frame_count": render_result.frame_count,
+            "control_signals": control_signals,
+        },
+    )
+
+
+def _generate_scene_script_from_prompt(
+    context: NodeExecutionContext,
+) -> dict[str, object] | None:
+    """Generate a SceneScript from the node's natural-language prompt.
+
+    Uses the LLM (via the 3D Storyboard skill) to produce a SceneScript
+    JSON object, then validates it via the parser. Returns the validated
+    dict, or None when no runner/prompt is available. Provider-level
+    failures and parse failures raise ``scene_script_generation_failed`` /
+    ``scene_script_parse_failed`` so the node error carries the real cause.
+    """
+    prompt = _saved_prompt(context)
+    if not prompt.strip():
+        return None
+
+    from app.core.config import get_settings
+    from app.services.agent_operation_policy import AgentRunRequestFactory
+    from app.services.agent_run_context_registry import validate_video_agent_operation_context
+    from app.schemas.agent_runtime import AgentRunContext, AgentRunCompletedPayload
+    from app.services.scene3d.parser import parse_llm_output
+
+    settings = get_settings()
+    if not hasattr(settings, "agent_runtime_mode") or settings.agent_runtime_mode == "fake":
+        # In fake mode, no real LLM is available; return None so the caller
+        # surfaces a clear "no scene_script" error instead of a silent stub.
+        return None
+
+    # Reuse the same durable runner as the text/script executors so the
+    # SceneScript generation path goes through the same agent runtime.
+    durable_runner = context.durable_runner
+    if durable_runner is None:
+        return None
+
+    run_context = AgentRunContext(
+        operation="execute_canvas_scene_3d",
+        user_input=prompt,
+        workflow_id=context.node.workflow_id,
+        world_setting=context.world_setting,
+        target=None,
+        input_payload={"resolved_inputs": [_json_input(item) for item in context.inputs]},
+    )
+    validate_video_agent_operation_context("execute_canvas_scene_3d", run_context)
+
+    request = AgentRunRequestFactory().build(
+        run_id="candidate_agent_run",
+        request_id="candidate_agent_request",
+        agent_name="video_agent",
+        operation="execute_canvas_scene_3d",
+        deadline_cap=_deadline_cap(),
+        model_ref=_scene_3d_model_ref(context),
+        context=run_context,
+        contract_name="AgentCanvasScene3DOutput",
+        contract_schema=_agent_canvas_scene_3d_output_schema(),
+        audit_metadata={"tool_mode": "structured_only"},
+    )
+
+    try:
+        result = durable_runner.run(
+            request,
+            identity_fields={
+                "workflow_id": context.node.workflow_id,
+                "execution_id": context.execution_id,
+                "node_id": context.node.node_id,
+                "node_revision": context.node.revision,
+                "agent_name": "video_agent",
+                "operation": "execute_canvas_scene_3d",
+            },
+            model_ref=_scene_3d_model_ref(context),
+        )
+    except PiAgentRuntimeError as error:
+        # A terminal failure from the agent runtime (provider timeout,
+        # structured-output invalid after repair attempts, ...) is a real
+        # generation failure: surface it with the stable error code instead
+        # of silently producing "generation failed" with no detail.
+        raise _error(
+            error.code or "scene_script_generation_failed",
+            error.message or "SceneScript generation failed.",
+            details={"stage": "scene_script_generation"},
+        ) from error
+    except Exception as error:
+        raise _error(
+            "scene_script_generation_failed",
+            "SceneScript generation failed: " + str(error),
+            details={"stage": "scene_script_generation"},
+        ) from error
+
+    completed = AgentRunCompletedPayload.model_validate(result.terminal_payload)
+    raw_output = completed.value.get("raw_output", "")
+    if not isinstance(raw_output, str) or not raw_output.strip():
+        # The skill instructs the model to emit ONLY a ```json-fenced
+        # SceneScript object.  Depending on how the structured tool wraps
+        # the LLM text, it may end up under ``content`` / ``raw_output`` /
+        # the top-level value.  Try them in order.
+        raw_output = ""
+        for key in ("raw_output", "content", "output", "text"):
+            candidate = completed.value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                raw_output = candidate
+                break
+        if not raw_output:
+            return None
+
+    parse_result = parse_llm_output(raw_output)
+    if not parse_result.success or parse_result.scene_script is None:
+        raise _error(
+            "scene_script_parse_failed",
+            parse_result.error or "LLM output could not be parsed into a SceneScript.",
+            details={"raw_output_preview": raw_output[:500], "parse_errors": parse_result.error_details},
+        )
+    return parse_result.scene_script.model_dump(mode="json")
+
+
+def _agent_canvas_scene_3d_output_schema() -> dict[str, object]:
+    from app.schemas.agent_runtime import AgentCanvasScene3DOutput
+
+    return AgentCanvasScene3DOutput.model_json_schema()
+
+
+def _scene_3d_model_ref(context: NodeExecutionContext) -> str:
+    """Resolve the Agent text model ref for scene-3d SceneScript generation.
+
+    Scene-3d nodes carry no model resolution of their own (model_selection
+    is bypassed for node_type "scene-3d"), so the NL->SceneScript LLM step
+    falls back to the installation Agent text default ("agent" key) from the
+    provider model catalog repository.
+    """
+    if context.model_resolution is not None:
+        return context.model_resolution.model_ref
+    agent_default = (context.model_defaults or {}).get("agent")
+    if agent_default is None:
+        from app.core.config import get_settings
+        from app.persistence.database import create_v2_database
+        from app.persistence.provider_model_repository import ProviderModelRepository
+
+        settings = get_settings()
+        database = create_v2_database(settings.media_data_dir)
+        defaults = ProviderModelRepository(database).get_defaults()
+        agent_default = next(
+            (record.model_ref for record in defaults.values() if record.default_key == "agent"),
+            None,
+        )
+    if agent_default is None:
+        raise _error(
+            "agent_model_default_missing",
+            "No Agent text default is configured; SceneScript generation "
+            "requires the 'agent' model default.",
+        )
+    return agent_default.model_ref if hasattr(agent_default, "model_ref") else str(agent_default)
 
 
 def _error(
@@ -1266,7 +1634,7 @@ def _delivery_failure_identity(
             failure.node_id or (source.source_node_id if source is not None else None)
         ),
         "asset_id": failure.asset_id,
-        "required": True,
+        "required": source.required if source is not None else True,
         "reason": failure.reason,
     }
 
@@ -1278,9 +1646,6 @@ def _require_character_identity_master_input(context: NodeExecutionContext) -> N
         and context.node.structured_content.get("character_asset_kind") == "turnaround"
     ):
         return
-    target_pair_id = context.node.metadata.get("character_pair_id")
-    target_occurrence_id = context.node.metadata.get("occurrence_id")
-    target_phase = context.node.metadata.get("character_phase")
     candidates = tuple(
         item
         for item in context.inputs
@@ -1289,63 +1654,16 @@ def _require_character_identity_master_input(context: NodeExecutionContext) -> N
         and item.source_semantic_role == "character"
         and item.media_type == "image"
         and item.input_role == "image_reference"
+        and item.required
         and item.binding_metadata.get("reference_purpose") == "identity_master"
         and item.binding_metadata.get("semantic_reference_role") == "subject_reference"
-        and (
-            not isinstance(target_pair_id, str)
-            or item.binding_metadata.get("character_pair_id") == target_pair_id
-        )
-        and (
-            not isinstance(target_occurrence_id, str)
-            or item.binding_metadata.get("occurrence_id") == target_occurrence_id
-        )
-        and (
-            not isinstance(target_phase, str)
-            or item.binding_metadata.get("character_phase") == target_phase
-        )
     )
     if len(candidates) != 1:
-        omissions = (
-            context.input_manifest.omitted_optional_inputs
-            if context.input_manifest is not None
-            else ()
-        )
-        if AgentCanvasRoleReferencePolicyService.has_valid_derivative_no_output_omission(
-            context.node,
-            omissions,
-        ):
-            return
         raise _error(
             "character_identity_master_binding_invalid",
             "Character Turnaround requires exactly one Ready Character Main image Binding.",
             details={"target_node_id": context.node.node_id},
         )
-
-
-def _delivery_inputs_with_validated_character_identity_semantics(
-    node: CanvasNodeV2,
-    inputs: tuple[ResolvedMediaInputSnapshotV2, ...],
-) -> tuple[ResolvedMediaInputSnapshotV2, ...]:
-    """Project validated Character identity semantics into the delivery compiler."""
-
-    if not (
-        node.node_type == "image"
-        and node.creative_role == "character"
-        and node.structured_content.get("character_asset_kind") == "turnaround"
-    ):
-        return inputs
-    return tuple(
-        item.model_copy(
-            update={
-                "binding_metadata": {
-                    **item.binding_metadata,
-                    "reference_kind": "character_main",
-                    "reference_purpose": "identity_guidance",
-                }
-            }
-        )
-        for item in inputs
-    )
 
 
 def _seedance_checksum(asset_id: str, version_id: str | None) -> str:

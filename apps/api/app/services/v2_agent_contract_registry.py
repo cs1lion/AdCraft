@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 from app.schemas.front_desk import FrontDeskIntentOutput
 from app.schemas.agent_runtime import (
     AgentActionEnvelopeV2,
+    AgentCanvasScene3DOutput,
     AgentCanvasScriptOutput,
     AgentCanvasTextOutput,
     AgentCommandPlanDraftV2,
@@ -149,6 +150,7 @@ _EXPLICIT_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     StoryboardSegmentMaterializationDraftV2,
     V2QuickMediaPromptPlan,
     V2ProductMainPromptPlan,
+    AgentCanvasScene3DOutput,
     V2ProductMultiViewPromptPlan,
     V2ProductPromptPlan,
     V2CharacterMainPromptPlan,
