@@ -1,0 +1,497 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { GlobalTimelinePanel } from "./GlobalTimelinePanel.tsx";
+import type {
+  TimelineClipV1,
+  TimelineDuckingConfigV1,
+  TimelineTrackV1,
+  TimelineV1,
+} from "./timelineTypes.ts";
+import {
+  deleteClip,
+  getMediaToolchainCapabilities,
+  getTimeline,
+  listLatestAudioDegradations,
+  updateClip,
+  updateTimeline,
+  updateTrack,
+} from "./timelineApi.ts";
+
+vi.mock("./timelineApi.ts", () => ({
+  getTimeline: vi.fn(),
+  updateTimeline: vi.fn(),
+  updateTrack: vi.fn(),
+  updateClip: vi.fn(),
+  deleteClip: vi.fn(),
+  getMediaToolchainCapabilities: vi.fn(),
+  listLatestAudioDegradations: vi.fn(),
+  AUDIO_DUCKING_UNAVAILABLE: "audio_ducking_unavailable",
+}));
+
+const WORKFLOW_ID = "wf-timeline-ui";
+const TIMESTAMP = "2026-09-17T00:00:00+00:00";
+
+function makeClip(overrides: Partial<TimelineClipV1> = {}): TimelineClipV1 {
+  return {
+    clip_id: "clip_unset",
+    track_id: "track_unset",
+    start_time: 0,
+    duration: 2,
+    source_start: 0,
+    source_duration: null,
+    asset_id: null,
+    asset_version_id: null,
+    source_node_id: null,
+    fade_in: null,
+    fade_out: null,
+    transition_in_type: null,
+    transition_in_duration: null,
+    transition_out_type: null,
+    transition_out_duration: null,
+    bound_character_id: null,
+    label: null,
+    color: null,
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
+    ...overrides,
+  };
+}
+
+function makeTrack(overrides: Partial<TimelineTrackV1> & {
+  track_id: string;
+  type: TimelineTrackV1["type"];
+}): TimelineTrackV1 {
+  const { track_id, type } = overrides;
+  return {
+    timeline_id: "timeline_1",
+    name: type.charAt(0).toUpperCase() + type.slice(1),
+    muted: false,
+    volume: 1,
+    locked: false,
+    display_order: 0,
+    clips: [],
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
+    ...overrides,
+    track_id,
+    type,
+  };
+}
+
+function makeTimeline(overrides: Partial<TimelineV1> = {}): TimelineV1 {
+  return {
+    timeline_id: "timeline_1",
+    workflow_id: WORKFLOW_ID,
+    duration_seconds: 10,
+    fps: 30,
+    ducking: null,
+    tracks: [],
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
+    ...overrides,
+  };
+}
+
+const voiceTrack = makeTrack({
+  track_id: "track_voice",
+  type: "voice",
+  name: "Voice",
+  display_order: 1,
+  clips: [
+    makeClip({
+      clip_id: "clip_voice_1",
+      track_id: "track_voice",
+      label: "Voice line 1",
+    }),
+  ],
+});
+
+const bgmTrack = makeTrack({
+  track_id: "track_bgm",
+  type: "bgm",
+  name: "BGM",
+  display_order: 2,
+  clips: [makeClip({ clip_id: "clip_bgm_1", track_id: "track_bgm", duration: 8 })],
+});
+
+const videoTrack = makeTrack({
+  track_id: "track_video",
+  type: "video",
+  name: "Video",
+  display_order: 0,
+  clips: [
+    makeClip({
+      clip_id: "clip_video_1",
+      track_id: "track_video",
+      label: "Video clip 1",
+    }),
+  ],
+});
+
+function renderPanel() {
+  return render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} />);
+}
+
+function stubTimelineSave(fixture: TimelineV1) {
+  vi.mocked(updateTimeline).mockImplementation(async (_workflowId, payload) => ({
+    ...fixture,
+    ducking: payload.ducking ?? null,
+  }));
+}
+
+describe("GlobalTimelinePanel — audio track controls", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [videoTrack, voiceTrack, bgmTrack] }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(updateTrack).mockImplementation(async (_workflowId, trackId, patch) => {
+      const source = [videoTrack, voiceTrack, bgmTrack].find((t) => t.track_id === trackId);
+      return { ...(source as TimelineTrackV1), ...patch };
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("PATCHes muted when the voice-track mute button is clicked", async () => {
+    renderPanel();
+
+    const muteButton = await screen.findByRole("button", { name: "Mute Voice" });
+    fireEvent.click(muteButton);
+
+    await waitFor(() =>
+      expect(updateTrack).toHaveBeenCalledWith(WORKFLOW_ID, "track_voice", { muted: true }),
+    );
+    // Optimistic UI flips to an unmute action.
+    expect(screen.getByRole("button", { name: "Unmute Voice" })).toBeTruthy();
+  });
+
+  it("PATCHes volume when an audio-track volume slider moves", async () => {
+    renderPanel();
+
+    const slider = await screen.findByRole("slider", { name: "BGM track volume" });
+    fireEvent.change(slider, { target: { value: "0.45" } });
+
+    await waitFor(() =>
+      expect(updateTrack).toHaveBeenCalledWith(WORKFLOW_ID, "track_bgm", { volume: 0.45 }),
+    );
+  });
+
+  it("renders no mute or volume control for non-audio tracks", async () => {
+    renderPanel();
+    await screen.findByRole("button", { name: "Mute Voice" });
+
+    expect(screen.queryByRole("button", { name: "Mute Video" })).toBeNull();
+    expect(screen.queryByRole("slider", { name: "Video track volume" })).toBeNull();
+  });
+
+  it("disables mute and volume controls on a locked track", async () => {
+    const lockedBgm = { ...bgmTrack, locked: true };
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [voiceTrack, lockedBgm] }),
+    );
+    renderPanel();
+
+    const muteButton = await screen.findByRole("button", { name: "Mute BGM" });
+    expect(muteButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("slider", { name: "BGM track volume" }).hasAttribute("disabled")).toBe(
+      true,
+    );
+  });
+});
+
+describe("GlobalTimelinePanel — selected clip inspector", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [videoTrack, voiceTrack, bgmTrack] }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(updateClip).mockImplementation(async (_workflowId, _clipId, patch) => ({
+      ...makeClip(),
+      ...patch,
+      clip_id: _clipId as string,
+    }));
+    vi.mocked(deleteClip).mockResolvedValue(undefined);
+  });
+
+  afterEach(cleanup);
+
+  it("saves precise timing, trim and fade edits for an audio clip (empty clears to null)", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    fireEvent.change(within(inspector).getByLabelText("Clip duration in seconds"), {
+      target: { value: "3.5" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Source trim length in seconds"), {
+      target: { value: "" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Fade in duration in seconds"), {
+      target: { value: "0.2" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Fade out duration in seconds"), {
+      target: { value: "" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Clip label"), {
+      target: { value: "" },
+    });
+
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    const [, clipId, payload] = vi.mocked(updateClip).mock.calls[0];
+    expect(clipId).toBe("clip_voice_1");
+    expect(payload).toEqual({
+      start_time: 0,
+      duration: 3.5,
+      source_start: 0,
+      source_duration: null,
+      fade_in: 0.2,
+      fade_out: null,
+      label: null,
+    });
+  });
+
+  it("never sends fade fields from a non-audio clip inspector", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    expect(within(inspector).queryByLabelText("Fade in duration in seconds")).toBeNull();
+    expect(within(inspector).queryByLabelText("Fade out duration in seconds")).toBeNull();
+
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(updateClip).mock.calls[0][2];
+    expect(payload.fade_in).toBeUndefined();
+    expect(payload.fade_out).toBeUndefined();
+  });
+
+  it("blocks save and shows an error when duration is non-positive", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    fireEvent.change(within(inspector).getByLabelText("Clip duration in seconds"), {
+      target: { value: "0" },
+    });
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    expect(await within(inspector).findByRole("alert")).toBeTruthy();
+    expect(updateClip).not.toHaveBeenCalled();
+  });
+
+  it("deletes the selected clip and closes the inspector", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-delete"));
+
+    await waitFor(() =>
+      expect(deleteClip).toHaveBeenCalledWith(WORKFLOW_ID, "clip_voice_1"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("timeline-clip-inspector")).toBeNull(),
+    );
+  });
+});
+
+describe("GlobalTimelinePanel — ducking settings popover", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+  });
+
+  afterEach(cleanup);
+
+  it("saves a custom ducking override via PATCH", async () => {
+    const fixture = makeTimeline({ tracks: [voiceTrack, bgmTrack] });
+    vi.mocked(getTimeline).mockResolvedValue(fixture);
+    stubTimelineSave(fixture);
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-ducking-button"));
+    const popover = await screen.findByTestId("timeline-ducking-popover");
+    expect(within(popover).queryByText(/Add at least one Voice and one BGM clip/)).toBeNull();
+
+    fireEvent.change(within(popover).getByLabelText("Threshold (dB) value"), {
+      target: { value: "-20" },
+    });
+    fireEvent.click(within(popover).getByTestId("timeline-ducking-save"));
+
+    await waitFor(() => expect(updateTimeline).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateTimeline).mock.calls[0][1]).toEqual({
+      ducking: {
+        enabled: true,
+        threshold_db: -20,
+        ratio: 12,
+        attack_ms: 50,
+        release_ms: 250,
+        makeup_gain_db: 0,
+      } satisfies TimelineDuckingConfigV1,
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("timeline-ducking-popover")).toBeNull(),
+    );
+  });
+
+  it("rejects out-of-range parameters without calling the API", async () => {
+    const fixture = makeTimeline({ tracks: [voiceTrack, bgmTrack] });
+    vi.mocked(getTimeline).mockResolvedValue(fixture);
+    stubTimelineSave(fixture);
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-ducking-button"));
+    const popover = await screen.findByTestId("timeline-ducking-popover");
+    fireEvent.change(within(popover).getByLabelText("Threshold (dB) value"), {
+      target: { value: "-200" },
+    });
+    fireEvent.click(within(popover).getByTestId("timeline-ducking-save"));
+
+    expect(within(popover).getByText(/outside their valid range/)).toBeTruthy();
+    expect(updateTimeline).not.toHaveBeenCalled();
+  });
+
+  it("resets to renderer auto-defaults with an explicit null payload", async () => {
+    const fixture = makeTimeline({
+      tracks: [voiceTrack, bgmTrack],
+      ducking: {
+        enabled: true,
+        threshold_db: -18,
+        ratio: 8,
+        attack_ms: 40,
+        release_ms: 300,
+        makeup_gain_db: 1,
+      },
+    });
+    vi.mocked(getTimeline).mockResolvedValue(fixture);
+    stubTimelineSave(fixture);
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-ducking-button"));
+    const popover = await screen.findByTestId("timeline-ducking-popover");
+    const resetButton = within(popover).getByRole("button", { name: "Reset to Auto" });
+    expect(resetButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(resetButton);
+
+    await waitFor(() =>
+      expect(updateTimeline).toHaveBeenCalledWith(WORKFLOW_ID, { ducking: null }),
+    );
+  });
+
+  it("keeps Reset to Auto disabled while no stored override exists", async () => {
+    const fixture = makeTimeline({ tracks: [voiceTrack, bgmTrack] });
+    vi.mocked(getTimeline).mockResolvedValue(fixture);
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-ducking-button"));
+    const popover = await screen.findByTestId("timeline-ducking-popover");
+    expect(
+      within(popover).getByRole("button", { name: "Reset to Auto" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("warns when voice and BGM clips are not both present", async () => {
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ tracks: [videoTrack, voiceTrack] }));
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-ducking-button"));
+    const popover = await screen.findByTestId("timeline-ducking-popover");
+    expect(within(popover).getByText(/Add at least one Voice and one BGM clip/)).toBeTruthy();
+  });
+
+  it("surfaces renderer-side ducking incompatibility inside the popover", async () => {
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "degraded",
+      feature_flags: { audio_ducking: false },
+      missing_requirements: ["ffmpeg"],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ tracks: [voiceTrack, bgmTrack] }));
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-ducking-button"));
+    const popover = await screen.findByTestId("timeline-ducking-popover");
+    const warning = await within(popover).findByTestId("timeline-ducking-unsupported");
+    expect(warning.textContent).toContain("sidechaincompress");
+  });
+});
+
+describe("GlobalTimelinePanel — degradation banner & capability probe", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [videoTrack, voiceTrack, bgmTrack] }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("probes media toolchain capabilities once on mount", async () => {
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    renderPanel();
+    await screen.findByTestId("timeline-ducking-button");
+
+    expect(getMediaToolchainCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the latest audio degradation event and allows dismissing it", async () => {
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([
+      {
+        seq: 3,
+        created_at: TIMESTAMP,
+        payload: {
+          export_id: "export_abc123",
+          degradations: ["audio_ducking_unavailable"],
+        },
+      },
+      {
+        seq: 11,
+        created_at: TIMESTAMP,
+        payload: {
+          export_id: "export_def456",
+          degradations: ["audio_ducking_unavailable"],
+        },
+      },
+    ]);
+    renderPanel();
+
+    const banner = await screen.findByTestId("timeline-audio-degradation-banner");
+    expect(banner.textContent).toContain("sidechaincompress");
+    expect(banner.textContent).toContain("def456");
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Dismiss degradation notice" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("timeline-audio-degradation-banner")).toBeNull(),
+    );
+  });
+
+  it("renders no banner when no degradation events exist", async () => {
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    renderPanel();
+    await screen.findByTestId("timeline-ducking-button");
+
+    expect(screen.queryByTestId("timeline-audio-degradation-banner")).toBeNull();
+  });
+});

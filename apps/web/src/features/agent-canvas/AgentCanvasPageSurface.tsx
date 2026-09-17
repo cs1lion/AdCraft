@@ -1296,6 +1296,7 @@ export function AgentCanvasPage() {
       <div
         ref={pointerSpotlight.hostRef}
         className={`agent-canvas-board${layoutPreview.active ? " is-layout-previewing" : ""}${canvasInteracting ? " is-interacting" : ""}`}
+        style={{ display: "flex", flexDirection: "column" }}
         onContextMenu={(event) => event.preventDefault()}
         onPointerMove={pointerSpotlight.onPointerMove}
         onPointerLeave={pointerSpotlight.onPointerLeave}
@@ -1311,6 +1312,7 @@ export function AgentCanvasPage() {
           }
         }}
       >
+        <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <ReactFlow<AgentCanvasFlowNode, Edge>
           nodes={nodes}
           edges={renderedEdges}
@@ -1782,11 +1784,16 @@ export function AgentCanvasPage() {
             onClose={() => setConnectedNodeMenu(null)}
           />
         ) : null}
-      </div>
 
-      <Suspense fallback={null}>
-        <GlobalTimelinePanel workflowId={workflow.workflow_id} />
-      </Suspense>
+        </div>
+
+        {/* Global Timeline Panel (ADR 0007) */}
+        <div style={{ flexShrink: 0, borderTop: "1px solid #353535" }}>
+          <Suspense fallback={null}>
+            <GlobalTimelinePanel workflowId={workflow?.workflow_id} />
+          </Suspense>
+        </div>
+      </div>
 
       <Suspense fallback={null}>
         <AgentCanvasChatPanel

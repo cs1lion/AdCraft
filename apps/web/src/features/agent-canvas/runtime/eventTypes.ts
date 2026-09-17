@@ -154,5 +154,6 @@ export const AGENT_CANVAS_SSE_EVENT_TYPES = [
   "editing_export_completed",
   "editing_export_failed",
   "editing_export_cancelled",
+  "editing_export_audio_degraded",
   "editing_export_imported_to_canvas",
 ] as const;
