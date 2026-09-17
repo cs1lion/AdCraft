@@ -621,6 +621,116 @@ describe("GlobalTimelinePanel — cross-track drag & edge snapping", () => {
     ]);
     expect(moveClip).not.toHaveBeenCalled();
   });
+
+  it("quantizes same-track drags to the selected 1s snap grid", async () => {
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Voice line 1" });
+
+    fireEvent.click(screen.getByTestId("timeline-snap-grid-second"));
+
+    // 110px = 2.75s; on the 1s grid the new start must round to 3s.
+    fireEvent.mouseDown(clip, { clientX: 200, clientY: 96 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 310,
+      clientY: 96,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 310,
+      clientY: 96,
+    });
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0]).toEqual([
+      WORKFLOW_ID,
+      "clip_voice_1",
+      { start_time: 3, duration: 2 },
+    ]);
+  });
+
+  it("cancels and resyncs when a same-track drop would overlap another clip", async () => {
+    const crowdedVideo = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      name: "Video",
+      display_order: 0,
+      clips: [
+        makeClip({
+          clip_id: "c_first",
+          track_id: "track_video",
+          label: "First",
+          start_time: 0,
+          duration: 2,
+        }),
+        makeClip({
+          clip_id: "c_second",
+          track_id: "track_video",
+          label: "Second",
+          start_time: 5,
+          duration: 2,
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [crowdedVideo] }),
+    );
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "First" });
+
+    // 180px = 4.5s: dragging the 2s first clip to 4.5s overlaps 5–7s.
+    fireEvent.mouseDown(clip, { clientX: 200, clientY: 48 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 380,
+      clientY: 48,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 380,
+      clientY: 48,
+    });
+
+    await waitFor(() => expect(getTimeline).toHaveBeenCalledTimes(2));
+    expect(updateClip).not.toHaveBeenCalled();
+    expect(moveClip).not.toHaveBeenCalled();
+  });
+
+  it("marks overlapping clips with data-clip-overlap but not back-to-back clips", async () => {
+    const overlapTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      name: "Video",
+      display_order: 0,
+      clips: [
+        makeClip({ clip_id: "c_a", track_id: "track_video", label: "A", duration: 2 }),
+        makeClip({
+          clip_id: "c_b",
+          track_id: "track_video",
+          label: "B",
+          start_time: 1.5,
+          duration: 2,
+        }),
+        makeClip({
+          clip_id: "c_c",
+          track_id: "track_video",
+          label: "C",
+          start_time: 3.5,
+          duration: 1,
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [overlapTrack] }),
+    );
+    renderPanel();
+    await screen.findByRole("button", { name: "A" });
+
+    const rows = screen.getAllByTestId("timeline-clip");
+    const byId = Object.fromEntries(
+      rows.map((row) => [row.getAttribute("aria-label"), row]),
+    );
+    expect(byId.A?.getAttribute("data-clip-overlap")).toBe("true");
+    expect(byId.B?.getAttribute("data-clip-overlap")).toBe("true");
+    // C starts exactly when B ends (3.5s) — touching is not an overlap.
+    expect(byId.C?.getAttribute("data-clip-overlap")).toBeNull();
+  });
 });
 
 describe("GlobalTimelinePanel — live refresh & orphan clips", () => {
@@ -736,5 +846,123 @@ describe("GlobalTimelinePanel — live refresh & orphan clips", () => {
 
     const clip = await screen.findByRole("button", { name: "Sourced shot" });
     expect(clip.getAttribute("data-clip-orphan")).toBeNull();
+  });
+
+  it("shows an orphan cleanup notice in the inspector and deletes from it", async () => {
+    const orphanTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      clips: [
+        makeClip({
+          clip_id: "clip_gone",
+          track_id: "track_video",
+          source_node_id: "node_gone",
+          label: "Gone shot",
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [orphanTrack] }),
+    );
+    vi.mocked(deleteClip).mockResolvedValue(undefined);
+
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        workflowNodeIds={new Set(["someone_else"])}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Gone shot (source node deleted)",
+      }),
+    );
+    const notice = await screen.findByTestId("timeline-orphan-inspector-notice");
+    expect(notice.textContent).toContain("Source node deleted");
+    const deleteButton = screen.getByRole("button", {
+      name: "Delete orphan clip",
+    });
+    fireEvent.click(deleteButton);
+
+    await waitFor(() =>
+      expect(deleteClip).toHaveBeenCalledWith(WORKFLOW_ID, "clip_gone"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("timeline-clip-inspector")).toBeNull(),
+    );
+  });
+
+  it("highlights the clip originating from the canvas-selected node", async () => {
+    const linkedTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      clips: [
+        makeClip({
+          clip_id: "clip_alive",
+          track_id: "track_video",
+          source_node_id: "node_alive",
+          label: "Alive shot",
+        }),
+        makeClip({
+          clip_id: "clip_other",
+          track_id: "track_video",
+          start_time: 2,
+          source_node_id: "node_other",
+          label: "Other shot",
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [linkedTrack] }),
+    );
+
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        workflowNodeIds={new Set(["node_alive", "node_other"])}
+        highlightedSourceNodeId="node_alive"
+      />,
+    );
+
+    const linked = await screen.findByRole("button", { name: "Alive shot" });
+    expect(linked.getAttribute("data-clip-canvas-linked")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "Other shot" }).getAttribute(
+        "data-clip-canvas-linked",
+      ),
+    ).toBeNull();
+  });
+
+  it("invokes onClipClick with the clicked clip for canvas focus wiring", async () => {
+    const linkedTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      clips: [
+        makeClip({
+          clip_id: "clip_alive",
+          track_id: "track_video",
+          source_node_id: "node_alive",
+          label: "Alive shot",
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [linkedTrack] }),
+    );
+    const onClipClick = vi.fn();
+
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        workflowNodeIds={new Set(["node_alive"])}
+        onClipClick={onClipClick}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Alive shot" }));
+    expect(onClipClick).toHaveBeenCalledTimes(1);
+    expect(onClipClick.mock.calls[0][0].clip_id).toBe("clip_alive");
+    expect(onClipClick.mock.calls[0][0].source_node_id).toBe("node_alive");
   });
 });

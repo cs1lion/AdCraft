@@ -142,10 +142,13 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [x] Drag clips between tracks (audio↔audio / visual↔visual only; locked or
   incompatible rows reject the drop and trigger a server resync; move
   validated server-side against same-timeline target track, 404 otherwise)
-- [ ] Snap to grid (1s, 0.5s, 0.1s) — currently frame (1/fps) snapping only
+- [x] Snap to grid (frame / 0.1s / 0.5s / 1s selector in the panel header;
+  move and both resize modes quantize to the selected grid)
 - [x] Snap to other clip edges (start/end edges of all other clips plus 0
   and the playhead; 10px threshold, nearest valid candidate, gold guide line)
-- [ ] Overlap detection and resolution
+- [x] Overlap detection and resolution (same-track overlapping drops are
+  rejected and trigger a server resync; back-to-back edges are allowed;
+  existing overlaps are flagged with a red outline in the panel)
 
 ### 3.6 Multi-Select & Batch Operations
 - [ ] Select multiple clips (Ctrl+click, box select)
@@ -164,8 +167,8 @@ layer. Nodes generate assets; the timeline arranges them in time.
   dragging and flushed on drop)
 - [x] Orphan clips (source node deleted) get an amber dashed outline and
   tooltip in the panel, so the retained clips can be reviewed/cleaned up
-- [ ] Orphan cleanup affordance (delete/re-link action from the inspector)
-- [ ] Clip ↔ canvas node bi-directional focus (click clip to locate node)
+- [x] Orphan cleanup affordance (delete/re-link action from the inspector)
+- [x] Clip ↔ canvas node bi-directional focus (click clip to locate node)
 
 ---
 

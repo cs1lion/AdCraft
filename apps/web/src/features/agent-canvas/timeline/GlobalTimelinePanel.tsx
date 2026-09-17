@@ -37,10 +37,16 @@ import {
 import {
   applyEdgeSnap,
   canMoveClipToTrack,
+  collectOverlappingClipIds,
   collectSnapCandidates,
   EDGE_SNAP_PX_THRESHOLD,
+  findClipOverlap,
+  snapGridSeconds,
+  SNAP_GRID_PRESETS,
+  snapToTimeGrid,
   withClipRelocated,
   type ClipDragMode,
+  type SnapGridId,
 } from "./timelineDrag.ts";
 
 const TRACK_COLORS: Record<TimelineTrackTypeV1, string> = {
@@ -98,6 +104,11 @@ interface GlobalTimelinePanelProps {
    * missing are flagged as orphans (node deleted, clip kept for review).
    */
   workflowNodeIds?: ReadonlySet<string>;
+  /**
+   * Canvas node currently selected/focused; its originating clip gets a
+   * linked highlight ring in the timeline (reverse direction linkage).
+   */
+  highlightedSourceNodeId?: string | null;
 }
 
 const PIXELS_PER_SECOND = 40;
@@ -164,12 +175,25 @@ function _parseOptionalNonNegative(raw: string): number | null | "invalid" {
   return value;
 }
 
+/** A sourced clip whose originating canvas node no longer exists. */
+function clipIsOrphan(
+  clip: TimelineClipV1,
+  workflowNodeIds: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    clip.source_node_id != null
+    && workflowNodeIds != null
+    && !workflowNodeIds.has(clip.source_node_id)
+  );
+}
+
 export function GlobalTimelinePanel({
   workflowId,
   onClipClick,
   onTrackClick,
   externalRefreshNonce,
   workflowNodeIds,
+  highlightedSourceNodeId = null,
 }: GlobalTimelinePanelProps) {
   const [timeline, setTimeline] = useState<TimelineV1 | null>(null);
   const [loading, setLoading] = useState(true);
@@ -179,6 +203,7 @@ export function GlobalTimelinePanel({
   const [dragInteraction, setDragInteraction] = useState<DragInteractionState | null>(
     null,
   );
+  const [snapGridId, setSnapGridId] = useState<SnapGridId>("frame");
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const playbackRef = useRef<number | null>(null);
@@ -301,6 +326,12 @@ export function GlobalTimelinePanel({
     if (!timeline) return [];
     return [...timeline.tracks].sort((a, b) => a.display_order - b.display_order);
   }, [timeline]);
+
+  // Same-track clips overlapping (excluding back-to-back edges) for warning.
+  const overlappingClipIds = useMemo(
+    () => collectOverlappingClipIds(timeline?.tracks ?? []),
+    [timeline],
+  );
 
   const audioRoleClips = useMemo(() => {
     const counts = { voice: 0, bgm: 0, sfx: 0 } as Record<string, number>;
@@ -495,8 +526,9 @@ export function GlobalTimelinePanel({
     }
     const fps = timeline.fps || 30;
     const frame = 1 / fps;
-    const snapToFrame = (value: number) =>
-      Math.max(0, Math.round(value * fps) / fps);
+    const gridSeconds = snapGridSeconds(snapGridId, fps);
+    const snapToGrid = (value: number) =>
+      snapToTimeGrid(value, fps, snapGridId === "frame" ? null : gridSeconds);
     const delta =
       (e.clientX - interaction.pointerStartX) / PIXELS_PER_SECOND;
 
@@ -520,18 +552,18 @@ export function GlobalTimelinePanel({
       }
     }
 
-    // Raw frame-snapped geometry (same bounds as single-track dragging).
+    // Raw grid-snapped geometry (same bounds as single-track dragging).
     let nextStart = interaction.origStartTime;
     let nextDuration = interaction.origDuration;
 
     if (interaction.mode === "move") {
-      nextStart = snapToFrame(interaction.origStartTime + delta);
+      nextStart = snapToGrid(interaction.origStartTime + delta);
     } else if (interaction.mode === "resize-left") {
       const bounded = Math.min(
         interaction.origStartTime + delta,
         interaction.origStartTime + interaction.origDuration - frame,
       );
-      nextStart = snapToFrame(bounded);
+      nextStart = snapToGrid(bounded);
       nextDuration = Math.max(
         frame,
         interaction.origDuration -
@@ -540,7 +572,7 @@ export function GlobalTimelinePanel({
     } else {
       nextDuration = Math.max(
         frame,
-        snapToFrame(interaction.origDuration + delta),
+        snapToGrid(interaction.origDuration + delta),
       );
     }
 
@@ -556,6 +588,7 @@ export function GlobalTimelinePanel({
       fps,
       thresholdSeconds: EDGE_SNAP_PX_THRESHOLD / PIXELS_PER_SECOND,
       candidates,
+      quantizeSeconds: gridSeconds,
       maxStartTime:
         interaction.mode === "resize-left"
           ? interaction.origStartTime + interaction.origDuration - frame
@@ -569,6 +602,21 @@ export function GlobalTimelinePanel({
       );
     } else if (interaction.mode === "resize-right") {
       nextDuration = snapped.duration;
+    }
+
+    // Same-track overlap blocks the drop (back-to-back edges are allowed).
+    const targetTrack = timeline.tracks.find(
+      (track) => track.track_id === targetTrackId,
+    );
+    const overlappingClip = findClipOverlap(
+      nextStart,
+      nextDuration,
+      (targetTrack?.clips ?? []).filter(
+        (clip) => clip.clip_id !== interaction.clipId,
+      ),
+    );
+    if (overlappingClip !== null) {
+      dropValid = false;
     }
 
     const interactionId = interaction.clipId;
@@ -938,6 +986,44 @@ export function GlobalTimelinePanel({
           >
             {currentTime.toFixed(2)}s
           </span>
+          <div
+            role="group"
+            aria-label="Snap grid"
+            data-testid="timeline-snap-grid"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 2,
+              marginLeft: 4,
+              border: "1px solid #444",
+              borderRadius: 3,
+              padding: 1,
+            }}
+          >
+            {SNAP_GRID_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                title={`Snap drags to ${preset.label}`}
+                aria-pressed={snapGridId === preset.id}
+                data-testid={`timeline-snap-grid-${preset.id}`}
+                onClick={() => setSnapGridId(preset.id)}
+                style={{
+                  border: "none",
+                  borderRadius: 2,
+                  background:
+                    snapGridId === preset.id ? "#1a5fb4" : "transparent",
+                  color: snapGridId === preset.id ? "#fff" : "#999",
+                  cursor: "pointer",
+                  fontSize: 10,
+                  lineHeight: "16px",
+                  padding: "0 6px",
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
           <button
             onClick={openDucking}
             title="Auto-ducking settings (lower BGM while voice plays)"
@@ -1510,15 +1596,21 @@ export function GlobalTimelinePanel({
                     {/* Clips */}
                     {track.clips.map((clip) => {
                       const isSelected = clip.clip_id === selectedClipId;
-                      const isOrphan =
+                      const isOrphan = clipIsOrphan(clip, workflowNodeIds);
+                      const isCanvasLinked =
                         clip.source_node_id != null
-                        && workflowNodeIds != null
-                        && !workflowNodeIds.has(clip.source_node_id);
+                        && clip.source_node_id === highlightedSourceNodeId;
+                      const isOverlapping = overlappingClipIds.has(clip.clip_id);
                       const clipTitle =
                         clip.label ||
                         `Clip: ${clip.start_time.toFixed(2)}s - ${(
                           clip.start_time + clip.duration
                         ).toFixed(2)}s`;
+                      const resolvedTitle = isOrphan
+                        ? `${clipTitle} — source node deleted`
+                        : isOverlapping
+                          ? `${clipTitle} — overlaps another clip on this track`
+                          : clipTitle;
                       return (
                         <div
                           key={clip.clip_id}
@@ -1526,6 +1618,10 @@ export function GlobalTimelinePanel({
                           tabIndex={0}
                           data-testid="timeline-clip"
                           data-clip-orphan={isOrphan ? "true" : undefined}
+                          data-clip-overlap={isOverlapping ? "true" : undefined}
+                          data-clip-canvas-linked={
+                            isCanvasLinked ? "true" : undefined
+                          }
                           aria-label={
                             isOrphan
                               ? `${clip.label || "Clip"} (source node deleted)`
@@ -1555,14 +1651,22 @@ export function GlobalTimelinePanel({
                             borderRadius: 4,
                             border: isSelected
                               ? "2px solid #1890ff"
-                              : isOrphan
-                                ? "1.5px dashed #d48806"
-                                : "1px solid rgba(0,0,0,0.1)",
+                              : isCanvasLinked
+                                ? "2px solid #52c41a"
+                                : isOverlapping
+                                  ? "1.5px solid #ff4d4f"
+                                  : isOrphan
+                                    ? "1.5px dashed #d48806"
+                                    : "1px solid rgba(0,0,0,0.1)",
                             boxShadow: isSelected
                               ? "0 0 0 2px rgba(24,144,255,0.2)"
-                              : isOrphan
-                                ? "inset 0 0 0 1px rgba(212,136,6,0.35)"
-                                : "none",
+                              : isCanvasLinked
+                                ? "0 0 0 2px rgba(82,196,26,0.3)"
+                                : isOverlapping
+                                  ? "inset 0 0 0 1px rgba(255,77,79,0.35)"
+                                  : isOrphan
+                                    ? "inset 0 0 0 1px rgba(212,136,6,0.35)"
+                                    : "none",
                             cursor: track.locked
                               ? "default"
                               : dragInteraction?.clipId === clip.clip_id
@@ -1582,11 +1686,7 @@ export function GlobalTimelinePanel({
                             opacity: track.muted ? 0.55 : 1,
                           }}
                           onMouseDown={(e) => beginClipDrag(e, clip, track, "move")}
-                          title={
-                            isOrphan
-                              ? `${clipTitle} — source node deleted`
-                              : clipTitle
-                          }
+                          title={resolvedTitle}
                         >
                           {/* Left trim handle */}
                           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Pointer-only trim affordance; precise numeric trimming is available via the selected-clip editor. */}
@@ -1656,6 +1756,7 @@ export function GlobalTimelinePanel({
           draft={inspectorDraft}
           saving={inspectorSaving}
           errorMessage={inspectorError}
+          orphan={clipIsOrphan(selectedClip.clip, workflowNodeIds)}
           onChange={patchInspector}
           onSave={() => void saveInspector()}
           onDelete={() => void removeSelectedClip()}
@@ -1707,6 +1808,8 @@ interface SelectedClipInspectorProps {
   draft: ClipInspectorDraft;
   saving: boolean;
   errorMessage: string | null;
+  /** Clip's source node was deleted from the canvas. */
+  orphan: boolean;
   onChange: (patch: Partial<ClipInspectorDraft>) => void;
   onSave: () => void;
   onDelete: () => void;
@@ -1718,6 +1821,7 @@ function SelectedClipInspector({
   draft,
   saving,
   errorMessage,
+  orphan,
   onChange,
   onSave,
   onDelete,
@@ -1880,17 +1984,18 @@ function SelectedClipInspector({
             onClick={onDelete}
             disabled={disabled}
             data-testid="timeline-inspector-delete"
+            aria-label={orphan ? "Delete orphan clip" : "Delete clip"}
             style={{
               border: "1px solid #a8071a",
-              background: "transparent",
-              color: "#ff7875",
+              background: orphan ? "#a8071a" : "transparent",
+              color: orphan ? "#fff" : "#ff7875",
               borderRadius: 3,
               fontSize: 11,
               padding: "3px 10px",
               cursor: disabled ? "not-allowed" : "pointer",
             }}
           >
-            Delete
+            {orphan ? "Delete orphan clip" : "Delete"}
           </button>
           <button
             onClick={onClose}
@@ -1908,6 +2013,47 @@ function SelectedClipInspector({
           </button>
         </div>
       </div>
+      {orphan && (
+        <div
+          data-testid="timeline-orphan-inspector-notice"
+          role="status"
+          style={{
+            fontSize: 11,
+            color: "#ffd591",
+            background: "rgba(212,136,6,0.12)",
+            border: "1px solid rgba(212,136,6,0.45)",
+            borderRadius: 3,
+            padding: "3px 8px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span>
+            Source node deleted — this clip is no longer linked to the canvas.
+            It stays on the timeline as a manual clip unless you delete it.
+          </span>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={disabled}
+            data-testid="timeline-orphan-delete"
+            style={{
+              flexShrink: 0,
+              border: "1px solid #d48806",
+              background: "transparent",
+              color: "#ffd591",
+              borderRadius: 3,
+              fontSize: 11,
+              padding: "2px 8px",
+              cursor: disabled ? "not-allowed" : "pointer",
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
       {errorMessage && (
         <div style={{ fontSize: 11, color: "#f5222d" }} role="alert">
           {errorMessage}

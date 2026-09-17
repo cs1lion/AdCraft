@@ -24,6 +24,95 @@ const AUDIO_TRACK_TYPES = new Set<TimelineTrackTypeV1>(["voice", "bgm", "sfx"]);
 /** Pointer distance (px) treated as an edge-snap zone. */
 export const EDGE_SNAP_PX_THRESHOLD = 10;
 
+export type SnapGridId = "frame" | "tenth" | "half" | "second";
+
+/** User-selectable drag quantization; null seconds means the timeline frame. */
+export const SNAP_GRID_PRESETS: ReadonlyArray<{
+  id: SnapGridId;
+  label: string;
+  seconds: number | null;
+}> = [
+  { id: "frame", label: "Frame", seconds: null },
+  { id: "tenth", label: "0.1s", seconds: 0.1 },
+  { id: "half", label: "0.5s", seconds: 0.5 },
+  { id: "second", label: "1s", seconds: 1 },
+];
+
+export function snapGridSeconds(id: SnapGridId, fps: number): number {
+  const preset = SNAP_GRID_PRESETS.find((candidate) => candidate.id === id);
+  return preset?.seconds ?? 1 / fps;
+}
+
+/** Round a non-negative time onto the selected grid (frame when null). */
+export function snapToTimeGrid(
+  value: number,
+  fps: number,
+  gridSeconds: number | null,
+): number {
+  const step = gridSeconds ?? 1 / fps;
+  return Math.max(0, Math.round(value / step) * step);
+}
+
+/** Floating-point tolerant interval overlap; clips merely touching do not overlap. */
+export function intervalsOverlap(
+  startA: number,
+  durationA: number,
+  startB: number,
+  durationB: number,
+): boolean {
+  const epsilon = 1e-6;
+  return (
+    startA < startB + durationB - epsilon
+    && startB < startA + durationA - epsilon
+  );
+}
+
+/**
+ * Return the first clip on the target track overlapped by the dragged
+ * interval, or null. The dragged clip itself must be filtered out by the
+ * caller. Touching edges are allowed (back-to-back placement).
+ */
+export function findClipOverlap(
+  startTime: number,
+  duration: number,
+  others: readonly TimelineClipV1[],
+): TimelineClipV1 | null {
+  return (
+    others.find((clip) =>
+      intervalsOverlap(
+        startTime,
+        duration,
+        clip.start_time,
+        clip.duration,
+      ),
+    ) ?? null
+  );
+}
+
+/** IDs of every clip participating in a same-track overlap (both sides). */
+export function collectOverlappingClipIds(
+  tracks: readonly TimelineTrackV1[],
+): ReadonlySet<string> {
+  const overlaps = new Set<string>();
+  for (const track of tracks) {
+    const ordered = [...track.clips].sort(
+      (a, b) => a.start_time - b.start_time,
+    );
+    for (let i = 0; i < ordered.length; i += 1) {
+      for (let j = i + 1; j < ordered.length; j += 1) {
+        const current = ordered[i];
+        const later = ordered[j];
+        if (later.start_time >= current.start_time + current.duration - 1e-6) {
+          break;
+        }
+        overlaps.add(current.clip_id);
+        overlaps.add(later.clip_id);
+      }
+    }
+  }
+  return overlaps;
+}
+
 /**
  * Cross-track compatibility rule: audio clips (voice/bgm/sfx) may only land
  * on audio tracks; visual clips (video/camera/subtitle) may move freely among
@@ -55,15 +144,17 @@ export function collectSnapCandidates(
 
 export interface EdgeSnapInput {
   mode: ClipDragMode;
-  /** Caller's frame-snapped / bounded candidate start. */
+  /** Caller's grid-snapped / bounded candidate start. */
   startTime: number;
-  /** Caller's frame-snapped / bounded candidate duration. */
+  /** Caller's grid-snapped / bounded candidate duration. */
   duration: number;
   fps: number;
   thresholdSeconds: number;
   candidates: readonly number[];
   /** For resize-left the dragged edge may not pass the original right edge. */
   maxStartTime?: number;
+  /** Quantization for snapped results; defaults to one frame (1/fps). */
+  quantizeSeconds?: number;
 }
 
 export interface EdgeSnapResult {
@@ -82,8 +173,9 @@ interface SnapOption {
 export function applyEdgeSnap(input: EdgeSnapInput): EdgeSnapResult {
   const { mode, startTime, duration, fps, thresholdSeconds, candidates } = input;
   const frame = 1 / fps;
-  const snapToFrame = (value: number) =>
-    Math.max(0, Math.round(value * fps) / fps);
+  const quantize = input.quantizeSeconds ?? frame;
+  const snapQuantized = (value: number) =>
+    Math.max(0, Math.round(value / quantize) * quantize);
 
   const options: SnapOption[] = [];
   for (const edge of candidates) {
@@ -143,7 +235,7 @@ export function applyEdgeSnap(input: EdgeSnapInput): EdgeSnapResult {
   }
 
   if (mode === "resize-right") {
-    const nextDuration = Math.max(frame, snapToFrame(best.guide - startTime));
+    const nextDuration = Math.max(frame, snapQuantized(best.guide - startTime));
     return {
       startTime,
       duration: nextDuration,
@@ -151,12 +243,12 @@ export function applyEdgeSnap(input: EdgeSnapInput): EdgeSnapResult {
     };
   }
 
-  const nextStartTime = snapToFrame(best.startTime);
+  const nextStartTime = snapQuantized(best.startTime);
   return {
     startTime: nextStartTime,
     // resize-left duration is recomputed by the caller from original bounds.
     duration,
-    guide: snapToFrame(best.guide),
+    guide: snapQuantized(best.guide),
   };
 }
 

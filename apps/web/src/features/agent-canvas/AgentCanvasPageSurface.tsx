@@ -1815,6 +1815,15 @@ export function AgentCanvasPage() {
               workflowId={workflow?.workflow_id}
               externalRefreshNonce={timelineRefreshSignal}
               workflowNodeIds={workflowNodeIdSet}
+              highlightedSourceNodeId={session.state.selectedNodeId}
+              onClipClick={(clip) => {
+                if (
+                  clip.source_node_id
+                  && workflowNodeIdSet.has(clip.source_node_id)
+                ) {
+                  focusNode(clip.source_node_id);
+                }
+              }}
             />
           </Suspense>
         </div>
