@@ -1,4 +1,4 @@
-# Dependencies
+﻿# Dependencies
 node_modules/
 apps/*/node_modules/
 
@@ -7,10 +7,25 @@ apps/web/dist/
 apps/web/.vite/
 apps/web/coverage/
 
-# Frontend local docs, tests, and agent workspace files
+# Project documentation allowlist; generated and local docs remain ignored
 /docs/*
+!/docs/deployment-with-docker.md
+!/docs/deployment-with-docker_zh.md
+!/docs/deployment-without-docker.md
+!/docs/deployment-without-docker_zh.md
+!/docs/deployment-with-docker-agent.md
+!/docs/deployment-with-docker-agent_zh.md
+!/docs/deployment-without-docker-agent.md
+!/docs/deployment-without-docker-agent_zh.md
+!/docs/recommended-assets.md
+!/docs/recommended-assets_zh.md
+!/docs/getting-started.md
+!/docs/getting-started_zh.md
 !/docs/agents/
 !/docs/adr/
+!/docs/plans/
+
+# Frontend local docs, tests, and agent workspace files
 apps/web/.codex/
 apps/web/docs/
 apps/web/frontend

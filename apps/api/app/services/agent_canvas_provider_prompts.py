@@ -17,23 +17,35 @@ from app.schemas.agent_canvas_ad_media import (
     BgmContentV2,
     CharacterDesignAssetContentV2,
     CompiledProviderPromptV2,
+    ProviderReferenceInstructionV1,
+    ResolvedAdReferenceV2,
     DesignAssetContentV2,
     SceneDesignBoardContentV2,
     StoryboardGridContentV2,
+    StoryboardPanelV2,
     VideoSegmentContentV2,
     VisualStyleContractV2,
     resolve_visual_style,
 )
 from app.schemas.agent_canvas_world_setting import WorldSettingContextEnvelopeV2
 from app.schemas.agent_canvas_prompt_assertion import ProviderPromptAssertionEvidenceV1
+from app.schemas.agent_canvas_reference_conditioning import ReferenceConditioningPlanV1
 from app.services.agent_canvas_ad_media import AdMediaRoleRegistry
 from app.services.agent_canvas_character_reference_prompt_policy import (
     CharacterReferencePromptPolicy,
 )
 from app.services.agent_canvas_creative_direction import CreativeDirectionService
+from app.services.agent_canvas_execution_mode import has_managed_prompt_preparation
+from app.services.agent_canvas_role_prompt_compiler import (
+    role_prompt_failure_disposition,
+    role_prompt_text_violation,
+)
 from app.services.agent_canvas_prompt_assertion_policy import (
     PromptAssertionEvidenceValidator,
     PromptAssertionPolicyRegistry,
+)
+from app.services.agent_canvas_reference_semantics import (
+    compile_provider_reference_instruction,
 )
 
 
@@ -140,11 +152,39 @@ class AgentCanvasProviderPromptCompiler:
         creative_direction_projection: Mapping[str, object] | None = None,
         world_setting: WorldSettingContextEnvelopeV2 | None = None,
     ) -> CompiledProviderPromptV2:
-        if not str(node.generation_prompt or "").strip():
+        reference_only = (
+            node.semantic_role in {"general_image", "general_video", "general_audio"}
+            and not has_managed_prompt_preparation(node)
+            and bool(reference_bundle.references)
+        )
+        if not str(node.generation_prompt or "").strip() and not reference_only:
             raise _error(
                 "node_prompt_empty",
                 "A media Node requires a saved generation prompt before provider preparation.",
             )
+        _validate_editable_prompt_authority(node)
+        if node.semantic_role == "scene":
+            violation = role_prompt_text_violation(
+                "scene_board",
+                str(node.generation_prompt),
+                field_path="generation_prompt",
+            )
+            if violation is not None:
+                disposition = role_prompt_failure_disposition(
+                    user_authored=not has_managed_prompt_preparation(node)
+                )
+                raise V2PersistenceError(
+                    "node_prompt_role_contract_invalid",
+                    "The Scene prompt conflicts with its environment-only role contract.",
+                    stage="agent_canvas_provider_prompt_compiler",
+                    details={
+                        "role_variant": violation.role_variant,
+                        "violation_category": violation.violation_category,
+                        "field_path": violation.field_path,
+                        "actionable_failure": disposition.model_dump(mode="json"),
+                        "retryable": disposition.retryable,
+                    },
+                )
         if role_contract.semantic_role != node.semantic_role:
             raise _error(
                 "provider_prompt_contract_failed",
@@ -207,6 +247,30 @@ class AgentCanvasProviderPromptCompiler:
                     "node_prompt_assertion_contract_invalid",
                     "Prompt assertion evidence does not match provider input authority.",
                 )
+            if preparation.role_variant == "character_turnaround":
+                projection_digest = preparation.character_identity_projection_digest
+                if (
+                    projection_digest is None
+                    or evidence.character_identity_projection_digest != projection_digest
+                    or node.structured_content.get("identity_projection_digest")
+                    != projection_digest
+                ):
+                    raise _error(
+                        "character_parent_identity_projection_invalid",
+                        "Character Turnaround projection evidence is missing or stale.",
+                    )
+            if preparation.role_variant == "scene_board":
+                projection_digest = preparation.scene_environment_projection_digest
+                if (
+                    projection_digest is None
+                    or evidence.scene_environment_projection_digest != projection_digest
+                    or node.structured_content.get("environment_projection_digest")
+                    != projection_digest
+                ):
+                    raise _error(
+                        "scene_environment_projection_invalid",
+                        "Scene environment projection evidence is missing or stale.",
+                    )
         if creative_direction_projection is not None:
             CreativeDirectionService().validate_role_projection(
                 _STYLE_ROLE_BY_SEMANTIC_ROLE[node.semantic_role],
@@ -220,9 +284,14 @@ class AgentCanvasProviderPromptCompiler:
                     "World Setting context audience does not match the target role.",
                 )
         try:
+            structured_payload = {
+                key: value
+                for key, value in node.structured_content.items()
+                if key not in {"reference_style_policy", "reference_conditioning_plan"}
+            }
             structured = self._roles.validate_structured_content(
                 node.semantic_role,
-                node.structured_content,
+                structured_payload,
             )
         except V2PersistenceError as error:
             if node.semantic_role in {"storyboard_video", "general_video"} and (
@@ -243,7 +312,7 @@ class AgentCanvasProviderPromptCompiler:
             if isinstance(structured, CharacterDesignAssetContentV2)
             else None
         )
-        body = _render_content(structured)
+        body = _render_content(structured, generation_prompt=node.generation_prompt or "")
         reference_identities = _render_reference_identities(
             reference_bundle,
             target_semantic_role=node.semantic_role,
@@ -252,12 +321,43 @@ class AgentCanvasProviderPromptCompiler:
             (
                 f"- Image {index}: binding={item.binding_id}; asset={item.asset_id}; "
                 f"media={item.media_type}; semantic_reference_role="
-                f"{item.semantic_reference_role or 'unspecified'}; "
-                f"url={item.access_descriptor.media_url}"
+                + (
+                    "style_reference"
+                    if _is_storyboard_style_anchor(item, node.semantic_role)
+                    else item.semantic_reference_role or "unspecified"
+                )
+                + "; "
+                + f"url={item.access_descriptor.media_url}"
             )
             for index, item in enumerate(reference_bundle.references, start=1)
         )
-        storyboard_anchor_clause = _storyboard_visual_anchor_clause(reference_bundle)
+        try:
+            conditioning_plan = _conditioning_plan_from_node(node)
+            if conditioning_plan is not None:
+                _validate_conditioning_plan(conditioning_plan, node, reference_bundle)
+                reference_instructions = (_conditioning_instruction(conditioning_plan),)
+            else:
+                reference_instructions = tuple(
+                    instruction
+                    for item in reference_bundle.references
+                    if (
+                        instruction := item.reference_instruction
+                        or compile_provider_reference_instruction(
+                            reference_kind=item.reference_kind,
+                            reference_purpose=item.reference_purpose,
+                        )
+                    )
+                )
+        except ValueError as error:
+            raise _error(
+                "provider_reference_instruction_invalid",
+                "Guided reference semantics are invalid for provider delivery.",
+            ) from error
+        storyboard_anchor_clause = (
+            _storyboard_visual_anchor_clause(reference_bundle)
+            if node.semantic_role == "storyboard_sequence"
+            else ""
+        )
         is_video = node.semantic_role in {"storyboard_video", "general_video"}
         style_clause = (
             f"Authoritative target output style ({style.source}):\n{style.style_prompt}"
@@ -347,6 +447,7 @@ class AgentCanvasProviderPromptCompiler:
             prompt=prompt,
             negative_prompt=negative,
             provider_parameters=_provider_parameters(node.semantic_role),
+            reference_instructions=reference_instructions,
             assertion_evidence=assertion_evidence,
         )
 
@@ -381,6 +482,70 @@ def _reference_evidence_matches(source_snapshots, reference_bundle: AdReferenceB
     )
 
 
+def _conditioning_plan_from_node(node: CanvasNodeV2) -> ReferenceConditioningPlanV1 | None:
+    raw = node.metadata.get("prompt_reference_conditioning_plan")
+    if raw is None:
+        return None
+    try:
+        return ReferenceConditioningPlanV1.model_validate(raw)
+    except ValidationError as error:
+        raise _error(
+            "reference_conditioning_plan_invalid",
+            "Reference conditioning metadata is invalid before provider delivery.",
+        ) from error
+
+
+def _validate_conditioning_plan(
+    plan: ReferenceConditioningPlanV1,
+    node: CanvasNodeV2,
+    reference_bundle: AdReferenceBundleV2,
+) -> None:
+    expected_role = {"character": "character_main", "scene": "scene_board"}.get(node.semantic_role)
+    if expected_role != plan.target_role or len(reference_bundle.references) != 1:
+        raise _error(
+            "reference_conditioning_plan_invalid",
+            "Conditioning plan role or reference cardinality is invalid.",
+        )
+    reference = reference_bundle.references[0]
+    if (
+        reference.display_order != plan.reference_position - 1
+        or reference.binding_id != plan.provenance.binding_id
+        or reference.binding_revision != plan.provenance.binding_revision
+        or reference.asset_id != plan.provenance.asset_id
+        or reference.asset_version_id != plan.provenance.asset_version_id
+        or reference.source_node_id != plan.provenance.source_node_id
+        or reference.source_node_revision != plan.provenance.source_node_revision
+        or reference.reference_kind != plan.reference_kind
+        or reference.reference_purpose != plan.reference_purpose
+        or reference.semantic_reference_role != plan.semantic_reference_role
+    ):
+        raise _error(
+            "reference_conditioning_plan_stale",
+            "Conditioning plan does not match the current delivered reference.",
+        )
+
+
+def _conditioning_instruction(plan: ReferenceConditioningPlanV1):
+    role_label = "Character Main" if plan.target_role == "character_main" else "Scene Main"
+    protected = ", ".join(plan.protected_dimensions)
+    allowed = ", ".join(plan.allowed_change_dimensions)
+    override = (
+        ", ".join(plan.explicit_override_dimensions)
+        if plan.explicit_override_dimensions
+        else "none"
+    )
+    return ProviderReferenceInstructionV1(
+        reference_kind=plan.reference_kind,
+        semantic_purpose=plan.reference_purpose,
+        instruction=(
+            f"Image 1 is the primary {role_label} reference. Preserve protected dimensions: "
+            f"{protected}. Allowed changes: {allowed}. "
+            f"Explicit structured overrides: {override}. Do not substitute an unrelated "
+            "subject or environment."
+        ),
+    )
+
+
 def _registration(
     role: str,
     boundary: str,
@@ -395,6 +560,15 @@ def _registration(
         registry_digest=hashlib.sha256(
             f"{registry_ref}\n{boundary}\n{negative}".encode()
         ).hexdigest(),
+    )
+
+
+def _is_storyboard_style_anchor(
+    reference: ResolvedAdReferenceV2, target_semantic_role: str
+) -> bool:
+    return (
+        target_semantic_role == "storyboard_sequence"
+        and reference.storyboard_reference_purpose == "sequence_visual_anchor"
     )
 
 
@@ -413,10 +587,16 @@ def _storyboard_visual_anchor_clause(reference_bundle: AdReferenceBundleV2) -> s
         )
     index, _ = anchors[0]
     return (
-        f"Image {index} is the authoritative sequence visual anchor. Preserve its "
-        "character identity, product identity, environment, palette, composition "
-        "language, and rendering style while following only this Node's own nine-panel "
-        "storyboard prompt."
+        f"Image {index} is a style-only reference for palette, rendering medium, "
+        "linework, texture, and lighting treatment. It is not a storyboard to edit "
+        "or continue by retaining its panels. Generate all nine panels anew from the "
+        "current Node's own nine-panel text, including each panel's content, action, "
+        "composition, and camera. Do not copy, trace, or reuse the reference's panel "
+        "images, narrative events, actions, poses, camera angles, shot compositions, or panel order. "
+        "Do not import its subjects, objects, or locations unless the current text "
+        "or separate subject/environment references require them. Resolve any conflict "
+        "about panel content in favor of the current text; use separate bound character "
+        "and scene references for identity and environment continuity."
     )
 
 
@@ -476,7 +656,7 @@ def _style_from_projection(
     return resolve_visual_style()
 
 
-def _render_content(structured: object) -> str:
+def _render_content(structured: object, *, generation_prompt: str = "") -> str:
     if isinstance(structured, SceneDesignBoardContentV2):
         return "\n".join(
             [
@@ -509,8 +689,7 @@ def _render_content(structured: object) -> str:
                 *[
                     (
                         f"{frame_positions[panel.panel_index - 1]} content: "
-                        f"{panel.beat}; {panel.composition}; "
-                        f"{panel.camera}; {panel.subject_action}; "
+                        f"{_render_storyboard_panel(panel, generation_prompt=generation_prompt)}; "
                         f"continuity={panel.continuity_from_previous}"
                     )
                     for panel in structured.panels
@@ -545,6 +724,24 @@ def _render_content(structured: object) -> str:
     if structured is None:
         return ""
     return json.dumps(structured.model_dump(mode="json"), sort_keys=True)
+
+
+def _render_storyboard_panel(panel: StoryboardPanelV2, *, generation_prompt: str) -> str:
+    """Render each exact panel detail once without rewriting the saved creative prompt."""
+
+    projected_row = f"Panel {panel.panel_index}: {panel.beat}; camera: {panel.camera}."
+    already_projected = projected_row in generation_prompt
+    projected_values = {panel.beat, panel.camera} if already_projected else set()
+    details = list(
+        dict.fromkeys(
+            value
+            for value in (panel.beat, panel.composition, panel.camera, panel.subject_action)
+            if value not in projected_values
+        )
+    )
+    if already_projected:
+        details.insert(0, f"Use Panel {panel.panel_index} in the creative prompt")
+    return "; ".join(details)
 
 
 def _provider_parameters(semantic_role: str) -> dict[str, str | int | float | bool]:
@@ -587,6 +784,7 @@ def _render_reference_identities(
         }
         for reference in reference_bundle.references
         if reference.source_identity_facts
+        and not _is_storyboard_style_anchor(reference, target_semantic_role)
     ]
     if not identities and not reference_bundle.references:
         return ""
@@ -642,6 +840,30 @@ def _digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+
+
+def _validate_editable_prompt_authority(node: CanvasNodeV2) -> None:
+    projection = node.prompt_presentation
+    if projection is None:
+        return
+    prompt = str(node.generation_prompt or "")
+    expected_digest = f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
+    review_revision = node.metadata.get("guided_review_node_revision")
+    revision_matches = projection.revision == node.revision or (
+        isinstance(review_revision, int)
+        and not isinstance(review_revision, bool)
+        and review_revision == node.revision
+        and projection.revision + 1 == node.revision
+    )
+    if (
+        projection.text != prompt
+        or not revision_matches
+        or projection.prompt_digest != expected_digest
+    ):
+        raise _error(
+            "prompt_revision_conflict",
+            "The editable prompt projection does not match the frozen Node revision.",
+        )
 
 
 def _error(code: str, message: str) -> V2PersistenceError:

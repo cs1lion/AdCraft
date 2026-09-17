@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 
 import { api } from "../../api/client.ts";
+import { modelEligibility } from "../../api/providerModelPolicy.ts";
+import {
+  clearCapabilitiesForProvider,
+  updateCredentialDraftForProvider,
+  usesSharedOpenRouterCredential,
+} from "../../api/providerCredentialPolicy.ts";
 import {
   credentialUpdateFromDraft,
   emptyProviderCredentialDraft,
@@ -25,17 +31,26 @@ export function ProviderCredentialCard({
   onModelsUpdated: (providerId: string, models: ProviderModelSummaryV1[]) => void;
 }) {
   const [draft, setDraft] = useState(() => emptyProviderCredentialDraft(provider.capabilities));
+  const [baseUrlDraft, setBaseUrlDraft] = useState(() => emptyProviderCredentialDraft(provider.capabilities));
   const [pending, setPending] = useState<"save" | "sync" | ProviderCapability | null>(null);
   const [notice, setNotice] = useState<ApiSpaceNotice>(null);
   const [testNotices, setTestNotices] = useState<CredentialNoticeByCapability>({});
   const [pendingClear, setPendingClear] = useState<ProviderCapability | null>(null);
-  const updateRequest = useMemo(() => credentialUpdateFromDraft(draft), [draft]);
-  const availableModelCount = models.filter((model) => model.availability === "available").length;
+  const hasSharedCredential = usesSharedOpenRouterCredential(provider);
+  const updateRequest = useMemo(() => credentialUpdateFromDraft(draft, baseUrlDraft), [draft, baseUrlDraft]);
+  const availableModelCount = models.filter((model) => (
+    modelEligibility(model, "default").selectable
+  )).length;
 
   const updateDraft = (capability: ProviderCapability, value: string) => {
-    setDraft((current) => ({ ...current, [capability]: value }));
+    setDraft((current) => updateCredentialDraftForProvider(provider, current, capability, value));
     setNotice(null);
     setTestNotices((current) => ({ ...current, [capability]: null }));
+  };
+
+  const updateBaseUrlDraft = (capability: ProviderCapability, value: string) => {
+    setBaseUrlDraft((current) => ({ ...current, [capability]: value }));
+    setNotice(null);
   };
 
   const save = async () => {
@@ -46,6 +61,7 @@ export function ProviderCredentialCard({
       const response = await api.updateProviderCredentials(provider.provider_id, updateRequest);
       onProviderUpdated(response.provider);
       setDraft(emptyProviderCredentialDraft(provider.capabilities));
+      setBaseUrlDraft(emptyProviderCredentialDraft(provider.capabilities));
       setTestNotices({});
       setNotice({ kind: "success", message: `${provider.display_name} credentials saved.` });
     } catch (error) {
@@ -60,14 +76,31 @@ export function ProviderCredentialCard({
     setPending(capability);
     setNotice(null);
     try {
+      const clearCapabilities = clearCapabilitiesForProvider(provider, capability);
       const response = await api.updateProviderCredentials(provider.provider_id, {
         api_keys: {},
-        clear_capabilities: [capability],
+        clear_capabilities: clearCapabilities,
       });
       onProviderUpdated(response.provider);
-      setDraft((current) => ({ ...current, [capability]: "" }));
+      setDraft((current) => Object.fromEntries(
+        Object.entries(current).map(([draftCapability, value]) => [
+          draftCapability,
+          clearCapabilities.includes(draftCapability as ProviderCapability) ? "" : value,
+        ]),
+      ));
+      setBaseUrlDraft((current) => Object.fromEntries(
+        Object.entries(current).map(([draftCapability, value]) => [
+          draftCapability,
+          clearCapabilities.includes(draftCapability as ProviderCapability) ? "" : value,
+        ]),
+      ));
       setPendingClear(null);
-      setNotice({ kind: "success", message: `${capabilityLabel(capability)} credential cleared.` });
+      setNotice({
+        kind: "success",
+        message: hasSharedCredential
+          ? "OpenRouter credential cleared for Text and Image."
+          : `${capabilityLabel(capability)} credential cleared.`,
+      });
     } catch (error) {
       setNotice({ kind: "error", message: providerRegistryErrorMessage(error, "save") });
     } finally {
@@ -88,7 +121,7 @@ export function ProviderCredentialCard({
       });
       setTestNotices((current) => ({
         ...current,
-        [capability]: { kind: "success", message: `${capabilityLabel(capability)} credential verified.` },
+        [capability]: { kind: "success", message: `${capabilityLabel(capability)} credential accepted.` },
       }));
     } catch (error) {
       setTestNotices((current) => ({
@@ -134,6 +167,44 @@ export function ProviderCredentialCard({
       </p>
 
       <div className="api-space-credential-list">
+        {hasSharedCredential ? (
+          <section className="api-space-credential-row api-space-credential-row--shared">
+            <div className="api-space-credential-copy">
+              <h3>OpenRouter API Key</h3>
+              <p>One key authorizes both Text and Image. Each capability keeps its own endpoint and readiness status.</p>
+            </div>
+            <div className="api-space-credential-control">
+              <label className="sr-only" htmlFor={`${provider.provider_id}-shared-api-key`}>OpenRouter API Key</label>
+              <input
+                id={`${provider.provider_id}-shared-api-key`}
+                name={`${provider.provider_id}-shared-api-key`}
+                type="password"
+                value={draft.text ?? ""}
+                placeholder="Paste a new OpenRouter API key"
+                autoComplete="new-password"
+                disabled={Boolean(pending)}
+                onChange={(event) => updateDraft("text", event.currentTarget.value)}
+              />
+              {provider.capabilities.some((capability) => provider.credentials[capability]?.configured) ? (
+                <div className="api-space-credential-actions">
+                  {pendingClear === "text" ? (
+                    <span className="api-space-clear-confirmation">
+                      Clear the Text and Image credential?
+                      <button className="small-action" type="button" disabled={Boolean(pending)} onClick={() => void clearCapability("text")}>
+                        {pending === "text" ? "Clearing..." : "Confirm clear"}
+                      </button>
+                      <button className="small-action" type="button" disabled={Boolean(pending)} onClick={() => setPendingClear(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <button className="small-action" type="button" disabled={Boolean(pending)} onClick={() => setPendingClear("text")}>
+                      Clear OpenRouter key
+                    </button>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
         {provider.capabilities.map((capability) => {
           const status = provider.credentials[capability];
           const isTesting = pending === capability && supportsCredentialTest(status);
@@ -142,23 +213,42 @@ export function ProviderCredentialCard({
           return (
             <section className="api-space-credential-row" key={capability}>
               <div className="api-space-credential-copy">
-                <h3>{capabilityLabel(capability)} API Key</h3>
+                <h3>{capabilityLabel(capability)}{hasSharedCredential ? " status" : " API Key"}</h3>
                 <p>{capabilityDescription(capability)}</p>
                 <CredentialStatus configured={status?.configured ?? false} fingerprint={status?.fingerprint ?? null} />
+                {status?.endpoint ? <EndpointStatus capability={capability} endpoint={status.endpoint} /> : null}
               </div>
               <div className="api-space-credential-control">
-                <label className="sr-only" htmlFor={`${provider.provider_id}-${capability}-api-key`}>
-                  {provider.display_name} {capabilityLabel(capability)} API Key
+                {!hasSharedCredential ? (
+                  <>
+                    <label className="sr-only" htmlFor={`${provider.provider_id}-${capability}-api-key`}>
+                      {provider.display_name} {capabilityLabel(capability)} API Key
+                    </label>
+                    <input
+                      id={`${provider.provider_id}-${capability}-api-key`}
+                      name={`${provider.provider_id}-${capability}-api-key`}
+                      type="password"
+                      value={draft[capability] ?? ""}
+                      placeholder="Paste a new API key"
+                      autoComplete="new-password"
+                      disabled={isBusy}
+                      onChange={(event) => updateDraft(capability, event.currentTarget.value)}
+                    />
+                  </>
+                ) : null}
+                <label className="sr-only" htmlFor={`${provider.provider_id}-${capability}-base-url`}>
+                  {provider.display_name} {capabilityLabel(capability)} Base URL
                 </label>
                 <input
-                  id={`${provider.provider_id}-${capability}-api-key`}
-                  name={`${provider.provider_id}-${capability}-api-key`}
-                  type="password"
-                  value={draft[capability] ?? ""}
-                  placeholder="Paste a new API key"
-                  autoComplete="new-password"
+                  id={`${provider.provider_id}-${capability}-base-url`}
+                  name={`${provider.provider_id}-${capability}-base-url`}
+                  type="text"
+                  value={baseUrlDraft[capability] ?? ""}
+                  placeholder={baseUrlPlaceholder(status)}
+                  autoComplete="off"
+                  spellCheck={false}
                   disabled={isBusy}
-                  onChange={(event) => updateDraft(capability, event.currentTarget.value)}
+                  onChange={(event) => updateBaseUrlDraft(capability, event.currentTarget.value)}
                 />
                 <div className="api-space-credential-actions">
                   {supportsCredentialTest(status) ? (
@@ -171,7 +261,7 @@ export function ProviderCredentialCard({
                       {isTesting ? "Testing..." : `Test ${capabilityLabel(capability)} key`}
                     </button>
                   ) : <span className="api-space-test-unavailable">Test unavailable</span>}
-                  {status?.configured ? (
+                  {status?.configured && !hasSharedCredential ? (
                     pendingClear === capability ? (
                       <span className="api-space-clear-confirmation">
                         Clear this saved key?
@@ -218,12 +308,37 @@ function CredentialStatus({ configured, fingerprint }: { configured: boolean; fi
     : <span className="api-space-credential-status is-not-configured">Not configured</span>;
 }
 
+function EndpointStatus({
+  capability,
+  endpoint,
+}: {
+  capability: ProviderCapability;
+  endpoint: NonNullable<ProviderConnectionStatusV1["credentials"][ProviderCapability]>["endpoint"];
+}) {
+  if (!endpoint) return null;
+  return (
+    <span className="api-space-credential-endpoint">
+      {capabilityLabel(capability)} endpoint · {endpoint.scheme}://{endpoint.host}{endpoint.path}
+    </span>
+  );
+}
+
 function InlineNotice({ notice }: { notice: Exclude<ApiSpaceNotice, null> }) {
   return <span className={`api-space-inline-notice is-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>{notice.message}</span>;
 }
 
 function capabilityLabel(capability: ProviderCapability): string {
   return capability.charAt(0).toUpperCase() + capability.slice(1);
+}
+
+function baseUrlPlaceholder(
+  status: ProviderConnectionStatusV1["credentials"][ProviderCapability] | undefined,
+): string {
+  const endpoint = status?.endpoint;
+  if (endpoint) {
+    return `Current: ${endpoint.scheme}://${endpoint.host}${endpoint.path}`;
+  }
+  return "Base URL (leave empty to keep the provider default)";
 }
 
 function capabilityDescription(capability: ProviderCapability): string {

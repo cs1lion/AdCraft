@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -68,11 +70,13 @@ class VideoSkillManifestV2(BaseModel):
     version: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    content_locale: Literal["en-US", "zh-CN"] = "en-US"
     category: str = Field(min_length=1)
     tags: tuple[str, ...] = ()
     supported_use_cases: tuple[str, ...] = ()
     preview: VideoSkillPreviewV2 | None = None
     display_order: int = Field(ge=0)
+    video_representation_mode: Literal["illustrated", "illustration_to_live_action"] | None = None
     files: dict[str, str]
     role_guidance: dict[str, str] = Field(default_factory=dict)
 
@@ -124,6 +128,16 @@ class VideoSkillDiagnosticV2:
 class VideoSkillRegistry:
     """Load only explicitly published, digest-verified content packages."""
 
+    # Process-level cache keyed by (root, catalog mtime_ns, catalog size).
+    # Skill packages ship read-only inside the deployment image, so the parsed
+    # catalog can be reused across request-scoped registry instances. The
+    # catalog.json stat (one syscall) keeps the cache correct when the
+    # catalog is rewritten in place (tests, skill updates).
+    _CATALOG_CACHE: dict[
+        tuple[str, int, int],
+        tuple[LoadedVideoSkillCatalogV2, tuple[VideoSkillDiagnosticV2, ...]],
+    ] = {}
+
     def __init__(self, root: Path = _DEFAULT_ROOT) -> None:
         self._root = root
         self._diagnostics: tuple[VideoSkillDiagnosticV2, ...] = ()
@@ -131,6 +145,14 @@ class VideoSkillRegistry:
     @property
     def diagnostics(self) -> tuple[VideoSkillDiagnosticV2, ...]:
         return self._diagnostics
+
+    def _cache_key(self) -> tuple[str, int, int] | None:
+        catalog_path = self._root / "catalog.json"
+        try:
+            stat_result = catalog_path.stat()
+        except OSError:
+            return None
+        return (str(self._root), stat_result.st_mtime_ns, stat_result.st_size)
 
     def validate_startup(self) -> None:
         try:
@@ -149,6 +171,13 @@ class VideoSkillRegistry:
             )
 
     def load_catalog(self) -> LoadedVideoSkillCatalogV2:
+        cache_key = self._cache_key()
+        if cache_key is not None:
+            cached = VideoSkillRegistry._CATALOG_CACHE.get(cache_key)
+            if cached is not None:
+                loaded_catalog, loaded_diagnostics = cached
+                self._diagnostics = loaded_diagnostics
+                return loaded_catalog
         catalog = self._read_catalog()
         categories = _ordered_categories(catalog.categories)
         category_ids = {category.category_id for category in categories}
@@ -195,11 +224,17 @@ class VideoSkillRegistry:
                 continue
             items.append(_public_detail(loaded.manifest))
         self._diagnostics = tuple(diagnostics)
-        return LoadedVideoSkillCatalogV2(
+        loaded_catalog = LoadedVideoSkillCatalogV2(
             catalog_version=catalog.catalog_version,
             categories=categories,
             items=tuple(items),
         )
+        if cache_key is not None:
+            VideoSkillRegistry._CATALOG_CACHE[cache_key] = (
+                loaded_catalog,
+                self._diagnostics,
+            )
+        return loaded_catalog
 
     def published_entries(self) -> tuple[VideoSkillCatalogEntryV2, ...]:
         """Return the validated publication identities in deterministic order."""
@@ -508,6 +543,15 @@ def _package_digest(
     verified: dict[str, bytes],
 ) -> str:
     digest = hashlib.sha256()
+    digest.update(
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    )
+    digest.update(b"\0")
     digest.update(f"{manifest.skill_id}\n{manifest.version}\n".encode())
     for relative_path in sorted(verified):
         digest.update(relative_path.encode())

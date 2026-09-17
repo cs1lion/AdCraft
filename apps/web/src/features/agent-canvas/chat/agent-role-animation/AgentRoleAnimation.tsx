@@ -1,0 +1,54 @@
+import { Component, useCallback, useRef, useState, type ReactNode } from "react";
+import type { AgentCapabilityIdV2 } from "../../../../types-v2.ts";
+import type { AgentRoleMotionState } from "./types.ts";
+import { useAgentRoleVisual } from "./useAgentRoleVisual.ts";
+import { reportRoleArtworkError } from "./agentRoleVisualResource.ts";
+
+class RoleArtworkBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode; onError(): void }, { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch() { this.props.onError(); }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+function StaticRoleIcon({ source, generic }: { source: string | null; generic: boolean }) {
+  if (!source) return generic ? <span className="agent-chat__role-generic" data-role-generic-fallback="true" aria-hidden="true">✧</span> : null;
+  return <img className="agent-chat__role-animation-asset agent-chat__role-animation-static is-visible"
+    data-testid="agent-role-static-icon" src={source} width={32} height={32}
+    decoding="sync" alt="" aria-hidden="true" draggable={false} />;
+}
+
+export function AgentRoleAnimation({ capabilityId, motionState }: {
+  capabilityId: AgentCapabilityIdV2; motionState: AgentRoleMotionState;
+}) {
+  const visual = useAgentRoleVisual(capabilityId, motionState);
+  const [failedGeneration, setFailedGeneration] = useState<number | null>(null);
+  const failed = failedGeneration === visual.generation;
+  // Only working roles render the animated artwork; idle falls back to the
+  // static bitmap. A role keeps its working stretch until the next role takes
+  // over, so awaiting a user decision never freezes the artwork.
+  const animated = motionState === "working";
+  const Artwork = animated && !failed ? visual.Artwork : null;
+  const ref = useRef<HTMLSpanElement>(null);
+  const onError = useCallback(() => {
+    setFailedGeneration(visual.generation);
+    reportRoleArtworkError(capabilityId, "Role artwork could not be displayed");
+  }, [capabilityId, visual.generation]);
+  const fallback = animated
+    ? null
+    : <StaticRoleIcon source={visual.source} generic={visual.fallbackKind === "generic"} />;
+  return (
+    <span ref={ref} className="agent-chat__role-animation-frame"
+      style={{ width: 32, height: 32 }}
+      data-testid="agent-role-animation-frame" data-motion-state={motionState}
+      aria-hidden="true">
+      {Artwork ? <RoleArtworkBoundary key={capabilityId + visual.generation} fallback={fallback} onError={onError}>
+        <span className="agent-chat__role-animation-asset agent-chat__role-animation-artwork is-visible">
+          <Artwork motionState={motionState} />
+        </span>
+      </RoleArtworkBoundary> : fallback}
+    </span>
+  );
+}

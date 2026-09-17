@@ -56,10 +56,12 @@ _PROVENANCE_KEYS = {
     "normalization_mode",
     "normalization_warnings",
     "character_pair_id",
+    "occurrence_index",
     "product_pair_id",
     "character_asset_kind",
     "source_agent_document_id",
     "source_sequence_id",
+    "sequence_index",
 }
 
 
@@ -354,7 +356,7 @@ def character_turnaround_prompt(
     subject_identity: str,
     design_summary: str,
 ) -> str:
-    """Compile the canonical companion prompt for a Character Main variation."""
+    """Compile the canonical companion prompt for Character Main regeneration."""
 
     return f"{_TURNAROUND_PROMPT}\n\nIdentity: {subject_identity}. Design: {design_summary}."
 
@@ -376,6 +378,11 @@ def _normalized_character_bundle(
         "normalization_mode": normalization.mode,
         "normalization_warnings": list(normalization.warnings),
         "character_pair_id": pair_id,
+        **(
+            {"occurrence_index": envelope.occurrence_index}
+            if envelope.occurrence_index is not None
+            else {}
+        ),
     }
     main_content = result.structured_content.model_copy(
         update={"character_asset_kind": "identity_master"}
@@ -654,7 +661,6 @@ def _draft_nodes(
                     source=source,
                     target_node_id=node.node_id,
                     input_role=intent.input_role,
-                    required=intent.required,
                     enabled=True,
                     order=intent.display_order,
                     metadata=metadata,
@@ -716,7 +722,6 @@ def _pair_binding(
             source=CanvasBindingSourceNodeV2(source_node_id=envelope.parent_snapshot.node_id),
             target_node_id=nodes[0].node_id,
             input_role="image_reference",
-            required=True,
             enabled=True,
             order=0,
             label="Character identity master" if is_character else "Required main reference",
@@ -863,7 +868,10 @@ def _stage_parameters(
                 duration = float(total_duration) / segment_count
         if duration is None:
             duration = 5
-        parameters["duration_seconds"] = min(15.0, max(1.0, float(duration)))
+        # Provider parameter matrices declare duration_seconds as an integer
+        # (value_type=integer); round here so divided segment durations
+        # (e.g. 30s / 7 segments) never produce non-integral values.
+        parameters["duration_seconds"] = max(1, min(15, round(float(duration))))
         aspect_ratio = _explicit_constraint(context, "aspect_ratio")
         if isinstance(aspect_ratio, str) and aspect_ratio.strip():
             parameters["aspect_ratio"] = aspect_ratio.strip()
@@ -875,7 +883,7 @@ def _stage_parameters(
             parameters["generate_audio"] = generate_audio
     elif capability_id == "bgm_direction":
         duration = context.capability_facts.get("duration_seconds", 30)
-        parameters["duration_seconds"] = max(1.0, float(duration))
+        parameters["duration_seconds"] = max(1, round(float(duration)))
     return parameters
 
 
