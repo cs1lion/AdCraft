@@ -2561,6 +2561,8 @@ class TimelineRow(Base):
     )
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     fps: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # JSON-encoded TimelineDuckingConfigV1; NULL = auto defaults on export.
+    ducking_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
 

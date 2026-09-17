@@ -78,9 +78,54 @@ class EditingBgmEntryV2(_EditingModel):
         return ("asset", self.asset_id or "")
 
 
+EditingAudioTrackRoleV2 = Literal["voice", "bgm", "sfx"]
+
+
+class EditingAudioEntryV2(_EditingModel):
+    """One timeline-positioned audio clip (voice-over, BGM segment, or SFX)."""
+
+    binding_id: str | None = Field(default=None, min_length=1)
+    asset_id: str | None = Field(default=None, min_length=1)
+    role: EditingAudioTrackRoleV2
+    enabled: bool = True
+    timeline_start_seconds: float = Field(default=0.0, ge=0.0)
+    trim_start_seconds: float = Field(default=0.0, ge=0.0)
+    trim_end_seconds: float | None = Field(default=None, gt=0.0)
+    volume: float = Field(default=1.0, ge=0.0, le=1.0)
+    fade_in_seconds: float = Field(default=0.0, ge=0.0, le=30.0)
+    fade_out_seconds: float = Field(default=0.0, ge=0.0, le=30.0)
+
+    @model_validator(mode="after")
+    def validate_source_and_timing(self) -> "EditingAudioEntryV2":
+        if (self.binding_id is None) == (self.asset_id is None):
+            raise ValueError("Editing audio entries require one Binding or Asset reference.")
+        if self.trim_end_seconds is not None and self.trim_end_seconds <= self.trim_start_seconds:
+            raise ValueError("Editing audio trim end must be after trim start.")
+        return self
+
+    @property
+    def source_key(self) -> tuple[str, str]:
+        if self.binding_id is not None:
+            return ("binding", self.binding_id)
+        return ("asset", self.asset_id or "")
+
+
+class EditingDuckingConfigV2(_EditingModel):
+    """Sidechain auto-ducking applied to BGM clips while voice clips are active."""
+
+    enabled: bool = True
+    threshold_db: float = Field(default=-30.0, ge=-80.0, le=-10.0)
+    ratio: float = Field(default=12.0, gt=1.0, le=60.0)
+    attack_ms: int = Field(default=50, ge=0, le=2000)
+    release_ms: int = Field(default=250, ge=0, le=5000)
+    makeup_gain_db: float = Field(default=0.0, ge=0.0, le=24.0)
+
+
 class EditingManifestV2(_EditingModel):
     video_entries: tuple[EditingVideoEntryV2, ...] = ()
     bgm: EditingBgmEntryV2 | None = None
+    audio_entries: tuple[EditingAudioEntryV2, ...] = ()
+    ducking: EditingDuckingConfigV2 | None = None
     output: EditingOutputSettingsV2 = Field(default_factory=EditingOutputSettingsV2)
     manifest_revision: int = Field(default=1, ge=1)
     timeline_duration_seconds: float | None = Field(default=None, gt=0.0)
@@ -92,6 +137,8 @@ class EditingManifestV2(_EditingModel):
             raise ValueError("Editing video input references must be unique.")
         if self.bgm is not None and self.bgm.source_key in source_keys:
             raise ValueError("The BGM input cannot also be a video input.")
+        # The same audio asset may legitimately back multiple clips (repeated SFX,
+        # segmented BGM), so audio source keys are intentionally not unique-checked.
         return self
 
 

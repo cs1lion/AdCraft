@@ -153,6 +153,7 @@ class V2MediaToolchainCapabilityService:
         feature_flags = {
             "subtitles": font_readable and "drawtext" in filters,
             "source_audio": {"atrim", "amix", "adelay"}.issubset(filters),
+            "audio_ducking": "sidechaincompress" in filters,
             "visual_composition": {"overlay", "colorbalance", "colorlevels", "hue"}.issubset(
                 filters
             ),

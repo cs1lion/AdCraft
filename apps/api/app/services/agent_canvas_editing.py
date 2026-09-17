@@ -17,7 +17,9 @@ from app.schemas.agent_canvas import (
     ProjectAssetSummaryV2,
 )
 from app.schemas.agent_canvas_editing import (
+    EditingAudioEntryV2,
     EditingBgmEntryV2,
+    EditingDuckingConfigV2,
     EditingManifestV2,
     EditingNodeContentV2,
     EditingPreviewClipV2,
@@ -40,6 +42,7 @@ class ResolvedEditingMedia:
     node_id: str | None = None
     video_entry: EditingVideoEntryV2 | None = None
     bgm_entry: EditingBgmEntryV2 | None = None
+    audio_entry: EditingAudioEntryV2 | None = None
 
     @property
     def reference_id(self) -> str:
@@ -51,7 +54,9 @@ class ResolvedEditingInputs:
     videos: tuple[ResolvedEditingMedia, ...]
     bgm: ResolvedEditingMedia | None
     skipped: tuple[EditingSkippedInputV2, ...]
+    audios: tuple[ResolvedEditingMedia, ...] = ()
     timeline_duration_seconds: float | None = None
+    ducking: EditingDuckingConfigV2 | None = None
 
 
 class EditingNodeService:
@@ -461,53 +466,87 @@ class EditingInputResolver:
             )
         bgm = None
         if manifest.bgm is not None and manifest.bgm.enabled:
-            bgm_entry = manifest.bgm
-            source = (
-                _source_node(bindings.get(bgm_entry.binding_id), nodes)
-                if bgm_entry.binding_id is not None
-                else None
+            bgm_media, bgm_skip = self._resolve_audio_media(
+                manifest.bgm,
+                workflow=workflow,
+                bindings=bindings,
+                nodes=nodes,
             )
-            reason = _entry_skip_reason(bgm_entry, source=source)
-            if reason is None:
-                try:
-                    asset = _required_asset(
-                        self._asset_resolver,
-                        source.output_asset_id if source is not None else bgm_entry.asset_id,
-                    )
-                    _validate_project_asset(
-                        workflow_id,
-                        workflow.project_id,
-                        asset,
-                        "audio",
-                    )
-                    if asset.status != "ready" or not _entry_trim_is_valid(bgm_entry, asset):
-                        raise ValueError("Editing BGM input is not available.")
-                    path = self._path_resolver(asset.asset_id)
-                    if not path.is_file():
-                        raise OSError("Editing BGM file is unavailable.")
-                    bgm = ResolvedEditingMedia(
-                        asset=asset,
-                        path=path,
-                        binding_id=bgm_entry.binding_id,
-                        node_id=source.node_id if source else None,
-                        bgm_entry=bgm_entry,
-                    )
-                except (LookupError, OSError, ValueError, V2PersistenceError):
-                    reason = "source_media_invalid"
-            if bgm is None:
-                skipped.append(
-                    EditingSkippedInputV2(
-                        reference_id=bgm_entry.binding_id or bgm_entry.asset_id or "",
-                        node_id=source.node_id if source is not None else None,
-                        asset_id=bgm_entry.asset_id,
-                        reason=reason or "source_media_invalid",
-                    )
-                )
+            bgm = bgm_media
+            if bgm_skip is not None:
+                skipped.append(bgm_skip)
+        audios: list[ResolvedEditingMedia] = []
+        for entry in manifest.audio_entries:
+            if not entry.enabled:
+                continue
+            media, audio_skip = self._resolve_audio_media(
+                entry,
+                workflow=workflow,
+                bindings=bindings,
+                nodes=nodes,
+            )
+            if media is not None:
+                audios.append(media)
+            elif audio_skip is not None:
+                # Audio failures are observable skips, never fatal to the export.
+                skipped.append(audio_skip)
         return ResolvedEditingInputs(
             videos=tuple(videos),
             bgm=bgm,
+            audios=tuple(audios),
             skipped=tuple(skipped),
             timeline_duration_seconds=manifest.timeline_duration_seconds,
+            ducking=manifest.ducking,
+        )
+
+    def _resolve_audio_media(
+        self,
+        entry: EditingBgmEntryV2 | EditingAudioEntryV2,
+        *,
+        workflow: AgentCanvasWorkflowV2,
+        bindings: dict[str, CanvasBindingV2],
+        nodes: dict[str, CanvasNodeV2],
+    ) -> tuple[ResolvedEditingMedia | None, EditingSkippedInputV2 | None]:
+        source = (
+            _source_node(bindings.get(entry.binding_id), nodes)
+            if entry.binding_id is not None
+            else None
+        )
+        reason = _entry_skip_reason(entry, source=source)
+        if reason is None:
+            try:
+                asset = _required_asset(
+                    self._asset_resolver,
+                    source.output_asset_id if source is not None else entry.asset_id,
+                )
+                _validate_project_asset(
+                    workflow.workflow_id,
+                    workflow.project_id,
+                    asset,
+                    "audio",
+                )
+                if asset.status != "ready" or not _entry_trim_is_valid(entry, asset):
+                    raise ValueError("Editing audio input is not available.")
+                path = self._path_resolver(asset.asset_id)
+                if not path.is_file():
+                    raise OSError("Editing audio file is unavailable.")
+            except (LookupError, OSError, ValueError, V2PersistenceError):
+                reason = "source_media_invalid"
+            else:
+                media = ResolvedEditingMedia(
+                    asset=asset,
+                    path=path,
+                    binding_id=entry.binding_id,
+                    node_id=source.node_id if source else None,
+                    bgm_entry=entry if isinstance(entry, EditingBgmEntryV2) else None,
+                    audio_entry=entry if isinstance(entry, EditingAudioEntryV2) else None,
+                )
+                return media, None
+        return None, EditingSkippedInputV2(
+            reference_id=entry.binding_id or entry.asset_id or "",
+            node_id=source.node_id if source is not None else None,
+            asset_id=entry.asset_id,
+            reason=reason or "source_media_invalid",
         )
 
 
@@ -607,7 +646,7 @@ def _entry_duration(
 
 
 def _entry_skip_reason(
-    entry: EditingVideoEntryV2 | EditingBgmEntryV2,
+    entry: EditingVideoEntryV2 | EditingBgmEntryV2 | EditingAudioEntryV2,
     *,
     source: CanvasNodeV2 | None,
 ) -> str | None:
@@ -622,7 +661,7 @@ def _entry_skip_reason(
 
 
 def _entry_trim_is_valid(
-    entry: EditingVideoEntryV2 | EditingBgmEntryV2,
+    entry: EditingVideoEntryV2 | EditingBgmEntryV2 | EditingAudioEntryV2,
     asset: ProjectAssetSummaryV2,
 ) -> bool:
     duration = asset.duration_seconds

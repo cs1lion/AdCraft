@@ -10,6 +10,7 @@ import subprocess
 from app.core.config import Settings
 from app.persistence.errors import V2PersistenceError
 from app.schemas.agent_canvas_editing import (
+    EditingAudioEntryV2,
     EditingBgmEntryV2,
     EditingOutputSettingsV2,
     EditingVideoEntryV2,
@@ -20,11 +21,17 @@ from app.services.v2_final_composition_renderer import (
     V2MediaProbe,
     V2MediaProbeResult,
 )
-from app.services.v2_media_toolchain_capabilities import V2MediaToolchainCapabilityService
+from app.services.v2_media_toolchain_capabilities import (
+    V2MediaToolchainCapabilities,
+    V2MediaToolchainCapabilityService,
+)
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 Probe = Callable[[Path, str], V2MediaProbeResult]
+
+# Observable degradation markers surfaced on EditingRenderResult and export events.
+DEGRADATION_DUCKING_UNAVAILABLE = "audio_ducking_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,10 +42,11 @@ class EditingRenderResult:
     duration_seconds: float
     ffmpeg_command: tuple[str, ...]
     video_encoder: str
+    degradations: tuple[str, ...] = ()
 
 
 class AgentCanvasCompositionRenderer:
-    """Normalize ordered clips, preserve native audio, and optionally mix BGM."""
+    """Normalize ordered clips, preserve native audio, and mix timeline audio."""
 
     def __init__(
         self,
@@ -47,11 +55,13 @@ class AgentCanvasCompositionRenderer:
         runner: Runner | None = None,
         probe: Probe | None = None,
         encoder: str | None = None,
+        capability_snapshot: V2MediaToolchainCapabilities | None = None,
     ) -> None:
         self._settings = settings
         self._runner = runner or subprocess.run
         self._probe = probe or V2MediaProbe(ffprobe_path=settings.ffprobe_path)
         self._encoder = encoder
+        self._capability_snapshot = capability_snapshot
 
     def render(
         self,
@@ -68,7 +78,7 @@ class AgentCanvasCompositionRenderer:
         timeline_duration = _timeline_duration(inputs, probes)
         if cancelled():
             raise _error("editing_export_cancelled", "Editing Export was cancelled.")
-        command = self._command(
+        command, degradations = self._command(
             inputs,
             probes,
             width=width,
@@ -119,6 +129,7 @@ class AgentCanvasCompositionRenderer:
             duration_seconds=rendered.duration_seconds or timeline_duration,
             ffmpeg_command=tuple(command),
             video_encoder=encoder,
+            degradations=degradations,
         )
 
     def recover(
@@ -180,9 +191,11 @@ class AgentCanvasCompositionRenderer:
         encoder: str,
         timeline_duration: float,
         staging_path: Path,
-    ) -> list[str]:
+    ) -> tuple[list[str], tuple[str, ...]]:
         command = [self._settings.ffmpeg_path, "-y"]
         for item in inputs.videos:
+            command.extend(["-i", item.path.as_posix()])
+        for item in inputs.audios:
             command.extend(["-i", item.path.as_posix()])
         if inputs.bgm is not None:
             command.extend(["-stream_loop", "-1", "-i", inputs.bgm.path.as_posix()])
@@ -294,45 +307,11 @@ class AgentCanvasCompositionRenderer:
             concat_inputs.extend((f"[vgap{piece_index}]", f"[agap{piece_index}]"))
             piece_index += 1
         filters.append("".join(concat_inputs) + f"concat=n={piece_index}:v=1:a=1[vcat][acat]")
-        audio_label = "[acat]"
-        if inputs.bgm is not None:
-            bgm_index = len(probes)
-            bgm_entry = _bgm_entry(inputs.bgm)
-            bgm_duration = (
-                bgm_entry.trim_end_seconds - bgm_entry.trim_start_seconds
-                if bgm_entry.trim_end_seconds is not None
-                else max(timeline_duration - bgm_entry.trim_start_seconds, 0.001)
-            )
-            bgm_filters = [
-                _trim_filter(
-                    bgm_entry.trim_start_seconds,
-                    bgm_entry.trim_end_seconds,
-                    audio=True,
-                ),
-                f"volume={bgm_entry.volume:.6f}",
-            ]
-            if bgm_entry.trim_end_seconds is None:
-                bgm_filters.append(f"atrim=duration={bgm_duration:.6f}")
-            if bgm_entry.fade_in_seconds > 0:
-                bgm_filters.append(f"afade=t=in:st=0:d={bgm_entry.fade_in_seconds:.6f}")
-            if bgm_entry.fade_out_seconds > 0:
-                fade_start = max(bgm_duration - bgm_entry.fade_out_seconds, 0.0)
-                bgm_filters.append(
-                    f"afade=t=out:st={fade_start:.6f}:d={bgm_entry.fade_out_seconds:.6f}"
-                )
-            bgm_filters.extend(
-                (
-                    "aresample=48000",
-                    "aformat=sample_fmts=fltp:channel_layouts=stereo",
-                )
-            )
-            filters.append(f"[{bgm_index}:a:0]" + ",".join(bgm_filters) + "[bgm]")
-            filters.append(
-                "[acat][bgm]amix=inputs=2:duration=first:"
-                "dropout_transition=0:normalize=0,"
-                "alimiter=limit=0.95[amixed]"
-            )
-            audio_label = "[amixed]"
+        audio_filters, audio_label, degradations = self._audio_mix_filters(
+            inputs,
+            timeline_duration,
+        )
+        filters.extend(audio_filters)
         filters.append(
             f"[vcat]tpad=stop_mode=add:stop_duration={timeline_duration:.6f},"
             f"trim=duration={timeline_duration:.6f},setpts=PTS-STARTPTS[vout]"
@@ -360,7 +339,110 @@ class AgentCanvasCompositionRenderer:
                 staging_path.as_posix(),
             ]
         )
-        return command
+        return command, degradations
+
+    def _audio_mix_filters(
+        self,
+        inputs: ResolvedEditingInputs,
+        timeline_duration: float,
+    ) -> tuple[list[str], str, tuple[str, ...]]:
+        """Build the timeline-positioned multi-role audio graph.
+
+        Voice clips drive a sidechain bus that ducks BGM; SFX and voice are
+        mixed at full scale (normalize=0). Every clip is delayed to its
+        timeline position and padded to the fixed timeline duration.
+        """
+
+        filters: list[str] = []
+        degradations: list[str] = []
+        video_count = len(inputs.videos)
+
+        voice_labels: list[str] = []
+        sfx_labels: list[str] = []
+        bgm_labels: list[str] = []
+
+        for index, media in enumerate(inputs.audios):
+            entry = _audio_entry(media)
+            input_index = video_count + index
+            label = f"[ad{index}]"
+            filters.append(
+                f"[{input_index}:a:0]"
+                + ",".join(
+                    _timeline_audio_chain(
+                        entry,
+                        start_seconds=entry.timeline_start_seconds,
+                        timeline_duration=timeline_duration,
+                    )
+                )
+                + label
+            )
+            if entry.role == "voice":
+                voice_labels.append(label)
+            elif entry.role == "sfx":
+                sfx_labels.append(label)
+            else:
+                bgm_labels.append(label)
+
+        if inputs.bgm is not None:
+            bgm_entry = _bgm_entry(inputs.bgm)
+            bgm_input_index = video_count + len(inputs.audios)
+            filters.append(
+                f"[{bgm_input_index}:a:0]"
+                + ",".join(
+                    _timeline_audio_chain(
+                        bgm_entry,
+                        start_seconds=0.0,
+                        timeline_duration=timeline_duration,
+                    )
+                )
+                + "[bgmlegacy]"
+            )
+            bgm_labels.append("[bgmlegacy]")
+
+        voice_bus = _mix_bus(filters, voice_labels, "voicebus")
+        sfx_bus = _mix_bus(filters, sfx_labels, "sfxbus")
+        bgm_bus = _mix_bus(filters, bgm_labels, "bgmbase")
+
+        voice_mix_label = voice_bus
+        if (
+            voice_bus is not None
+            and bgm_bus is not None
+            and inputs.ducking is not None
+            and inputs.ducking.enabled
+        ):
+            if self._audio_ducking_supported():
+                ducking = inputs.ducking
+                # One sidechain copy drives the compressor; the other stays audible.
+                filters.append(f"{voice_bus}asplit=2[voice_sc][voice_mix]")
+                voice_mix_label = "[voice_mix]"
+                filters.append(
+                    f"{bgm_bus}[voice_sc]sidechaincompress="
+                    f"threshold={_db_to_linear(ducking.threshold_db):.6f}:"
+                    f"ratio={ducking.ratio:.6f}:"
+                    f"attack={ducking.attack_ms}:release={ducking.release_ms}:"
+                    f"makeup={_db_to_linear(ducking.makeup_gain_db):.6f}[bgmducked]"
+                )
+                bgm_bus = "[bgmducked]"
+            else:
+                # Observable fallback: static-volume mix without auto-ducking.
+                degradations.append(DEGRADATION_DUCKING_UNAVAILABLE)
+
+        final_inputs = ["[acat]"]
+        if voice_mix_label is not None:
+            final_inputs.append(voice_mix_label)
+        if sfx_bus is not None:
+            final_inputs.append(sfx_bus)
+        if bgm_bus is not None:
+            final_inputs.append(bgm_bus)
+
+        if len(final_inputs) == 1:
+            return filters, "[acat]", tuple(degradations)
+        filters.append(
+            "".join(final_inputs)
+            + f"amix=inputs={len(final_inputs)}:duration=first:"
+            "dropout_transition=0:normalize=0,alimiter=limit=0.95[amixed]"
+        )
+        return filters, "[amixed]", tuple(degradations)
 
     def _require_video(self, path: Path) -> V2MediaProbeResult:
         result = self._probe(path, "video")
@@ -372,7 +454,7 @@ class AgentCanvasCompositionRenderer:
         return result
 
     def _configured_encoder(self) -> str:
-        capabilities = V2MediaToolchainCapabilityService(self._settings).snapshot()
+        capabilities = self._capabilities()
         if (
             not capabilities.selected_video_encoder
             or not capabilities.feature_flags.get("visual_composition", False)
@@ -383,6 +465,14 @@ class AgentCanvasCompositionRenderer:
                 "Required Editing FFmpeg capabilities are unavailable.",
             )
         return capabilities.selected_video_encoder
+
+    def _capabilities(self) -> V2MediaToolchainCapabilities:
+        if self._capability_snapshot is not None:
+            return self._capability_snapshot
+        return V2MediaToolchainCapabilityService(self._settings).snapshot()
+
+    def _audio_ducking_supported(self) -> bool:
+        return bool(self._capabilities().feature_flags.get("audio_ducking", False))
 
 
 def _video_entry(media: ResolvedEditingMedia) -> EditingVideoEntryV2:
@@ -399,6 +489,65 @@ def _bgm_entry(media: ResolvedEditingMedia) -> EditingBgmEntryV2:
     if media.binding_id is not None:
         return EditingBgmEntryV2(binding_id=media.binding_id)
     return EditingBgmEntryV2(asset_id=media.asset.asset_id)
+
+
+def _audio_entry(media: ResolvedEditingMedia) -> EditingAudioEntryV2:
+    if media.audio_entry is not None:
+        return media.audio_entry
+    if media.binding_id is not None:
+        return EditingAudioEntryV2(binding_id=media.binding_id, role="voice")
+    return EditingAudioEntryV2(asset_id=media.asset.asset_id, role="voice")
+
+
+def _timeline_audio_chain(
+    entry: EditingAudioEntryV2 | EditingBgmEntryV2,
+    *,
+    start_seconds: float,
+    timeline_duration: float,
+) -> list[str]:
+    """Trim/level/fade one audio source, place it, and pad to timeline length."""
+
+    chain = [_trim_filter(entry.trim_start_seconds, entry.trim_end_seconds, audio=True)]
+    chain.append(f"volume={entry.volume:.6f}")
+    if entry.trim_end_seconds is not None:
+        clip_duration = entry.trim_end_seconds - entry.trim_start_seconds
+    else:
+        # Looped legacy BGM is expected to cover the rest of the timeline.
+        clip_duration = max(timeline_duration - entry.trim_start_seconds, 0.0)
+    if entry.fade_in_seconds > 0:
+        chain.append(f"afade=t=in:st=0:d={entry.fade_in_seconds:.6f}")
+    if entry.fade_out_seconds > 0 and clip_duration > 0:
+        fade_start = max(clip_duration - entry.fade_out_seconds, 0.0)
+        chain.append(f"afade=t=out:st={fade_start:.6f}:d={entry.fade_out_seconds:.6f}")
+    chain.extend(
+        (
+            "aresample=48000",
+            "aformat=sample_fmts=fltp:channel_layouts=stereo",
+            f"adelay={max(0, round(start_seconds * 1000))}:all=1",
+            f"apad=whole_dur={timeline_duration:.6f}",
+            f"atrim=duration={timeline_duration:.6f}",
+            "asetpts=PTS-STARTPTS",
+        )
+    )
+    return chain
+
+
+def _mix_bus(filters: list[str], labels: list[str], name: str) -> str | None:
+    """Combine same-role clips into one fixed-length bus (passthrough if one)."""
+
+    if not labels:
+        return None
+    if len(labels) == 1:
+        return labels[0]
+    filters.append(
+        "".join(labels)
+        + f"amix=inputs={len(labels)}:duration=first:dropout_transition=0:normalize=0[{name}]"
+    )
+    return f"[{name}]"
+
+
+def _db_to_linear(db: float) -> float:
+    return 10.0 ** (db / 20.0)
 
 
 def _effective_duration(

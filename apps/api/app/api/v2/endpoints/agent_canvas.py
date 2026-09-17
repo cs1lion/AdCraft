@@ -1121,8 +1121,11 @@ def create_agent_canvas_runtime(
 
 
     # Timeline auto-clip creator (ADR 0007)
+    # Reuse one V2Database (engine) for the whole workflow runtime; the
+    # repository factory only opens short-lived sessions on top of it.
+    timeline_db = create_v2_database(settings.media_data_dir)
+
     def _create_timeline_repository() -> TimelineRepository:
-        timeline_db = create_v2_database(settings.media_data_dir)
         return TimelineRepository(timeline_db.session_factory())
 
     timeline_clip_auto_creator = TimelineClipAutoCreator(

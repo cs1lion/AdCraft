@@ -1,4 +1,4 @@
-﻿"""Durable explicit Export lifecycle for Agent Canvas Editing nodes."""
+"""Durable explicit Export lifecycle for Agent Canvas Editing nodes."""
 
 from __future__ import annotations
 
@@ -167,19 +167,19 @@ class EditingExportService:
             reusable_export_id = reusable.export_id
         workflow = self._workflows.get_workflow(workflow_id)
         node = self._workflows.get_node(workflow_id, node_id)
+        resolved_media = (
+            *resolved.videos,
+            *((resolved.bgm,) if resolved.bgm else ()),
+            *resolved.audios,
+        )
         source_assets = tuple(
-            dict.fromkeys(
-                [item.asset.asset_id for item in resolved.videos]
-                + ([resolved.bgm.asset.asset_id] if resolved.bgm is not None else [])
-            )
+            dict.fromkeys(item.asset.asset_id for item in resolved_media)
         )
         source_assertions = tuple(
             RevisionAssertionV2(
                 asset_id=asset_id,
                 sha256=next(
-                    item.asset.checksum
-                    for item in (*resolved.videos, *((resolved.bgm,) if resolved.bgm else ()))
-                    if item.asset.asset_id == asset_id
+                    item.asset.checksum for item in resolved_media if item.asset.asset_id == asset_id
                 ),
             )
             for asset_id in source_assets
@@ -207,6 +207,10 @@ class EditingExportService:
                         if resolved.bgm is not None
                         else None
                     ),
+                    "audios": [
+                        {"asset_id": item.asset.asset_id, "sha256": item.asset.checksum}
+                        for item in resolved.audios
+                    ],
                     "skipped": [item.model_dump(mode="json") for item in resolved.skipped],
                 }
             ),
@@ -286,6 +290,27 @@ class EditingExportService:
                     runtime=runtime,
                     renderer_digest=renderer_digest,
                     lease=lease,
+                )
+            if result.degradations:
+                # Observable fallback marker (e.g. sidechaincompress unavailable):
+                # export proceeds with static mixing and records a queryable event.
+                self._events.append(
+                    V2EventInsert(
+                        workflow_id=workflow_id,
+                        execution_id=export_id,
+                        node_id=node_id,
+                        event_type="editing_export_audio_degraded",
+                        transition_key=(
+                            f"editing:{export_id}:audio-degradation:"
+                            + ",".join(result.degradations)
+                        ),
+                        created_at=self._clock().isoformat(),
+                        payload={
+                            "export_id": export_id,
+                            "degradations": list(result.degradations),
+                            "refresh": ["events"],
+                        },
+                    )
                 )
             self._exports.append_progress(
                 lease,
