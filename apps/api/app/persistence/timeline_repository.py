@@ -15,6 +15,7 @@ from typing import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.persistence.errors import V2PersistenceError
 from app.persistence.models import (
     TimelineClipRow,
     TimelineRow,
@@ -197,21 +198,26 @@ class TimelineRepository:
             select(TimelineTrackRow).where(TimelineTrackRow.track_id == track_id)
         ).scalar_one_or_none()
         if track_row:
-            all_clips = self._session.execute(
-                select(TimelineClipRow)
-                .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
-                .where(TimelineTrackRow.timeline_id == track_row.timeline_id)
-            ).scalars().all()
-            if all_clips:
-                max_end = max(c.start_time + c.duration for c in all_clips)
-                timeline_row = self._session.execute(
-                    select(TimelineRow).where(TimelineRow.timeline_id == track_row.timeline_id)
-                ).scalar_one_or_none()
-                if timeline_row and max_end > timeline_row.duration_seconds:
-                    timeline_row.duration_seconds = max_end
-                    timeline_row.updated_at = _utc_now_iso()
+            self._grow_timeline_duration(track_row.timeline_id)
 
         return self._hydrate_clip(row)
+
+    def _grow_timeline_duration(self, timeline_id: str) -> None:
+        """Extend ``duration_seconds`` to the latest clip end (never shrink)."""
+        all_clips = self._session.execute(
+            select(TimelineClipRow)
+            .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
+            .where(TimelineTrackRow.timeline_id == timeline_id)
+        ).scalars().all()
+        if not all_clips:
+            return
+        max_end = max(c.start_time + c.duration for c in all_clips)
+        timeline_row = self._session.execute(
+            select(TimelineRow).where(TimelineRow.timeline_id == timeline_id)
+        ).scalar_one_or_none()
+        if timeline_row is not None and max_end > timeline_row.duration_seconds:
+            timeline_row.duration_seconds = max_end
+            timeline_row.updated_at = _utc_now_iso()
 
     def get_clip(self, clip_id: str) -> TimelineClipV1:
         row = self._session.execute(
@@ -234,6 +240,77 @@ class TimelineRepository:
             .order_by(TimelineClipRow.start_time)
         ).scalars().all()
         return [self._hydrate_clip(row) for row in rows]
+
+    def get_latest_node_clip(
+        self,
+        timeline_id: str,
+        source_node_id: str,
+    ) -> TimelineClipV1 | None:
+        """Return the most recently updated clip originating from one node.
+
+        Scoped to one timeline (joined through the clip's track) so a node
+        rerun can never touch clips belonging to another timeline.
+        """
+        row = self._session.execute(
+            select(TimelineClipRow)
+            .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
+            .where(
+                TimelineTrackRow.timeline_id == timeline_id,
+                TimelineClipRow.source_node_id == source_node_id,
+            )
+            .order_by(TimelineClipRow.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return self._hydrate_clip(row) if row is not None else None
+
+    def upsert_auto_clip_for_node(
+        self,
+        *,
+        timeline_id: str,
+        source_node_id: str,
+        track_id: str,
+        duration: float,
+        asset_id: str | None,
+        asset_version_id: str | None,
+        label: str | None,
+    ) -> tuple[TimelineClipV1, bool]:
+        """Idempotently place a node's media on the timeline.
+
+        A node rerun refreshes the existing clip in place (asset pointers and
+        duration only); the user's arrangement — start time, trim, fades,
+        label — is preserved. New nodes append after the track's last clip.
+        Returns ``(clip, created)``.
+        """
+        existing = self._session.execute(
+            select(TimelineClipRow)
+            .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
+            .where(
+                TimelineTrackRow.timeline_id == timeline_id,
+                TimelineClipRow.source_node_id == source_node_id,
+            )
+            .order_by(TimelineClipRow.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.track_id = track_id
+            existing.asset_id = asset_id
+            existing.asset_version_id = asset_version_id
+            existing.duration = duration
+            existing.updated_at = _utc_now_iso()
+            self._session.flush()
+            self._grow_timeline_duration(timeline_id)
+            return self._hydrate_clip(existing), False
+
+        created = self.add_clip(
+            track_id=track_id,
+            start_time=self.get_next_start_time_for_track(track_id),
+            duration=duration,
+            asset_id=asset_id,
+            asset_version_id=asset_version_id,
+            source_node_id=source_node_id,
+            label=label,
+        )
+        return created, True
 
     def update_clip(
         self,
@@ -300,7 +377,23 @@ class TimelineRepository:
             select(TimelineClipRow).where(TimelineClipRow.clip_id == clip_id)
         ).scalar_one()
 
-        if new_track_id is not None:
+        if new_track_id is not None and new_track_id != row.track_id:
+            target_track = self._session.execute(
+                select(TimelineTrackRow).where(TimelineTrackRow.track_id == new_track_id)
+            ).scalar_one_or_none()
+            current_track = self._session.execute(
+                select(TimelineTrackRow).where(TimelineTrackRow.track_id == row.track_id)
+            ).scalar_one()
+            if (
+                target_track is None
+                or target_track.timeline_id != current_track.timeline_id
+            ):
+                raise V2PersistenceError(
+                    "timeline_track_not_found",
+                    "Target track does not exist on this timeline.",
+                    stage="move_clip",
+                    details={"track_id": new_track_id},
+                )
             row.track_id = new_track_id
         row.start_time = new_start_time
         row.updated_at = _utc_now_iso()

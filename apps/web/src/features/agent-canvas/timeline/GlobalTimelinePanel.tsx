@@ -29,10 +29,19 @@ import {
   getMediaToolchainCapabilities,
   getTimeline,
   listLatestAudioDegradations,
+  moveClip,
   updateClip,
   updateTimeline,
   updateTrack,
 } from "./timelineApi.ts";
+import {
+  applyEdgeSnap,
+  canMoveClipToTrack,
+  collectSnapCandidates,
+  EDGE_SNAP_PX_THRESHOLD,
+  withClipRelocated,
+  type ClipDragMode,
+} from "./timelineDrag.ts";
 
 const TRACK_COLORS: Record<TimelineTrackTypeV1, string> = {
   video: "#4f8cff",
@@ -79,11 +88,41 @@ interface GlobalTimelinePanelProps {
   workflowId: string;
   onClipClick?: (clip: TimelineClipV1) => void;
   onTrackClick?: (track: TimelineTrackV1) => void;
+  /**
+   * Monotonic nonce that grows when live runtime events mutate timeline
+   * content server-side (see {@link timelineRefreshNonce}).
+   */
+  externalRefreshNonce?: number;
+  /**
+   * IDs of the nodes currently on the canvas. Clips whose source node is
+   * missing are flagged as orphans (node deleted, clip kept for review).
+   */
+  workflowNodeIds?: ReadonlySet<string>;
 }
 
 const PIXELS_PER_SECOND = 40;
 const TRACK_HEIGHT = 48;
 const TRACK_LABEL_WIDTH = 150;
+const EXTERNAL_REFRESH_DEBOUNCE_MS = 250;
+
+interface DragInteractionState {
+  clipId: string;
+  mode: ClipDragMode;
+  pointerStartX: number;
+  pointerStartY: number;
+  origStartTime: number;
+  origDuration: number;
+  sourceTrackId: string;
+  sourceTrackType: TimelineTrackTypeV1;
+  /** Last legal row the pointer crossed (resize modes stay on the source). */
+  targetTrackId: string;
+  /** Row currently under the pointer; null over the label column or gaps. */
+  hoverTrackId: string | null;
+  /** Whether releasing right now would be an accepted drop. */
+  dropValid: boolean;
+  /** Timeline time of the active edge-snap guide; null when not snapped. */
+  snapGuide: number | null;
+}
 
 interface DuckingFormState {
   enabled: boolean;
@@ -129,23 +168,22 @@ export function GlobalTimelinePanel({
   workflowId,
   onClipClick,
   onTrackClick,
+  externalRefreshNonce,
+  workflowNodeIds,
 }: GlobalTimelinePanelProps) {
   const [timeline, setTimeline] = useState<TimelineV1 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [dragInteraction, setDragInteraction] = useState<{
-    clipId: string;
-    mode: "move" | "resize-left" | "resize-right";
-    pointerStartX: number;
-    origStartTime: number;
-    origDuration: number;
-  } | null>(null);
+  const [dragInteraction, setDragInteraction] = useState<DragInteractionState | null>(
+    null,
+  );
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const playbackRef = useRef<number | null>(null);
   const dragMovedRef = useRef(false);
+  const trackContentRefs = useRef(new Map<string, HTMLDivElement>());
 
   // Audio track control state
   const [savingTrackId, setSavingTrackId] = useState<string | null>(null);
@@ -330,6 +368,49 @@ export function GlobalTimelinePanel({
     }
   };
 
+  // --- Live refresh driven by runtime SSE events (node_output_published) ---
+  const lastExternalNonceRef = useRef<number | null>(null);
+  const pendingExternalRefreshRef = useRef(false);
+  const dragActiveRef = useRef(false);
+  useEffect(() => {
+    dragActiveRef.current = dragInteraction !== null;
+  }, [dragInteraction]);
+  // Switching workflows resets the nonce baseline; the mount effect already
+  // performs the initial fetch for the new workflow.
+  useEffect(() => {
+    lastExternalNonceRef.current = null;
+    pendingExternalRefreshRef.current = false;
+  }, [workflowId]);
+  useEffect(() => {
+    if (externalRefreshNonce === undefined) return;
+    if (lastExternalNonceRef.current === null) {
+      lastExternalNonceRef.current = externalRefreshNonce;
+      return;
+    }
+    if (externalRefreshNonce <= lastExternalNonceRef.current) return;
+    lastExternalNonceRef.current = externalRefreshNonce;
+    // Never refetch underneath an active drag; flush once the drag ends.
+    if (dragActiveRef.current) {
+      pendingExternalRefreshRef.current = true;
+      return;
+    }
+    // Debounce so a fan-out of node completions collapses into one GET.
+    const handle = window.setTimeout(() => {
+      void resyncTimeline();
+    }, EXTERNAL_REFRESH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+    // resyncTimeline is a fresh closure every render; the nonce comparison
+    // above already guards against redundant fetches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalRefreshNonce]);
+  useEffect(() => {
+    if (dragInteraction === null && pendingExternalRefreshRef.current) {
+      pendingExternalRefreshRef.current = false;
+      void resyncTimeline();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragInteraction]);
+
   // --- Audio track controls ---
 
   const persistTrackPatch = async (
@@ -365,7 +446,7 @@ export function GlobalTimelinePanel({
     e: React.MouseEvent,
     clip: TimelineClipV1,
     track: TimelineTrackV1,
-    mode: "move" | "resize-left" | "resize-right",
+    mode: ClipDragMode,
   ) => {
     if (track.locked) return;
     e.stopPropagation();
@@ -375,14 +456,41 @@ export function GlobalTimelinePanel({
       clipId: clip.clip_id,
       mode,
       pointerStartX: e.clientX,
+      pointerStartY: e.clientY,
       origStartTime: clip.start_time,
       origDuration: clip.duration,
+      sourceTrackId: track.track_id,
+      sourceTrackType: track.type,
+      targetTrackId: track.track_id,
+      hoverTrackId: null,
+      dropValid: true,
+      snapGuide: null,
     });
   };
 
+  /** Hit-test the track row under the pointer (content area only). */
+  const locateTrackAt = (clientX: number, clientY: number): string | null => {
+    for (const [trackId, node] of trackContentRefs.current) {
+      const rect = node.getBoundingClientRect();
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      ) {
+        return trackId;
+      }
+    }
+    return null;
+  };
+
   const handleContainerMouseMove = (e: React.MouseEvent) => {
-    if (!dragInteraction || !timeline) return;
-    if (Math.abs(e.clientX - dragInteraction.pointerStartX) > 4) {
+    const interaction = dragInteraction;
+    if (!interaction || !timeline) return;
+    if (
+      Math.abs(e.clientX - interaction.pointerStartX) > 4 ||
+      Math.abs(e.clientY - interaction.pointerStartY) > 4
+    ) {
       dragMovedRef.current = true;
     }
     const fps = timeline.fps || 30;
@@ -390,45 +498,98 @@ export function GlobalTimelinePanel({
     const snapToFrame = (value: number) =>
       Math.max(0, Math.round(value * fps) / fps);
     const delta =
-      (e.clientX - dragInteraction.pointerStartX) / PIXELS_PER_SECOND;
+      (e.clientX - interaction.pointerStartX) / PIXELS_PER_SECOND;
 
-    let nextStart = dragInteraction.origStartTime;
-    let nextDuration = dragInteraction.origDuration;
+    // Resolve the drop target from the pointer's Y position (moves only).
+    let hoverTrackId: string | null = null;
+    let dropValid = true;
+    let targetTrackId = interaction.targetTrackId;
+    if (interaction.mode === "move") {
+      hoverTrackId = locateTrackAt(e.clientX, e.clientY);
+      if (hoverTrackId === null) {
+        dropValid = false;
+      } else {
+        const hoverTrack =
+          timeline.tracks.find((t) => t.track_id === hoverTrackId) ?? null;
+        const legal =
+          hoverTrack !== null &&
+          !hoverTrack.locked &&
+          canMoveClipToTrack(interaction.sourceTrackType, hoverTrack.type);
+        if (legal) targetTrackId = hoverTrackId;
+        dropValid = legal;
+      }
+    }
 
-    if (dragInteraction.mode === "move") {
-      nextStart = snapToFrame(dragInteraction.origStartTime + delta);
-    } else if (dragInteraction.mode === "resize-left") {
+    // Raw frame-snapped geometry (same bounds as single-track dragging).
+    let nextStart = interaction.origStartTime;
+    let nextDuration = interaction.origDuration;
+
+    if (interaction.mode === "move") {
+      nextStart = snapToFrame(interaction.origStartTime + delta);
+    } else if (interaction.mode === "resize-left") {
       const bounded = Math.min(
-        dragInteraction.origStartTime + delta,
-        dragInteraction.origStartTime + dragInteraction.origDuration - frame,
+        interaction.origStartTime + delta,
+        interaction.origStartTime + interaction.origDuration - frame,
       );
       nextStart = snapToFrame(bounded);
       nextDuration = Math.max(
         frame,
-        dragInteraction.origDuration -
-          (nextStart - dragInteraction.origStartTime),
+        interaction.origDuration -
+          (nextStart - interaction.origStartTime),
       );
     } else {
       nextDuration = Math.max(
         frame,
-        snapToFrame(dragInteraction.origDuration + delta),
+        snapToFrame(interaction.origDuration + delta),
       );
     }
 
-    const interactionId = dragInteraction.clipId;
+    // Edge snapping against every other clip (plus 0 and the playhead).
+    const candidates = collectSnapCandidates(timeline.tracks, interaction.clipId, [
+      0,
+      currentTime,
+    ]);
+    const snapped = applyEdgeSnap({
+      mode: interaction.mode,
+      startTime: nextStart,
+      duration: nextDuration,
+      fps,
+      thresholdSeconds: EDGE_SNAP_PX_THRESHOLD / PIXELS_PER_SECOND,
+      candidates,
+      maxStartTime:
+        interaction.mode === "resize-left"
+          ? interaction.origStartTime + interaction.origDuration - frame
+          : undefined,
+    });
+    nextStart = snapped.startTime;
+    if (interaction.mode === "resize-left") {
+      nextDuration = Math.max(
+        frame,
+        interaction.origStartTime + interaction.origDuration - nextStart,
+      );
+    } else if (interaction.mode === "resize-right") {
+      nextDuration = snapped.duration;
+    }
+
+    const interactionId = interaction.clipId;
     setTimeline((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
-        tracks: prev.tracks.map((track) => ({
-          ...track,
-          clips: track.clips.map((clip) =>
-            clip.clip_id === interactionId
-              ? { ...clip, start_time: nextStart, duration: nextDuration }
-              : clip,
-          ),
-        })),
+        tracks: withClipRelocated(
+          prev.tracks,
+          interactionId,
+          targetTrackId,
+          { start_time: nextStart, duration: nextDuration },
+        ),
       };
+    });
+    setDragInteraction({
+      ...interaction,
+      hoverTrackId,
+      dropValid,
+      targetTrackId,
+      snapGuide: snapped.guide,
     });
   };
 
@@ -441,17 +602,32 @@ export function GlobalTimelinePanel({
       .find((clip) => clip.clip_id === interaction.clipId);
     if (!draggedClip) return;
 
+    // Illegal drop (incompatible/locked row, or released over a non-track
+    // area): discard the optimistic preview and resync from the server.
+    if (!interaction.dropValid) {
+      await resyncTimeline();
+      return;
+    }
+
+    const trackChanged = draggedClip.track_id !== interaction.sourceTrackId;
     const startChanged =
       Math.abs(draggedClip.start_time - interaction.origStartTime) > 1e-6;
     const durationChanged =
       Math.abs(draggedClip.duration - interaction.origDuration) > 1e-6;
-    if (!startChanged && !durationChanged) return;
+    if (!trackChanged && !startChanged && !durationChanged) return;
 
     try {
-      await updateClip(workflowId, interaction.clipId, {
-        start_time: draggedClip.start_time,
-        duration: draggedClip.duration,
-      });
+      if (trackChanged) {
+        await moveClip(workflowId, interaction.clipId, {
+          track_id: draggedClip.track_id,
+          start_time: draggedClip.start_time,
+        });
+      } else {
+        await updateClip(workflowId, interaction.clipId, {
+          start_time: draggedClip.start_time,
+          duration: draggedClip.duration,
+        });
+      }
     } catch (err) {
       console.error("Failed to persist clip drag:", err);
       // Resync local state with the server after a rejected write
@@ -1059,7 +1235,16 @@ export function GlobalTimelinePanel({
       {/* Content */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Scroll surface only hosts drag move/up listeners; clips own the keyboard-accessible actions. */}
       <div
-        style={{ flex: 1, overflow: "auto", position: "relative" }}
+        data-testid="timeline-scroll-container"
+        style={{
+          flex: 1,
+          overflow: "auto",
+          position: "relative",
+          cursor:
+            dragInteraction && !dragInteraction.dropValid
+              ? "not-allowed"
+              : undefined,
+        }}
         onMouseMove={handleContainerMouseMove}
         onMouseUp={() => void finishClipDrag()}
         onMouseLeave={() => void finishClipDrag()}
@@ -1120,6 +1305,9 @@ export function GlobalTimelinePanel({
             {/* Tracks */}
             {sortedTracks.map((track) => {
               const isAudioRole = AUDIO_ROLES.has(track.type);
+              const isDropHover =
+                dragInteraction?.mode === "move" &&
+                dragInteraction.hoverTrackId === track.track_id;
               return (
                 <div
                   key={track.track_id}
@@ -1246,7 +1434,47 @@ export function GlobalTimelinePanel({
                   </div>
 
                   {/* Track content */}
-                  <div style={{ position: "relative", flex: 1, background: "#1a1a1a" }}>
+                  <div
+                    data-track-id={track.track_id}
+                    ref={(node) => {
+                      if (node) {
+                        trackContentRefs.current.set(track.track_id, node);
+                      } else {
+                        trackContentRefs.current.delete(track.track_id);
+                      }
+                    }}
+                    style={{
+                      position: "relative",
+                      flex: 1,
+                      background: isDropHover
+                        ? dragInteraction?.dropValid
+                          ? "#1d2a1a"
+                          : "#2e1a1a"
+                        : "#1a1a1a",
+                      boxShadow: isDropHover
+                        ? dragInteraction?.dropValid
+                          ? "inset 0 0 0 2px rgba(82,196,26,0.9)"
+                          : "inset 0 0 0 2px rgba(245,34,45,0.9)"
+                        : undefined,
+                    }}
+                  >
+                    {/* Edge-snap guide */}
+                    {dragInteraction &&
+                      dragInteraction.snapGuide !== null &&
+                      dragInteraction.targetTrackId === track.track_id && (
+                        <div
+                          data-testid="timeline-snap-guide"
+                          style={{
+                            position: "absolute",
+                            left: dragInteraction.snapGuide * PIXELS_PER_SECOND,
+                            top: 0,
+                            bottom: 0,
+                            borderLeft: "1px solid #ffd34d",
+                            zIndex: 4,
+                            pointerEvents: "none",
+                          }}
+                        />
+                      )}
                     {/* Playhead line */}
                     <div
                       style={{
@@ -1282,14 +1510,27 @@ export function GlobalTimelinePanel({
                     {/* Clips */}
                     {track.clips.map((clip) => {
                       const isSelected = clip.clip_id === selectedClipId;
+                      const isOrphan =
+                        clip.source_node_id != null
+                        && workflowNodeIds != null
+                        && !workflowNodeIds.has(clip.source_node_id);
+                      const clipTitle =
+                        clip.label ||
+                        `Clip: ${clip.start_time.toFixed(2)}s - ${(
+                          clip.start_time + clip.duration
+                        ).toFixed(2)}s`;
                       return (
                         <div
                           key={clip.clip_id}
                           role="button"
                           tabIndex={0}
+                          data-testid="timeline-clip"
+                          data-clip-orphan={isOrphan ? "true" : undefined}
                           aria-label={
-                            clip.label ||
-                            `Clip from ${clip.start_time.toFixed(2)} seconds, ${clip.duration.toFixed(2)} seconds long`
+                            isOrphan
+                              ? `${clip.label || "Clip"} (source node deleted)`
+                              : clip.label ||
+                                `Clip from ${clip.start_time.toFixed(2)} seconds, ${clip.duration.toFixed(2)} seconds long`
                           }
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1314,15 +1555,21 @@ export function GlobalTimelinePanel({
                             borderRadius: 4,
                             border: isSelected
                               ? "2px solid #1890ff"
-                              : "1px solid rgba(0,0,0,0.1)",
+                              : isOrphan
+                                ? "1.5px dashed #d48806"
+                                : "1px solid rgba(0,0,0,0.1)",
                             boxShadow: isSelected
                               ? "0 0 0 2px rgba(24,144,255,0.2)"
-                              : "none",
+                              : isOrphan
+                                ? "inset 0 0 0 1px rgba(212,136,6,0.35)"
+                                : "none",
                             cursor: track.locked
                               ? "default"
                               : dragInteraction?.clipId === clip.clip_id
                                   && dragInteraction.mode === "move"
-                                ? "grabbing"
+                                ? dragInteraction.dropValid
+                                  ? "grabbing"
+                                  : "not-allowed"
                                 : "grab",
                             overflow: "hidden",
                             display: "flex",
@@ -1336,10 +1583,9 @@ export function GlobalTimelinePanel({
                           }}
                           onMouseDown={(e) => beginClipDrag(e, clip, track, "move")}
                           title={
-                            clip.label ||
-                            `Clip: ${clip.start_time.toFixed(2)}s - ${(
-                              clip.start_time + clip.duration
-                            ).toFixed(2)}s`
+                            isOrphan
+                              ? `${clipTitle} — source node deleted`
+                              : clipTitle
                           }
                         >
                           {/* Left trim handle */}

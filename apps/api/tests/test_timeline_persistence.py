@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app.persistence.database import V2Database, create_v2_database
+from app.persistence.errors import V2PersistenceError
 from app.persistence.models import (
     AssetRow,
     AssetVersionRow,
@@ -209,6 +210,72 @@ class TestTimelineRepository:
 
             repo.delete_clip(clip.clip_id)
             assert repo.get_clips_for_track(voice_track.track_id) == []
+            session.commit()
+
+    def test_move_clip_rejects_unknown_or_foreign_track(self, database: V2Database) -> None:
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            session.add(
+                ProjectRow(
+                    project_id="proj_timeline_test_other",
+                    name="Timeline Test Project Other",
+                    created_at="2026-09-17T00:00:00+00:00",
+                    updated_at="2026-09-17T00:00:00+00:00",
+                )
+            )
+            session.flush()
+            session.add(
+                AgentCanvasWorkflowRow(
+                    workflow_id="wf_timeline_test_other",
+                    project_id="proj_timeline_test_other",
+                    created_at="2026-09-17T00:00:00+00:00",
+                    updated_at="2026-09-17T00:00:00+00:00",
+                )
+            )
+            session.flush()
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+            voice_track = next(t for t in timeline.tracks if t.type == "voice")
+            clip = repo.add_clip(
+                track_id=video_track.track_id,
+                start_time=0.0,
+                duration=3.0,
+            )
+
+            # A track id from another timeline must not accept the clip.
+            other = repo.get_by_workflow_id("wf_timeline_test_other")
+            other_video = next(t for t in other.tracks if t.type == "video")
+            with pytest.raises(V2PersistenceError) as foreign_exc:
+                repo.move_clip(
+                    clip.clip_id,
+                    new_track_id=other_video.track_id,
+                    new_start_time=1.0,
+                )
+            assert foreign_exc.value.code == "timeline_track_not_found"
+
+            # A completely made-up track id is rejected the same way.
+            with pytest.raises(V2PersistenceError) as missing_exc:
+                repo.move_clip(
+                    clip.clip_id,
+                    new_track_id="track_does_not_exist",
+                    new_start_time=1.0,
+                )
+            assert missing_exc.value.code == "timeline_track_not_found"
+
+            # Failed moves leave the clip on its original track and time.
+            untouched = repo.get_clip(clip.clip_id)
+            assert untouched.track_id == video_track.track_id
+            assert untouched.start_time == pytest.approx(0.0)
+
+            # A same-timeline cross-track move still succeeds.
+            moved = repo.move_clip(
+                clip.clip_id,
+                new_track_id=voice_track.track_id,
+                new_start_time=2.0,
+            )
+            assert moved.track_id == voice_track.track_id
+            assert moved.start_time == pytest.approx(2.0)
             session.commit()
 
     def test_update_clip_explicit_null_clears_nullable_fields(
@@ -475,3 +542,276 @@ class TestTimelineClipAutoCreator:
         with database.session_factory() as session:
             timeline = TimelineRepository(session).get_by_workflow_id(_WORKFLOW_ID)
         assert all(track.clips == () for track in timeline.tracks)
+
+    def test_node_rerun_refreshes_clip_without_duplicating(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        _seed_asset(
+            database,
+            asset_id="asset_rerun",
+            media_type="video",
+            duration_seconds=5.5,
+        )
+        creator = _make_creator(database)
+        context = AutoClipContext(
+            workflow_id=_WORKFLOW_ID,
+            node_id="node_rerun",
+            node_type="video",
+            semantic_role=None,
+            output_asset_id="asset_rerun",
+            output_asset_version_id="asset_rerun_v1",
+            title="Shot 1",
+        )
+        clip_id = creator.create_clip_for_node(context)
+        assert clip_id is not None
+
+        # The user arranges the clip (moves it, renames it) after generation.
+        with database.session_factory() as session:
+            TimelineRepository(session).update_clip(
+                clip_id,
+                start_time=10.0,
+                label="My renamed shot",
+            )
+            session.commit()
+
+        # Node rerun publishes a new 8s version under the same node.
+        with database.session_factory() as session:
+            session.add(
+                AssetVersionRow(
+                    version_id="asset_rerun_v2",
+                    asset_id="asset_rerun",
+                    version_no=2,
+                    storage_key="media/asset_rerun_v2.bin",
+                    sha256="sha256-asset_rerun-v2",
+                    size_bytes=2048,
+                    mime_type="video/mp4",
+                    duration_seconds=8.0,
+                    metadata_json="{}",
+                    created_at="2026-09-18T00:00:00+00:00",
+                )
+            )
+            session.commit()
+
+        second_id = creator.create_clip_for_node(
+            AutoClipContext(
+                workflow_id=_WORKFLOW_ID,
+                node_id="node_rerun",
+                node_type="video",
+                semantic_role=None,
+                output_asset_id="asset_rerun",
+                output_asset_version_id="asset_rerun_v2",
+                title="Shot 1 regenerated",
+            )
+        )
+
+        assert second_id == clip_id
+        with database.session_factory() as session:
+            timeline = TimelineRepository(session).get_by_workflow_id(_WORKFLOW_ID)
+        video_track = next(t for t in timeline.tracks if t.type == "video")
+        assert len(video_track.clips) == 1
+        clip = video_track.clips[0]
+        # Refreshed asset pointers + duration ...
+        assert clip.asset_version_id == "asset_rerun_v2"
+        assert clip.duration == pytest.approx(8.0)
+        # ... but the user's arrangement is preserved.
+        assert clip.start_time == pytest.approx(10.0)
+        assert clip.label == "My renamed shot"
+        assert timeline.duration_seconds == pytest.approx(18.0)
+
+    def test_rerun_with_unknown_duration_keeps_arranged_length(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        _seed_asset(
+            database,
+            asset_id="asset_known",
+            media_type="video",
+            duration_seconds=5.5,
+        )
+        _seed_asset(
+            database,
+            asset_id="asset_no_duration",
+            media_type="video",
+            duration_seconds=None,
+        )
+        creator = _make_creator(database)
+
+        creator.create_clip_for_node(
+            AutoClipContext(
+                workflow_id=_WORKFLOW_ID,
+                node_id="node_dur",
+                node_type="video",
+                semantic_role=None,
+                output_asset_id="asset_known",
+                output_asset_version_id="asset_known_v1",
+                title=None,
+            )
+        )
+        # Rerun resolves to an asset version without recorded duration.
+        creator.create_clip_for_node(
+            AutoClipContext(
+                workflow_id=_WORKFLOW_ID,
+                node_id="node_dur",
+                node_type="video",
+                semantic_role=None,
+                output_asset_id="asset_no_duration",
+                output_asset_version_id="asset_no_duration_v1",
+                title=None,
+            )
+        )
+
+        with database.session_factory() as session:
+            timeline = TimelineRepository(session).get_by_workflow_id(_WORKFLOW_ID)
+        video_track = next(t for t in timeline.tracks if t.type == "video")
+        assert len(video_track.clips) == 1
+        clip = video_track.clips[0]
+        assert clip.asset_id == "asset_no_duration"
+        assert clip.duration == pytest.approx(5.5)
+
+    def test_distinct_nodes_create_distinct_appended_clips(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        _seed_asset(
+            database,
+            asset_id="asset_a",
+            media_type="video",
+            duration_seconds=5.5,
+        )
+        _seed_asset(
+            database,
+            asset_id="asset_b",
+            media_type="video",
+            duration_seconds=4.0,
+        )
+        creator = _make_creator(database)
+
+        creator.create_clip_for_node(
+            AutoClipContext(
+                workflow_id=_WORKFLOW_ID,
+                node_id="node_a",
+                node_type="video",
+                semantic_role=None,
+                output_asset_id="asset_a",
+                output_asset_version_id="asset_a_v1",
+                title=None,
+            )
+        )
+        creator.create_clip_for_node(
+            AutoClipContext(
+                workflow_id=_WORKFLOW_ID,
+                node_id="node_b",
+                node_type="video",
+                semantic_role=None,
+                output_asset_id="asset_b",
+                output_asset_version_id="asset_b_v1",
+                title=None,
+            )
+        )
+
+        with database.session_factory() as session:
+            timeline = TimelineRepository(session).get_by_workflow_id(_WORKFLOW_ID)
+        video_track = next(t for t in timeline.tracks if t.type == "video")
+        assert [c.source_node_id for c in video_track.clips] == [
+            "node_a",
+            "node_b",
+        ]
+        assert [c.start_time for c in video_track.clips] == [
+            pytest.approx(0.0),
+            pytest.approx(5.5),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Node-clip upsert timeline scoping
+# ---------------------------------------------------------------------------
+
+
+_WORKFLOW_ID_2 = "wf_timeline_test_2"
+_PROJECT_ID_2 = "proj_timeline_test_2"
+
+
+class TestNodeClipUpsertScoping:
+    def test_upsert_is_scoped_per_timeline(self, database: V2Database) -> None:
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            session.add(
+                ProjectRow(
+                    project_id=_PROJECT_ID_2,
+                    name="Timeline Test Project 2",
+                    created_at="2026-09-17T00:00:00+00:00",
+                    updated_at="2026-09-17T00:00:00+00:00",
+                )
+            )
+            session.flush()
+            session.add(
+                AgentCanvasWorkflowRow(
+                    workflow_id=_WORKFLOW_ID_2,
+                    project_id=_PROJECT_ID_2,
+                    created_at="2026-09-17T00:00:00+00:00",
+                    updated_at="2026-09-17T00:00:00+00:00",
+                )
+            )
+            session.commit()
+
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline_1 = repo.get_by_workflow_id(_WORKFLOW_ID)
+            timeline_2 = repo.get_by_workflow_id(_WORKFLOW_ID_2)
+            video_1 = next(t for t in timeline_1.tracks if t.type == "video")
+            video_2 = next(t for t in timeline_2.tracks if t.type == "video")
+
+            clip_1, created_1 = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline_1.timeline_id,
+                source_node_id="node_shared",
+                track_id=video_1.track_id,
+                duration=2.0,
+                asset_id="asset_1",
+                asset_version_id=None,
+                label="A",
+            )
+            clip_2, created_2 = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline_2.timeline_id,
+                source_node_id="node_shared",
+                track_id=video_2.track_id,
+                duration=3.0,
+                asset_id="asset_2",
+                asset_version_id=None,
+                label="B",
+            )
+            refreshed, created_3 = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline_1.timeline_id,
+                source_node_id="node_shared",
+                track_id=video_1.track_id,
+                duration=9.0,
+                asset_id="asset_1_new",
+                asset_version_id=None,
+                label="A replaced",
+            )
+            session.commit()
+
+        assert created_1 is True
+        assert created_2 is True
+        assert created_3 is False
+        assert clip_1.clip_id != clip_2.clip_id
+        assert refreshed.clip_id == clip_1.clip_id
+        assert refreshed.duration == pytest.approx(9.0)
+
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline_1 = repo.get_by_workflow_id(_WORKFLOW_ID)
+            timeline_2 = repo.get_by_workflow_id(_WORKFLOW_ID_2)
+            latest_1 = repo.get_latest_node_clip(
+                timeline_1.timeline_id, "node_shared"
+            )
+            latest_2 = repo.get_latest_node_clip(
+                timeline_2.timeline_id, "node_shared"
+            )
+            video_1 = next(t for t in timeline_1.tracks if t.type == "video")
+            video_2 = next(t for t in timeline_2.tracks if t.type == "video")
+
+        assert latest_1 is not None and latest_1.clip_id == clip_1.clip_id
+        assert latest_2 is not None and latest_2.clip_id == clip_2.clip_id
+        assert len(video_1.clips) == 1
+        assert len(video_2.clips) == 1

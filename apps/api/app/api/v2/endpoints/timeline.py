@@ -214,11 +214,19 @@ def move_clip(
     payload: TimelineClipMoveV1,
     repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
 ) -> TimelineClipV1:
-    return repo.move_clip(
-        clip_id,
-        new_track_id=payload.track_id,
-        new_start_time=payload.start_time,
-    )
+    try:
+        return repo.move_clip(
+            clip_id,
+            new_track_id=payload.track_id,
+            new_start_time=payload.start_time,
+        )
+    except V2PersistenceError as exc:
+        if exc.code == "timeline_track_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        raise
 
 
 @router.delete(

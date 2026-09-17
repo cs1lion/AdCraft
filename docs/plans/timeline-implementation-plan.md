@@ -139,15 +139,33 @@ layer. Nodes generate assets; the timeline arranges them in time.
 
 ### 3.5 Clip Drag & Drop
 - [x] Drag clips horizontally to change start time (snaps to 1/fps frames)
-- [ ] Drag clips between tracks
+- [x] Drag clips between tracks (audio↔audio / visual↔visual only; locked or
+  incompatible rows reject the drop and trigger a server resync; move
+  validated server-side against same-timeline target track, 404 otherwise)
 - [ ] Snap to grid (1s, 0.5s, 0.1s) — currently frame (1/fps) snapping only
-- [ ] Snap to other clip edges
+- [x] Snap to other clip edges (start/end edges of all other clips plus 0
+  and the playhead; 10px threshold, nearest valid candidate, gold guide line)
 - [ ] Overlap detection and resolution
 
 ### 3.6 Multi-Select & Batch Operations
 - [ ] Select multiple clips (Ctrl+click, box select)
 - [ ] Batch move/delete
 - [ ] Batch property editing
+
+### 3.7 Node Lifecycle Alignment ✅
+- [x] Idempotent auto-clips: a node rerun refreshes the existing clip in place
+  (asset pointers + duration) instead of appending a duplicate shot; the
+  user's arrangement (start time, trim, fades, label) is preserved; an
+  unresolvable duration on rerun keeps the existing clip length
+- [x] Timeline-scoped upsert keyed on (timeline_id, source_node_id) so reruns
+  can never touch another timeline's clips
+- [x] Panel live-refreshes on `node_output_published` SSE events (max-seq
+  nonce across chat + document streams, 250ms debounce, deferred while
+  dragging and flushed on drop)
+- [x] Orphan clips (source node deleted) get an amber dashed outline and
+  tooltip in the panel, so the retained clips can be reviewed/cleaned up
+- [ ] Orphan cleanup affordance (delete/re-link action from the inspector)
+- [ ] Clip ↔ canvas node bi-directional focus (click clip to locate node)
 
 ---
 
@@ -224,7 +242,9 @@ layer. Nodes generate assets; the timeline arranges them in time.
 ### Data Integrity
 - Timeline clips reference assets by asset_id (not file paths)
 - Deleting a node doesn't delete its timeline clips (they become orphaned)
-- Orphaned clips can be manually cleaned up
+- Orphaned clips are visually flagged in the panel (amber dashed outline) and
+  can be manually cleaned up; a rerun of an existing node never duplicates a
+  clip (in-place upsert, §3.7)
 
 ---
 

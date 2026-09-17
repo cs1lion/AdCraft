@@ -27,6 +27,7 @@ import { Link } from "react-router-dom";
 import { agentCanvasApi } from "../../api/agentCanvasApi.ts";
 import { useApp } from "../../AppContextValue.ts";
 import { createOperationKey } from "../../api/operationKey.ts";
+import { timelineRefreshNonce } from "./timeline/timelineRefresh.ts";
 import {
   AssetsIcon,
   LayoutIcon,
@@ -446,6 +447,26 @@ export function AgentCanvasPage() {
       if (ids.length) reserveRevealNodeIds(ids);
     });
   }, [live.state.chatEvents, reserveRevealNodeIds]);
+
+  // Live timeline refresh signal: node_output_published drives the server-side
+  // auto-clip creator (create or in-place update). Chat and document streams
+  // may both carry the same event; max seq keeps the nonce duplicate-safe.
+  const timelineRefreshSignal = useMemo(
+    () =>
+      timelineRefreshNonce(
+        [...live.state.chatEvents, ...live.state.documentEvents],
+        workflow?.workflow_id ?? "",
+      ),
+    [
+      live.state.chatEvents,
+      live.state.documentEvents,
+      workflow?.workflow_id,
+    ],
+  );
+  const workflowNodeIdSet = useMemo(
+    () => new Set((workflow?.nodes ?? []).map((node) => node.node_id)),
+    [workflow?.nodes],
+  );
   useEffect(() => {
     let active = true;
     void agentCanvasApi.agentCanvasConnectionPolicy()
@@ -1790,7 +1811,11 @@ export function AgentCanvasPage() {
         {/* Global Timeline Panel (ADR 0007) */}
         <div style={{ flexShrink: 0, borderTop: "1px solid #353535" }}>
           <Suspense fallback={null}>
-            <GlobalTimelinePanel workflowId={workflow?.workflow_id} />
+            <GlobalTimelinePanel
+              workflowId={workflow?.workflow_id}
+              externalRefreshNonce={timelineRefreshSignal}
+              workflowNodeIds={workflowNodeIdSet}
+            />
           </Suspense>
         </div>
       </div>

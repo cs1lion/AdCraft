@@ -137,10 +137,16 @@ class TimelineClipAutoCreator:
                     )
                     return None
 
-                # Determine start time: append after last clip on this track
-                start_time = repo.get_next_start_time_for_track(track.track_id)
+                # Reruns are idempotent: refresh the existing clip in place
+                # instead of appending a duplicate shot to the timeline.
+                existing_clip = repo.get_latest_node_clip(
+                    timeline.timeline_id,
+                    context.node_id,
+                )
 
-                # Determine duration: explicit hint → asset metadata → default
+                # Determine duration: explicit hint → asset metadata. On a
+                # rerun with unknown duration, keep the arranged clip length
+                # rather than snapping back to the 3s default.
                 duration = context.duration_hint
                 if duration is None and context.output_asset_id:
                     duration = self._resolve_asset_duration(
@@ -149,25 +155,33 @@ class TimelineClipAutoCreator:
                         asset_version_id=context.output_asset_version_id,
                     )
                 if duration is None or duration <= 0:
-                    duration = DEFAULT_CLIP_DURATION
+                    duration = (
+                        existing_clip.duration
+                        if existing_clip is not None
+                        else DEFAULT_CLIP_DURATION
+                    )
 
-                # Create clip
-                clip = repo.add_clip(
+                # Place (or refresh) the clip. The repository preserves the
+                # existing start time / trim / fades / label on rerun.
+                clip, created = repo.upsert_auto_clip_for_node(
+                    timeline_id=timeline.timeline_id,
+                    source_node_id=context.node_id,
                     track_id=track.track_id,
-                    start_time=start_time,
                     duration=duration,
                     asset_id=context.output_asset_id,
                     asset_version_id=context.output_asset_version_id,
-                    source_node_id=context.node_id,
                     label=context.title or f"{context.node_type}: {context.node_id[:8]}",
                 )
 
+                action = "created" if created else "updated"
                 logger.info(
-                    "Auto-created timeline clip %s on %s track for node %s (start=%.1fs, dur=%.1fs)",
+                    "Auto-%s timeline clip %s on %s track for node %s "
+                    "(start=%.1fs, dur=%.1fs)",
+                    action,
                     clip.clip_id,
                     track_type,
                     context.node_id,
-                    start_time,
+                    clip.start_time,
                     duration,
                 )
                 repo._session.commit()
