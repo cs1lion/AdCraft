@@ -36,6 +36,12 @@ _ROLE_BASE_VOLUME: dict[str, float] = {
 }
 _AUDIO_ROLES: tuple[EditingAudioTrackRoleV2, ...] = ("voice", "bgm", "sfx")
 
+# Clips whose boundaries differ by more than this (seconds) are treated as
+# separated by a gap, so a cross-dissolve cannot join them.
+_TRANSITION_ADJACENCY_EPSILON = 0.02
+# A dissolve may never consume more than half of either clip.
+_TRANSITION_MAX_CLIP_FRACTION = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class TimelineEditingConversionResult:
@@ -94,13 +100,22 @@ class TimelineEditingAdapter:
         if video_track and video_track.clips:
             sorted_clips = sorted(video_track.clips, key=lambda c: c.start_time)
             for index, clip in enumerate(sorted_clips):
-                entry = self._convert_video_clip(
+                previous_clip = sorted_clips[index - 1] if index > 0 else None
+                next_clip = (
+                    sorted_clips[index + 1]
+                    if index + 1 < len(sorted_clips)
+                    else None
+                )
+                entry, entry_warnings = self._convert_video_clip(
                     clip,
                     index=index,
                     editing_node_id=editing_node_id,
+                    previous_clip=previous_clip,
+                    next_clip=next_clip,
                 )
                 if entry is not None:
                     video_entries.append(entry)
+                    warnings.extend(entry_warnings)
                 else:
                     warnings.append(
                         f"Video clip {clip.clip_id} has no asset, skipped"
@@ -172,10 +187,16 @@ class TimelineEditingAdapter:
         *,
         index: int,
         editing_node_id: str | None,
-    ) -> EditingVideoEntryV2 | None:
-        """Convert a timeline video clip to an EditingVideoEntryV2."""
+        previous_clip: TimelineClipV1 | None,
+        next_clip: TimelineClipV1 | None,
+    ) -> tuple[EditingVideoEntryV2 | None, tuple[str, ...]]:
+        """Convert a timeline video clip to an EditingVideoEntryV2.
+
+        Returns the entry (or ``None`` when the clip has no asset) plus
+        warnings for transitions that could not be honoured.
+        """
         if not clip.asset_id:
-            return None
+            return None, ()
 
         # Determine duration: use clip duration, fall back to default
         duration = clip.duration or self._default_video_duration
@@ -184,16 +205,127 @@ class TimelineEditingAdapter:
         source_start = clip.source_start or 0.0
         source_duration = clip.source_duration or duration
 
-        return EditingVideoEntryV2(
+        transition, transition_duration, warnings = self._resolve_transition(
+            clip,
+            duration=duration,
+            previous_clip=previous_clip,
+            next_clip=next_clip,
+        )
+
+        entry = EditingVideoEntryV2(
             asset_id=clip.asset_id,
             timeline_start_seconds=clip.start_time,
             trim_start_seconds=source_start,
             trim_end_seconds=source_start + source_duration if source_duration > 0 else None,
             enabled=True,
             volume=1.0,
-            transition="cut",
+            transition=transition,
+            transition_duration_seconds=transition_duration,
             fit_mode="fill",
         )
+        return entry, tuple(warnings)
+
+    def _resolve_transition(
+        self,
+        clip: TimelineClipV1,
+        *,
+        duration: float,
+        previous_clip: TimelineClipV1 | None,
+        next_clip: TimelineClipV1 | None,
+    ) -> tuple[str, float, list[str]]:
+        """Resolve the render transition for a clip's incoming/outgoing edges.
+
+        A cross-dissolve is carried by the *incoming* clip entry and only
+        applies when the two clips are back-to-back; its duration is the
+        shortest of the two configured edges, capped to half of either clip.
+        """
+        warnings: list[str] = []
+
+        # --- Incoming boundary -------------------------------------------------
+        transition = "cut"
+        transition_duration = 0.0
+        incoming_request = clip.transition_in_type
+        if previous_clip is not None and (
+            incoming_request == "dissolve"
+            or previous_clip.transition_out_type == "dissolve"
+        ):
+            if self._clips_are_adjacent(previous_clip, clip):
+                candidates = [
+                    value
+                    for value, owner_type in (
+                        (clip.transition_in_duration, incoming_request),
+                        (
+                            previous_clip.transition_out_duration,
+                            previous_clip.transition_out_type,
+                        ),
+                    )
+                    if owner_type == "dissolve" and value and value > 0
+                ]
+                if not candidates:
+                    warnings.append(
+                        f"Video clip {clip.clip_id} requests a cross-dissolve "
+                        "without a duration; rendered as a cut."
+                    )
+                else:
+                    requested = min(candidates)
+                    clamped = min(
+                        requested,
+                        _TRANSITION_MAX_CLIP_FRACTION * duration,
+                        _TRANSITION_MAX_CLIP_FRACTION
+                        * (previous_clip.duration or self._default_video_duration),
+                    )
+                    if clamped < requested - 1e-6:
+                        warnings.append(
+                            f"Cross-dissolve into clip {clip.clip_id} shortened "
+                            f"from {requested:.3f}s to {clamped:.3f}s to fit the clips."
+                        )
+                    transition = "dissolve"
+                    transition_duration = clamped
+            else:
+                warnings.append(
+                    f"Video clip {clip.clip_id} requests a cross-dissolve but is "
+                    "separated from the previous clip by a gap; rendered as a cut."
+                )
+        elif incoming_request is not None:
+            # Fade-from-black and wipe-in are not produced by the renderer yet.
+            warnings.append(
+                f"Video clip {clip.clip_id} transition-in '{incoming_request}' "
+                "is not supported on this boundary; rendered as a cut."
+            )
+
+        # --- Outgoing boundary -------------------------------------------------
+        # The dissolve itself is attached to the incoming clip; here we only
+        # flag an outgoing dissolve that can never meet a successor.
+        outgoing = clip.transition_out_type
+        if transition == "cut" and outgoing == "fade":
+            superseded = (
+                next_clip is not None
+                and self._clips_are_adjacent(clip, next_clip)
+                and next_clip.transition_in_type == "dissolve"
+            )
+            if not superseded and clip.transition_out_duration and clip.transition_out_duration > 0:
+                transition = "fade"
+                transition_duration = clip.transition_out_duration
+        if outgoing == "dissolve" and (
+            next_clip is None or not self._clips_are_adjacent(clip, next_clip)
+        ):
+            warnings.append(
+                f"Video clip {clip.clip_id} requests an outgoing cross-dissolve "
+                "but has no adjacent following clip; rendered as a cut."
+            )
+        if outgoing == "wipe":
+            warnings.append(
+                f"Video clip {clip.clip_id} outgoing 'wipe' transition is not "
+                "supported by the renderer; rendered as a cut."
+            )
+
+        return transition, transition_duration, warnings
+
+    @staticmethod
+    def _clips_are_adjacent(previous: TimelineClipV1, current: TimelineClipV1) -> bool:
+        return abs(
+            current.start_time - (previous.start_time + previous.duration)
+        ) <= _TRANSITION_ADJACENCY_EPSILON
 
     def _convert_audio_clip(
         self,

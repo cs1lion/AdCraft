@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.schemas.agent_canvas_editing import EditingDuckingConfigV2
 from app.schemas.timeline import (
     TimelineClipV1,
@@ -25,6 +27,10 @@ def _clip(
     source_duration: float | None = None,
     fade_in: float | None = None,
     fade_out: float | None = None,
+    transition_in_type: str | None = None,
+    transition_in_duration: float | None = None,
+    transition_out_type: str | None = None,
+    transition_out_duration: float | None = None,
 ) -> TimelineClipV1:
     return TimelineClipV1(
         clip_id=clip_id,
@@ -36,6 +42,10 @@ def _clip(
         source_duration=source_duration,
         fade_in=fade_in,
         fade_out=fade_out,
+        transition_in_type=transition_in_type,
+        transition_in_duration=transition_in_duration,
+        transition_out_type=transition_out_type,
+        transition_out_duration=transition_out_duration,
         created_at=_TS,
         updated_at=_TS,
     )
@@ -276,3 +286,223 @@ class TestStoredDuckingSettings:
         result = TimelineEditingAdapter().convert(timeline)
 
         assert result.manifest.ducking is None
+
+
+def _video_timeline(*clips: TimelineClipV1, duration: float = 6.0) -> TimelineV1:
+    return _timeline(_track("video", clips), duration_seconds=duration)
+
+
+class TestVideoTransitions:
+    def test_incoming_dissolve_on_adjacent_clips_marks_incoming_entry(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=3),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=3,
+                    duration=3,
+                    transition_in_type="dissolve",
+                    transition_in_duration=0.5,
+                ),
+            )
+        )
+
+        first, second = result.manifest.video_entries
+        assert first.transition == "cut"
+        assert first.transition_duration_seconds == 0.0
+        assert second.transition == "dissolve"
+        assert second.transition_duration_seconds == pytest.approx(0.5)
+        assert result.warnings == ()
+
+    def test_outgoing_dissolve_drives_the_same_boundary(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=3,
+                    transition_out_type="dissolve",
+                    transition_out_duration=0.75,
+                ),
+                _clip("c2", track_id="track-video", asset_id="v2", start_time=3, duration=3),
+            )
+        )
+
+        first, second = result.manifest.video_entries
+        assert first.transition == "cut"
+        assert second.transition == "dissolve"
+        assert second.transition_duration_seconds == pytest.approx(0.75)
+
+    def test_shorter_edge_duration_wins(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=3,
+                    transition_out_type="dissolve",
+                    transition_out_duration=1.0,
+                ),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=3,
+                    duration=3,
+                    transition_in_type="dissolve",
+                    transition_in_duration=0.4,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition_duration_seconds == pytest.approx(0.4)
+
+    def test_dissolve_across_a_gap_falls_back_to_cut_with_warning(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=2),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=3,
+                    duration=3,
+                    transition_in_type="dissolve",
+                    transition_in_duration=0.5,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition == "cut"
+        assert any("gap" in warning for warning in result.warnings)
+
+    def test_dissolve_duration_is_capped_to_half_the_shorter_clip(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="dissolve",
+                    transition_out_duration=2.0,
+                ),
+                _clip("c2", track_id="track-video", asset_id="v2", start_time=2, duration=4),
+            )
+        )
+
+        # min(2.0, 0.5*2, 0.5*4) == 1.0
+        assert result.manifest.video_entries[1].transition_duration_seconds == pytest.approx(1.0)
+        assert any("shortened" in warning for warning in result.warnings)
+
+    def test_dissolve_without_duration_is_a_cut_with_warning(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="dissolve",
+                ),
+                _clip("c2", track_id="track-video", asset_id="v2", start_time=2, duration=2),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition == "cut"
+        assert any("without a duration" in warning for warning in result.warnings)
+
+    def test_outgoing_fade_to_black_maps_to_fade(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="fade",
+                    transition_out_duration=0.4,
+                ),
+                _clip("c2", track_id="track-video", asset_id="v2", start_time=3, duration=2),
+            )
+        )
+
+        first, second = result.manifest.video_entries
+        assert first.transition == "fade"
+        assert first.transition_duration_seconds == pytest.approx(0.4)
+        assert second.transition == "cut"
+
+    def test_outgoing_fade_is_superseded_by_incoming_dissolve(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=3,
+                    transition_out_type="fade",
+                    transition_out_duration=0.4,
+                ),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=3,
+                    duration=3,
+                    transition_in_type="dissolve",
+                    transition_in_duration=0.6,
+                ),
+            )
+        )
+
+        first, second = result.manifest.video_entries
+        assert first.transition == "cut"
+        assert second.transition == "dissolve"
+        assert second.transition_duration_seconds == pytest.approx(0.6)
+
+    def test_dangling_outgoing_dissolve_warns_and_cuts(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="dissolve",
+                    transition_out_duration=0.5,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[0].transition == "cut"
+        assert any("no adjacent following clip" in warning for warning in result.warnings)
+
+    def test_wipe_transition_warns_and_cuts(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=2),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=2,
+                    duration=2,
+                    transition_in_type="wipe",
+                    transition_in_duration=0.5,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition == "cut"
+        assert any("wipe" in warning for warning in result.warnings)

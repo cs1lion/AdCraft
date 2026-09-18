@@ -32,7 +32,7 @@ class EditingVideoEntryV2(_EditingModel):
     trim_end_seconds: float | None = Field(default=None, gt=0.0)
     volume: float = Field(default=1.0, ge=0.0, le=1.0)
     preserve_native_audio: bool = True
-    transition: Literal["cut", "fade"] = "cut"
+    transition: Literal["cut", "fade", "dissolve"] = "cut"
     transition_duration_seconds: float = Field(default=0.0, ge=0.0, le=5.0)
     fit_mode: Literal["fit", "fill"] = "fill"
 
@@ -44,6 +44,8 @@ class EditingVideoEntryV2(_EditingModel):
             raise ValueError("Editing video trim end must be after trim start.")
         if self.transition == "cut" and self.transition_duration_seconds != 0:
             raise ValueError("Cut transitions cannot have a duration.")
+        if self.transition == "dissolve" and self.transition_duration_seconds <= 0:
+            raise ValueError("Dissolve transitions require a positive duration.")
         return self
 
     @property

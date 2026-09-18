@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, editing UI); Phase 3–5 planned (cross-dissolve and 3+ clip E2E verification pending)
+**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3–5 planned (transition authoring UI and 3+ clip E2E verification pending)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -94,7 +94,12 @@ layer. Nodes generate assets; the timeline arranges them in time.
 ### 2.4 Precise Video Concatenation
 - [x] ffmpeg concat filter with exact frame timing
 - [x] Handle variable clip durations
-- [ ] Support cross-dissolve transitions between video clips (schema fields exist; adapter currently emits `cut`)
+- [x] Support cross-dissolve transitions between video clips (adapter maps
+  adjacent clips' `transition_in/out` dissolve edges onto the incoming
+  entry, shortest edge wins capped to half a clip; renderer joins pieces
+  with a frame-quantised `xfade=transition=fade` chain, audio concat and
+  tpad keep the fixed timeline duration; non-adjacent/unsupported edges
+  fall back to cut with a conversion warning)
 - [x] Generate black frames for gaps in video track (`color=c=black` gap pieces)
 
 ### 2.5 Timeline Playback

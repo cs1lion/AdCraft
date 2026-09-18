@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
@@ -200,7 +201,9 @@ class AgentCanvasCompositionRenderer:
         if inputs.bgm is not None:
             command.extend(["-stream_loop", "-1", "-i", inputs.bgm.path.as_posix()])
         filters: list[str] = []
-        concat_inputs: list[str] = []
+        audio_concat_labels: list[str] = []
+        # (video label, piece duration, owning entry; None for black gap pieces)
+        video_pieces: list[tuple[str, float, EditingVideoEntryV2 | None]] = []
         render_items = sorted(
             zip(range(len(inputs.videos)), inputs.videos, probes, strict=True),
             key=lambda item: (
@@ -235,17 +238,25 @@ class AgentCanvasCompositionRenderer:
                         fps=fps,
                     )
                 )
-                concat_inputs.extend((f"[vgap{piece_index}]", f"[agap{piece_index}]"))
+                audio_concat_labels.append(f"[agap{piece_index}]")
+                video_pieces.append(
+                    (f"[vgap{piece_index}]", gap_duration, None)
+                )
                 piece_index += 1
             trim = _trim_filter(
                 entry.trim_start_seconds,
                 entry.trim_end_seconds,
             )
             geometry = _geometry_filter(entry.fit_mode, width=width, height=height)
+            # Ordering matters for xfade inputs: settle the timebase and reset
+            # timestamps before the fps filter so the link advertises CFR
+            # (xfade rejects inputs whose frame rate reports as 1/0).
             video_filters = [
                 trim,
                 geometry,
                 "setsar=1",
+                "settb=AVTB",
+                "setpts=PTS-STARTPTS",
                 f"fps={fps:.6f}",
                 "format=yuv420p",
             ]
@@ -254,7 +265,6 @@ class AgentCanvasCompositionRenderer:
                 video_filters.append(
                     f"fade=t=out:st={fade_start:.6f}:d={entry.transition_duration_seconds:.6f}"
                 )
-            video_filters.append("setpts=PTS-STARTPTS")
             filters.append(f"[{input_index}:v:0]" + ",".join(video_filters) + f"[v{piece_index}]")
             if probe.has_audio and entry.preserve_native_audio:
                 audio_filters = [
@@ -285,7 +295,8 @@ class AgentCanvasCompositionRenderer:
                     "anullsrc=r=48000:cl=stereo,"
                     f"atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[a{piece_index}]"
                 )
-            concat_inputs.extend((f"[v{piece_index}]", f"[a{piece_index}]"))
+            audio_concat_labels.append(f"[a{piece_index}]")
+            video_pieces.append((f"[v{piece_index}]", duration, entry))
             piece_index += 1
             cursor = start + duration
             if cursor > timeline_duration + TIMELINE_EPSILON:
@@ -304,16 +315,27 @@ class AgentCanvasCompositionRenderer:
                     fps=fps,
                 )
             )
-            concat_inputs.extend((f"[vgap{piece_index}]", f"[agap{piece_index}]"))
+            audio_concat_labels.append(f"[agap{piece_index}]")
+            video_pieces.append(
+                (f"[vgap{piece_index}]", gap_duration, None)
+            )
             piece_index += 1
-        filters.append("".join(concat_inputs) + f"concat=n={piece_index}:v=1:a=1[vcat][acat]")
+        filters.append(
+            "".join(audio_concat_labels)
+            + f"concat=n={len(audio_concat_labels)}:v=0:a=1[acat]"
+        )
+        chain_filters, video_chain_label = _video_chain_filters(
+            video_pieces,
+            fps=fps,
+        )
+        filters.extend(chain_filters)
         audio_filters, audio_label, degradations = self._audio_mix_filters(
             inputs,
             timeline_duration,
         )
         filters.extend(audio_filters)
         filters.append(
-            f"[vcat]tpad=stop_mode=add:stop_duration={timeline_duration:.6f},"
+            f"{video_chain_label}tpad=stop_mode=add:stop_duration={timeline_duration:.6f},"
             f"trim=duration={timeline_duration:.6f},setpts=PTS-STARTPTS[vout]"
         )
         filters.append(
@@ -601,10 +623,71 @@ def _gap_filters(
 ) -> tuple[str, str]:
     return (
         f"color=c=black:s={width}x{height}:r={fps:.6f}:d={duration:.6f},"
-        f"format=yuv420p,setpts=PTS-STARTPTS[vgap{index}]",
+        f"setsar=1,settb=AVTB,setpts=PTS-STARTPTS,fps={fps:.6f},"
+        f"format=yuv420p[vgap{index}]",
         f"anullsrc=r=48000:cl=stereo,atrim=duration={duration:.6f},"
         f"asetpts=PTS-STARTPTS[agap{index}]",
     )
+
+
+def _video_chain_filters(
+    pieces: Sequence[tuple[str, float, EditingVideoEntryV2 | None]],
+    *,
+    fps: float,
+) -> tuple[list[str], str]:
+    """Join normalized video pieces with cuts or cross-dissolves.
+
+    Cut boundaries use a video-only concat; dissolve boundaries (marked on
+    the *incoming* piece) chain ``xfade=transition=fade``. Dissolves
+    overlap the two pieces and shorten the chain, so durations are tracked
+    cumulatively to compute each xfade offset. The fixed-length audio graph
+    (and the final tpad/trim) keeps the exported timeline duration intact.
+    """
+    if not pieces:
+        raise _error(
+            "editing_timeline_duration_invalid",
+            "No video pieces were produced for the composition.",
+        )
+
+    frame = 1.0 / fps
+    filters: list[str] = []
+    label, current_duration, _ = pieces[0]
+
+    for step, (next_label, piece_duration, entry) in enumerate(pieces[1:], start=1):
+        requested = (
+            entry.transition_duration_seconds
+            if entry is not None and entry.transition == "dissolve"
+            else 0.0
+        )
+        dissolve_duration = 0.0
+        if requested > 0.0:
+            capped = min(
+                requested,
+                current_duration - frame,
+                piece_duration - frame,
+            )
+            quantized = math.floor(capped * fps + 1e-9) / fps
+            if quantized >= frame - 1e-9:
+                dissolve_duration = quantized
+
+        if dissolve_duration > 0.0:
+            offset = current_duration - dissolve_duration
+            output = f"[vx{step}]"
+            filters.append(
+                f"{label}{next_label}xfade=transition=fade:"
+                f"duration={dissolve_duration:.6f}:offset={offset:.6f}{output}"
+            )
+            label = output
+            current_duration += piece_duration - dissolve_duration
+        else:
+            output = f"[vc{step}]"
+            filters.append(
+                f"{label}{next_label}concat=n=2:v=1:a=0{output}"
+            )
+            label = output
+            current_duration += piece_duration
+
+    return filters, label
 
 
 def _trim_filter(
