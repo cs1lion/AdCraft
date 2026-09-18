@@ -2,7 +2,7 @@
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
 **Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, editing UI); Phase 3–5 planned (cross-dissolve and 3+ clip E2E verification pending)
-**Last Updated**: 2026-09-17
+**Last Updated**: 2026-09-18
 
 ## Overview
 
@@ -67,7 +67,11 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [x] Define shot boundaries from video track clips
 - [x] Each video clip = one shot with start/end time
 - [x] Map clips to existing video nodes (via `source_node_id`)
-- [ ] Support creating new video nodes from timeline clips
+- [x] Support creating new video nodes from timeline clips (inspector action
+  on manual/orphan video clips: host surface creates a video-generation
+  node, the clip is re-linked to it via explicit-null-capable PATCH
+  `source_node_id`, and the node's first media publish refreshes the clip
+  in place through the idempotent upsert)
 
 ### 2.2 Editing Node Consumption
 - [x] Modify `editing` node to consume timeline data

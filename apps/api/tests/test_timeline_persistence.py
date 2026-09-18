@@ -327,6 +327,45 @@ class TestTimelineRepository:
         assert reloaded.label == "New label"
         assert reloaded.fade_out == pytest.approx(0.3)
 
+    def test_update_clip_relinks_and_unlinks_source_node(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+            # A manual clip starts life without a source node.
+            clip = repo.add_clip(
+                track_id=video_track.track_id,
+                start_time=0.0,
+                duration=3.0,
+                label="Manual shot",
+            )
+            assert clip.source_node_id is None
+
+            # Promote the clip: link it to a freshly created canvas node.
+            linked = repo.update_clip(clip.clip_id, source_node_id="node_new_video")
+            assert linked.source_node_id == "node_new_video"
+            # Arrangement fields must survive the relink.
+            assert linked.start_time == pytest.approx(0.0)
+            assert linked.label == "Manual shot"
+
+            # Unrelated positional updates must not sever the link.
+            moved = repo.update_clip(clip.clip_id, start_time=4.0)
+            assert moved.source_node_id == "node_new_video"
+            assert moved.start_time == pytest.approx(4.0)
+
+            # Explicit None unlinks (manual clip again).
+            unlinked = repo.update_clip(clip.clip_id, source_node_id=None)
+            assert unlinked.source_node_id is None
+            assert unlinked.start_time == pytest.approx(4.0)
+            session.commit()
+
+        with database.session_factory() as session:
+            reloaded = TimelineRepository(session).get_clip(clip.clip_id)
+        assert reloaded.source_node_id is None
+
     def test_ducking_defaults_to_auto_none(self, database: V2Database) -> None:
         _seed_workflow(database)
         with database.session_factory() as session:
@@ -815,3 +854,50 @@ class TestNodeClipUpsertScoping:
         assert latest_2 is not None and latest_2.clip_id == clip_2.clip_id
         assert len(video_1.clips) == 1
         assert len(video_2.clips) == 1
+
+    def test_promoted_manual_clip_is_upserted_in_place(
+        self, database: V2Database
+    ) -> None:
+        """A manual clip linked to a new node is refreshed, not duplicated."""
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+            manual = repo.add_clip(
+                track_id=video_track.track_id,
+                start_time=6.0,
+                duration=3.0,
+                label="Manual slot",
+            )
+            repo.update_clip(manual.clip_id, source_node_id="node_promoted")
+
+            refreshed, created = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_promoted",
+                track_id=video_track.track_id,
+                duration=4.5,
+                asset_id="asset_generated",
+                asset_version_id=None,
+                label="Generated label that must not win",
+            )
+            session.commit()
+
+        assert created is False
+        assert refreshed.clip_id == manual.clip_id
+        # New media pointers/duration land on the existing clip...
+        assert refreshed.asset_id == "asset_generated"
+        assert refreshed.duration == pytest.approx(4.5)
+        # ...while the user's arrangement (start time, label) is preserved.
+        assert refreshed.start_time == pytest.approx(6.0)
+        assert refreshed.label == "Manual slot"
+
+        with database.session_factory() as session:
+            video_track = next(
+                t
+                for t in TimelineRepository(session).get_by_workflow_id(
+                    _WORKFLOW_ID
+                ).tracks
+                if t.type == "video"
+            )
+        assert len(video_track.clips) == 1

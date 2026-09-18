@@ -186,6 +186,7 @@ def update_clip(
     # Nullable fields follow explicit-null semantics: only forward them when
     # the client sent the field (JSON null clears a previously stored value).
     for nullable_field in (
+        "source_node_id",
         "source_duration",
         "fade_in",
         "fade_out",

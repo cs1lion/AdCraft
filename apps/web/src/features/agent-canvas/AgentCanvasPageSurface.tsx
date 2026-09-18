@@ -1,4 +1,4 @@
-﻿import {
+import {
   applyNodeChanges,
   Controls,
   ReactFlow,
@@ -28,6 +28,7 @@ import { agentCanvasApi } from "../../api/agentCanvasApi.ts";
 import { useApp } from "../../AppContextValue.ts";
 import { createOperationKey } from "../../api/operationKey.ts";
 import { timelineRefreshNonce } from "./timeline/timelineRefresh.ts";
+import type { TimelineClipV1 } from "./timeline/timelineTypes.ts";
 import {
   AssetsIcon,
   LayoutIcon,
@@ -1069,6 +1070,35 @@ export function AgentCanvasPage() {
     }
   }, [createCanvasNode, workflow]);
 
+  // Timeline 2.1: promote a manual/orphan video clip by creating a video
+  // node; the panel links the clip to the returned node id afterwards.
+  const createVideoNodeForClip = useCallback(
+    async (clip: TimelineClipV1): Promise<string> => {
+      if (!workflow) throw new Error("No active workflow.");
+      const instance = flowRef.current;
+      const preferredPosition = instance
+        ? instance.screenToFlowPosition({
+            x: window.innerWidth * 0.48,
+            y: window.innerHeight * 0.46,
+          })
+        : { x: 120, y: 120 };
+      const position = findAvailableCanvasPosition(
+        workflow.nodes,
+        preferredPosition,
+        { assets: workflow.assets, candidateNodeType: "video" },
+      );
+      const request = createDefaultCanvasNodeRequest("video", position);
+      const node = await createCanvasNode(
+        clip.label
+          ? { ...request, title: `Video · ${clip.label}`.slice(0, 120) }
+          : request,
+      );
+      if (!node) throw new Error("The video node could not be created.");
+      return node.node_id;
+    },
+    [createCanvasNode, workflow],
+  );
+
   const addReferences = useCallback(async (selections: AgentAssetReferenceSelection[]) => {
     if (!workflow || !session.state.selectedNode) {
       throw new Error("Select a target node before adding image references.");
@@ -1824,6 +1854,7 @@ export function AgentCanvasPage() {
                   focusNode(clip.source_node_id);
                 }
               }}
+              onCreateVideoNode={createVideoNodeForClip}
             />
           </Suspense>
         </div>

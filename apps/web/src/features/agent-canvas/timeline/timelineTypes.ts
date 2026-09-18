@@ -122,6 +122,8 @@ export interface TimelineClipUpdateV1 {
   start_time?: number;
   duration?: number;
   source_start?: number | null;
+  /** Link (or explicit-null unlink) the clip to a canvas node. */
+  source_node_id?: string | null;
   source_duration?: number | null;
   fade_in?: number | null;
   fade_out?: number | null;

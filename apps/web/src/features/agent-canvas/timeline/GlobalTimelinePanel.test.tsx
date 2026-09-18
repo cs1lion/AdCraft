@@ -966,3 +966,165 @@ describe("GlobalTimelinePanel — live refresh & orphan clips", () => {
     expect(onClipClick.mock.calls[0][0].source_node_id).toBe("node_alive");
   });
 });
+
+describe("GlobalTimelinePanel — promote clips to video nodes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(updateClip).mockResolvedValue(makeClip());
+  });
+
+  afterEach(cleanup);
+
+  it("creates a video node for a manual video clip and links the clip", async () => {
+    const manualTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      clips: [
+        makeClip({
+          clip_id: "clip_manual",
+          track_id: "track_video",
+          source_node_id: null,
+          label: "Manual shot",
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [manualTrack] }),
+    );
+    const onCreateVideoNode = vi.fn().mockResolvedValue("node_new_123");
+
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        workflowNodeIds={new Set()}
+        onCreateVideoNode={onCreateVideoNode}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manual shot" }));
+    const notice = await screen.findByTestId("timeline-manual-clip-notice");
+    expect(notice.textContent).toContain("not linked to a canvas node");
+
+    fireEvent.click(screen.getByTestId("timeline-create-video-node"));
+
+    await waitFor(() =>
+      expect(onCreateVideoNode).toHaveBeenCalledWith(
+        expect.objectContaining({ clip_id: "clip_manual" }),
+      ),
+    );
+    await waitFor(() =>
+      expect(updateClip).toHaveBeenCalledWith(WORKFLOW_ID, "clip_manual", {
+        source_node_id: "node_new_123",
+      }),
+    );
+    // The panel resyncs so linkage/orphan markers reflect the new node.
+    await waitFor(() => expect(getTimeline).toHaveBeenCalledTimes(2));
+  });
+
+  it("offers re-link for an orphan video clip and links the replacement", async () => {
+    const orphanTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      clips: [
+        makeClip({
+          clip_id: "clip_orphan",
+          track_id: "track_video",
+          source_node_id: "node_gone",
+          label: "Orphan shot",
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [orphanTrack] }),
+    );
+    const onCreateVideoNode = vi.fn().mockResolvedValue("node_replacement");
+
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        workflowNodeIds={new Set(["someone_else"])}
+        onCreateVideoNode={onCreateVideoNode}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Orphan shot (source node deleted)",
+      }),
+    );
+    expect(screen.queryByTestId("timeline-manual-clip-notice")).toBeNull();
+    fireEvent.click(screen.getByTestId("timeline-relink-video-node"));
+
+    await waitFor(() =>
+      expect(updateClip).toHaveBeenCalledWith(WORKFLOW_ID, "clip_orphan", {
+        source_node_id: "node_replacement",
+      }),
+    );
+  });
+
+  it("hides promotion without the handler or on non-video tracks", async () => {
+    const mixedTimeline = makeTimeline({ tracks: [videoTrack, voiceTrack] });
+    vi.mocked(getTimeline).mockResolvedValue(mixedTimeline);
+    const onCreateVideoNode = vi.fn().mockResolvedValue("node_unused");
+
+    // Manual video clip but no handler prop: no affordance at all.
+    render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    expect(screen.queryByTestId("timeline-manual-clip-notice")).toBeNull();
+    expect(screen.queryByTestId("timeline-create-video-node")).toBeNull();
+    cleanup();
+
+    // Handler present, but a voice clip is never promoted to a video node.
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        onCreateVideoNode={onCreateVideoNode}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    expect(screen.queryByTestId("timeline-manual-clip-notice")).toBeNull();
+    expect(screen.queryByTestId("timeline-relink-video-node")).toBeNull();
+    expect(onCreateVideoNode).not.toHaveBeenCalled();
+  });
+
+  it("shows an error and does not link when node creation fails", async () => {
+    const manualTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      clips: [
+        makeClip({
+          clip_id: "clip_manual",
+          track_id: "track_video",
+          source_node_id: null,
+          label: "Manual shot",
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [manualTrack] }),
+    );
+    const onCreateVideoNode = vi
+      .fn()
+      .mockRejectedValue(new Error("node creation boom"));
+
+    render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        workflowNodeIds={new Set()}
+        onCreateVideoNode={onCreateVideoNode}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manual shot" }));
+    fireEvent.click(screen.getByTestId("timeline-create-video-node"));
+
+    const error = await screen.findByTestId("timeline-video-node-error");
+    expect(error.textContent).toContain("node creation boom");
+    expect(updateClip).not.toHaveBeenCalled();
+  });
+});

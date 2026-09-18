@@ -131,6 +131,10 @@ class TimelineClipUpdateV1(BaseModel):
     start_time: float | None = Field(default=None, ge=0.0)
     duration: float | None = Field(default=None, gt=0.0)
     source_start: float | None = Field(default=None, ge=0.0)
+    # Re-linking a manual/orphan clip to a canvas node follows explicit-null
+    # semantics like the other nullable fields: omitted leaves it untouched,
+    # an explicit JSON null unlinks the clip from its node.
+    source_node_id: str | None = Field(default=None, min_length=1)
     source_duration: float | None = Field(default=None, gt=0.0)
     fade_in: float | None = None
     fade_out: float | None = None

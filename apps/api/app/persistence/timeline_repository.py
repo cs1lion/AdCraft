@@ -319,6 +319,7 @@ class TimelineRepository:
         start_time: float | None = None,
         duration: float | None = None,
         source_start: float | None = None,
+        source_node_id: str | None | object = _UNSET,
         source_duration: float | None | object = _UNSET,
         fade_in: float | None | object = _UNSET,
         fade_out: float | None | object = _UNSET,
@@ -342,6 +343,8 @@ class TimelineRepository:
             row.source_start = source_start
         # Nullable fields use the _UNSET sentinel: omitted leaves the stored
         # value untouched, while an explicit None clears the column.
+        if source_node_id is not _UNSET:
+            row.source_node_id = source_node_id
         if source_duration is not _UNSET:
             row.source_duration = source_duration
         if fade_in is not _UNSET:

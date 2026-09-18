@@ -109,6 +109,12 @@ interface GlobalTimelinePanelProps {
    * linked highlight ring in the timeline (reverse direction linkage).
    */
   highlightedSourceNodeId?: string | null;
+  /**
+   * Creates a fresh video-generation canvas node for a manual/orphan video
+   * clip and resolves with the new node id; the panel then links the clip
+   * to it. Absent when the host surface cannot create nodes.
+   */
+  onCreateVideoNode?: (clip: TimelineClipV1) => Promise<string>;
 }
 
 const PIXELS_PER_SECOND = 40;
@@ -194,6 +200,7 @@ export function GlobalTimelinePanel({
   externalRefreshNonce,
   workflowNodeIds,
   highlightedSourceNodeId = null,
+  onCreateVideoNode,
 }: GlobalTimelinePanelProps) {
   const [timeline, setTimeline] = useState<TimelineV1 | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,6 +224,10 @@ export function GlobalTimelinePanel({
   const [inspectorDraft, setInspectorDraft] = useState<ClipInspectorDraft | null>(null);
   const [inspectorSaving, setInspectorSaving] = useState(false);
   const [inspectorError, setInspectorError] = useState<string | null>(null);
+  const [creatingNodeForClipId, setCreatingNodeForClipId] = useState<string | null>(
+    null,
+  );
+  const [nodeLinkError, setNodeLinkError] = useState<string | null>(null);
 
   // Ducking UI state
   const [duckingOpen, setDuckingOpen] = useState(false);
@@ -705,6 +716,7 @@ export function GlobalTimelinePanel({
   // Hydrate the inspector draft from the current selection.
   useEffect(() => {
     setInspectorError(null);
+    setNodeLinkError(null);
     if (!selectedClip) {
       setInspectorDraft(null);
       return;
@@ -815,7 +827,26 @@ export function GlobalTimelinePanel({
     }
   };
 
-  // --- Ducking settings ---
+  // Promote a manual/orphan video clip: host creates a video node, then we
+  // link the clip to it; the node's first media publish refreshes this clip
+  // in place via the (timeline_id, source_node_id) upsert.
+  const promoteClipToVideoNode = async (clip: TimelineClipV1) => {
+    if (!onCreateVideoNode) return;
+    setCreatingNodeForClipId(clip.clip_id);
+    setNodeLinkError(null);
+    try {
+      const nodeId = await onCreateVideoNode(clip);
+      await updateClip(workflowId, clip.clip_id, { source_node_id: nodeId });
+      await resyncTimeline();
+    } catch (err) {
+      console.error("Failed to create video node for clip:", err);
+      setNodeLinkError(
+        err instanceof Error ? err.message : "Failed to create the video node.",
+      );
+    } finally {
+      setCreatingNodeForClipId(null);
+    }
+  };
 
   const openDucking = () => {
     setDuckingForm(duckingToForm(timeline?.ducking ?? null));
@@ -1757,6 +1788,17 @@ export function GlobalTimelinePanel({
           saving={inspectorSaving}
           errorMessage={inspectorError}
           orphan={clipIsOrphan(selectedClip.clip, workflowNodeIds)}
+          videoNodePromotable={
+            onCreateVideoNode != null
+            && selectedClip.track.type === "video"
+            && (
+              selectedClip.clip.source_node_id == null
+              || clipIsOrphan(selectedClip.clip, workflowNodeIds)
+            )
+          }
+          creatingVideoNode={creatingNodeForClipId === selectedClip.clip.clip_id}
+          videoNodeErrorMessage={nodeLinkError}
+          onCreateVideoNode={() => void promoteClipToVideoNode(selectedClip.clip)}
           onChange={patchInspector}
           onSave={() => void saveInspector()}
           onDelete={() => void removeSelectedClip()}
@@ -1814,6 +1856,11 @@ interface SelectedClipInspectorProps {
   onSave: () => void;
   onDelete: () => void;
   onClose: () => void;
+  /** Video-track clip without a live source node can be promoted to a node. */
+  videoNodePromotable: boolean;
+  creatingVideoNode: boolean;
+  videoNodeErrorMessage: string | null;
+  onCreateVideoNode: () => void;
 }
 
 function SelectedClipInspector({
@@ -1826,9 +1873,13 @@ function SelectedClipInspector({
   onSave,
   onDelete,
   onClose,
+  videoNodePromotable,
+  creatingVideoNode,
+  videoNodeErrorMessage,
+  onCreateVideoNode,
 }: SelectedClipInspectorProps) {
   const isAudio = AUDIO_ROLES.has(track.type);
-  const disabled = track.locked || saving;
+  const disabled = track.locked || saving || creatingVideoNode;
 
   const numberInputStyle: React.CSSProperties = {
     width: 64,
@@ -2032,8 +2083,29 @@ function SelectedClipInspector({
         >
           <span>
             Source node deleted — this clip is no longer linked to the canvas.
-            It stays on the timeline as a manual clip unless you delete it.
+            Re-link it to a new video node or delete it.
           </span>
+          {videoNodePromotable && (
+            <button
+              type="button"
+              onClick={onCreateVideoNode}
+              disabled={disabled}
+              data-testid="timeline-relink-video-node"
+              style={{
+                flexShrink: 0,
+                border: "1px solid #d48806",
+                background: "#d48806",
+                color: "#1b1b1b",
+                borderRadius: 3,
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "2px 8px",
+                cursor: disabled ? "not-allowed" : "pointer",
+              }}
+            >
+              {creatingVideoNode ? "Creating…" : "Re-link to new video node"}
+            </button>
+          )}
           <button
             type="button"
             onClick={onDelete}
@@ -2052,6 +2124,57 @@ function SelectedClipInspector({
           >
             Delete
           </button>
+        </div>
+      )}
+      {videoNodePromotable && !orphan && (
+        <div
+          data-testid="timeline-manual-clip-notice"
+          role="status"
+          style={{
+            fontSize: 11,
+            color: "#91caff",
+            background: "rgba(24,144,255,0.10)",
+            border: "1px solid rgba(24,144,255,0.45)",
+            borderRadius: 3,
+            padding: "3px 8px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span>
+            This manual clip is not linked to a canvas node. Create a video
+            node to generate its content — the clip keeps this time slot.
+          </span>
+          <button
+            type="button"
+            onClick={onCreateVideoNode}
+            disabled={disabled}
+            data-testid="timeline-create-video-node"
+            style={{
+              flexShrink: 0,
+              border: "1px solid #1890ff",
+              background: "#1890ff",
+              color: "#fff",
+              borderRadius: 3,
+              fontSize: 11,
+              fontWeight: 600,
+              padding: "2px 8px",
+              cursor: disabled ? "not-allowed" : "pointer",
+            }}
+          >
+            {creatingVideoNode ? "Creating…" : "Create video node"}
+          </button>
+        </div>
+      )}
+      {videoNodeErrorMessage && (
+        <div
+          style={{ fontSize: 11, color: "#f5222d" }}
+          role="alert"
+          data-testid="timeline-video-node-error"
+        >
+          {videoNodeErrorMessage}
         </div>
       )}
       {errorMessage && (
