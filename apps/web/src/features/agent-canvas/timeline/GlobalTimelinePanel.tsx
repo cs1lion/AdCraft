@@ -19,6 +19,8 @@ import type {
   TimelineAudioDegradationEventV1,
   TimelineClipV1,
   TimelineDuckingConfigV1,
+  TimelineSubtitlePositionV1,
+  TimelineSubtitleStyleV1,
   TimelineTrackTypeV1,
   TimelineTrackV1,
   TimelineTransitionTypeV1,
@@ -26,11 +28,13 @@ import type {
 } from "./timelineTypes.ts";
 import {
   AUDIO_DUCKING_UNAVAILABLE,
+  createClip,
   deleteClip,
   getMediaToolchainCapabilities,
   getTimeline,
   listLatestAudioDegradations,
   moveClip,
+  subtitleExportUrl,
   updateClip,
   updateTimeline,
   updateTrack,
@@ -101,6 +105,16 @@ const DUCKING_LIMITS = {
 } as const;
 
 const DEGRADATION_POLL_MS = 15_000;
+
+const SUBTITLE_FONT_SIZE_LIMITS = { min: 8, max: 160 } as const;
+const SUBTITLE_POSITION_OPTIONS: ReadonlyArray<{
+  value: TimelineSubtitlePositionV1;
+  label: string;
+}> = [
+  { value: "bottom", label: "Bottom" },
+  { value: "middle", label: "Middle" },
+  { value: "top", label: "Top" },
+];
 
 interface GlobalTimelinePanelProps {
   workflowId: string;
@@ -176,6 +190,15 @@ interface ClipInspectorDraft {
   transition_out_type: "" | TimelineTransitionTypeV1;
   transition_out_duration: string;
   label: string;
+  // Subtitle-cue authoring (subtitle track only; "" = default/unset).
+  subtitle_text: string;
+  subtitle_font_family: string;
+  subtitle_font_size: string;
+  subtitle_primary_color: string;
+  subtitle_outline_color: string;
+  subtitle_position: "" | TimelineSubtitlePositionV1;
+  subtitle_bold: boolean;
+  subtitle_italic: boolean;
 }
 
 function duckingToForm(config: TimelineDuckingConfigV1 | null | undefined): DuckingFormState {
@@ -253,6 +276,12 @@ export function GlobalTimelinePanel({
   );
   const [duckingSaving, setDuckingSaving] = useState(false);
   const [duckingError, setDuckingError] = useState<string | null>(null);
+
+  // Subtitle toolbar state
+  const [subtitleBurnInSaving, setSubtitleBurnInSaving] = useState(false);
+  const [addingSubtitleTrackId, setAddingSubtitleTrackId] = useState<string | null>(
+    null,
+  );
 
   // Renderer capability probe (single source of truth lives server-side).
   const [capability, setCapability] = useState<{
@@ -739,6 +768,7 @@ export function GlobalTimelinePanel({
       return;
     }
     const { clip } = selectedClip;
+    const style = clip.subtitle_style;
     setInspectorDraft({
       clipId: clip.clip_id,
       start_time: String(clip.start_time),
@@ -754,6 +784,14 @@ export function GlobalTimelinePanel({
       transition_out_duration:
         clip.transition_out_duration == null ? "" : String(clip.transition_out_duration),
       label: clip.label ?? "",
+      subtitle_text: clip.subtitle_text ?? "",
+      subtitle_font_family: style?.font_family ?? "",
+      subtitle_font_size: style?.font_size == null ? "" : String(style.font_size),
+      subtitle_primary_color: style?.primary_color ?? "",
+      subtitle_outline_color: style?.outline_color ?? "",
+      subtitle_position: style?.position ?? "",
+      subtitle_bold: style?.bold === true,
+      subtitle_italic: style?.italic === true,
     });
   }, [selectedClip]);
 
@@ -796,6 +834,48 @@ export function GlobalTimelinePanel({
     if (fadeOut === "invalid") {
       setInspectorError("Fade out must be a non-negative number of seconds.");
       return;
+    }
+
+    // Subtitle styling is only meaningful on subtitle-track clips.
+    const isSubtitleClip = selectedClip.track.type === "subtitle";
+    let subtitleStyle: TimelineSubtitleStyleV1 | null | undefined;
+    if (isSubtitleClip) {
+      let fontSize: number | null = null;
+      if (draft.subtitle_font_size.trim() !== "") {
+        fontSize = Number(draft.subtitle_font_size);
+        if (
+          !Number.isInteger(fontSize)
+          || fontSize < SUBTITLE_FONT_SIZE_LIMITS.min
+          || fontSize > SUBTITLE_FONT_SIZE_LIMITS.max
+        ) {
+          setInspectorError(
+            `Subtitle font size must be a whole number between ` +
+              `${SUBTITLE_FONT_SIZE_LIMITS.min} and ${SUBTITLE_FONT_SIZE_LIMITS.max}.`,
+          );
+          return;
+        }
+      }
+      const fontFamily = draft.subtitle_font_family.trim();
+      const position = draft.subtitle_position;
+      const hasStyle =
+        fontFamily !== ""
+        || fontSize !== null
+        || draft.subtitle_primary_color !== ""
+        || draft.subtitle_outline_color !== ""
+        || position !== ""
+        || draft.subtitle_bold
+        || draft.subtitle_italic;
+      subtitleStyle = hasStyle
+        ? {
+            font_family: fontFamily || null,
+            font_size: fontSize,
+            primary_color: draft.subtitle_primary_color || null,
+            outline_color: draft.subtitle_outline_color || null,
+            position: position || null,
+            bold: draft.subtitle_bold,
+            italic: draft.subtitle_italic,
+          }
+        : null;
     }
 
     // Video transitions: type "" clears the edge (type + duration null);
@@ -858,6 +938,12 @@ export function GlobalTimelinePanel({
           ? transitionOut?.duration ?? null
           : undefined,
         label: draft.label.trim() ? draft.label.trim() : null,
+        subtitle_text: isSubtitleClip
+          ? draft.subtitle_text.trim()
+            ? draft.subtitle_text.trim()
+            : null
+          : undefined,
+        subtitle_style: isSubtitleClip ? subtitleStyle : undefined,
       });
       setTimeline((prev) => {
         if (!prev) return prev;
@@ -970,6 +1056,52 @@ export function GlobalTimelinePanel({
       setDuckingError(err instanceof Error ? err.message : "Failed to save ducking settings.");
     } finally {
       setDuckingSaving(false);
+    }
+  };
+
+  const toggleSubtitleBurnIn = async () => {
+    if (!timeline || subtitleBurnInSaving) return;
+    const next = !timeline.subtitle_burn_in;
+    setSubtitleBurnInSaving(true);
+    // Optimistic flip; resync restores the server value on failure.
+    setTimeline((prev) =>
+      prev ? { ...prev, subtitle_burn_in: next } : prev,
+    );
+    try {
+      const updated = await updateTimeline(workflowId, {
+        subtitle_burn_in: next,
+      });
+      setTimeline((prev) =>
+        prev ? { ...prev, subtitle_burn_in: updated.subtitle_burn_in } : prev,
+      );
+    } catch (err) {
+      console.error("Failed to persist subtitle burn-in flag:", err);
+      await resyncTimeline();
+    } finally {
+      setSubtitleBurnInSaving(false);
+    }
+  };
+
+  const addSubtitleClip = async (track: TimelineTrackV1) => {
+    if (track.locked || addingSubtitleTrackId === track.track_id) return;
+    const startTime = track.clips.reduce(
+      (maxEnd, clip) => Math.max(maxEnd, clip.start_time + clip.duration),
+      0,
+    );
+    setAddingSubtitleTrackId(track.track_id);
+    try {
+      await createClip(workflowId, {
+        track_id: track.track_id,
+        start_time: startTime,
+        duration: 2,
+        subtitle_text: "New subtitle",
+      });
+      await resyncTimeline();
+    } catch (err) {
+      console.error("Failed to add subtitle clip:", err);
+      await resyncTimeline();
+    } finally {
+      setAddingSubtitleTrackId(null);
     }
   };
 
@@ -1161,6 +1293,61 @@ export function GlobalTimelinePanel({
             />
             🦆 Ducking · {duckingStateLabel}
           </button>
+          <label
+            title="Burn subtitle cues into exported video"
+            data-testid="timeline-subtitle-burn-in"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              color: "#ccc",
+              border: "1px solid #444",
+              borderRadius: 3,
+              padding: "2px 8px",
+              cursor: subtitleBurnInSaving ? "wait" : "pointer",
+              background: "#2a2a2a",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={timeline?.subtitle_burn_in ?? true}
+              disabled={subtitleBurnInSaving || !timeline}
+              onChange={() => void toggleSubtitleBurnIn()}
+              aria-label="Burn subtitles into exported video"
+            />
+            💬 Burn-in
+          </label>
+          <a
+            href={subtitleExportUrl(workflowId, "srt")}
+            download="subtitles.srt"
+            title="Download subtitle cues as SRT"
+            data-testid="timeline-subtitle-export-srt"
+            style={{
+              ...smallBtnStyle,
+              display: "inline-flex",
+              alignItems: "center",
+              textDecoration: "none",
+              color: "#ccc",
+            }}
+          >
+            .srt
+          </a>
+          <a
+            href={subtitleExportUrl(workflowId, "ass")}
+            download="subtitles.ass"
+            title="Download styled subtitle cues as ASS"
+            data-testid="timeline-subtitle-export-ass"
+            style={{
+              ...smallBtnStyle,
+              display: "inline-flex",
+              alignItems: "center",
+              textDecoration: "none",
+              color: "#ccc",
+            }}
+          >
+            .ass
+          </a>
           <button
             onClick={() => setCollapsed(true)}
             style={{
@@ -1561,6 +1748,34 @@ export function GlobalTimelinePanel({
                       {track.locked && (
                         <span style={{ fontSize: 9, color: "#999999" }}>🔒</span>
                       )}
+                      {track.type === "subtitle" && (
+                        <button
+                          type="button"
+                          aria-label="Add subtitle clip"
+                          title={
+                            track.locked ? "Track locked" : "Add subtitle clip"
+                          }
+                          data-testid="timeline-add-subtitle"
+                          disabled={
+                            track.locked
+                            || addingSubtitleTrackId === track.track_id
+                          }
+                          onClick={() => void addSubtitleClip(track)}
+                          style={{
+                            marginLeft: "auto",
+                            border: "1px solid #5a5a5a",
+                            background: "transparent",
+                            color: "#f5a0a5",
+                            borderRadius: 3,
+                            fontSize: 11,
+                            lineHeight: "14px",
+                            padding: "0 5px",
+                            cursor: track.locked ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {addingSubtitleTrackId === track.track_id ? "…" : "+"}
+                        </button>
+                      )}
                     </div>
                     {isAudioRole && (
                       <div
@@ -1750,6 +1965,7 @@ export function GlobalTimelinePanel({
                           data-clip-transition-out={
                             clip.transition_out_type ?? undefined
                           }
+                          data-clip-subtitle={clip.subtitle_text ?? undefined}
                           data-clip-canvas-linked={
                             isCanvasLinked ? "true" : undefined
                           }
@@ -1848,7 +2064,9 @@ export function GlobalTimelinePanel({
                               textShadow: "0 1px 2px rgba(0,0,0,0.3)",
                             }}
                           >
-                            {clip.label || `${clip.duration.toFixed(2)}s`}
+                            {track.type === "subtitle" && clip.subtitle_text
+                              ? clip.subtitle_text
+                              : clip.label || `${clip.duration.toFixed(2)}s`}
                           </span>
                           {transitionInLabel && (
                             <span
@@ -2021,6 +2239,8 @@ function SelectedClipInspector({
   onCreateVideoNode,
 }: SelectedClipInspectorProps) {
   const isAudio = AUDIO_ROLES.has(track.type);
+  const isVideo = track.type === "video";
+  const isSubtitle = track.type === "subtitle";
   const disabled = track.locked || saving || creatingVideoNode;
 
   const numberInputStyle: React.CSSProperties = {
@@ -2152,7 +2372,7 @@ function SelectedClipInspector({
             </label>
           </>
         )}
-        {!isAudio && (
+        {isVideo && (
           <div
             role="group"
             aria-label="Clip transitions"
@@ -2322,6 +2542,189 @@ function SelectedClipInspector({
           </button>
         </div>
       </div>
+      {isSubtitle && (
+        <div
+          role="group"
+          aria-label="Subtitle cue editor"
+          data-testid="timeline-subtitle-editor"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            paddingTop: 4,
+          }}
+        >
+          <textarea
+            value={draft.subtitle_text}
+            disabled={disabled}
+            aria-label="Subtitle text"
+            maxLength={4000}
+            rows={2}
+            placeholder="Subtitle text (leave empty to skip this cue on export)"
+            onChange={(event) => onChange({ subtitle_text: event.currentTarget.value })}
+            style={{
+              width: "100%",
+              fontSize: 11,
+              background: "#1a1a1a",
+              color: "#eee",
+              border: "1px solid #444",
+              borderRadius: 3,
+              padding: "3px 6px",
+              resize: "vertical",
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <label style={labelStyle}>
+              Font
+              <input
+                type="text"
+                value={draft.subtitle_font_family}
+                disabled={disabled}
+                aria-label="Subtitle font family"
+                placeholder="default"
+                maxLength={80}
+                onChange={(event) =>
+                  onChange({ subtitle_font_family: event.currentTarget.value })
+                }
+                style={{ ...numberInputStyle, width: 110 }}
+              />
+            </label>
+            <label style={labelStyle}>
+              Size
+              <input
+                type="number"
+                min={SUBTITLE_FONT_SIZE_LIMITS.min}
+                max={SUBTITLE_FONT_SIZE_LIMITS.max}
+                step={1}
+                value={draft.subtitle_font_size}
+                disabled={disabled}
+                aria-label="Subtitle font size"
+                placeholder="auto"
+                onChange={(event) =>
+                  onChange({ subtitle_font_size: event.currentTarget.value })
+                }
+                style={numberInputStyle}
+              />
+            </label>
+            <label
+              style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 3 }}
+            >
+              Text
+              <input
+                type="color"
+                value={draft.subtitle_primary_color || "#ffffff"}
+                disabled={disabled}
+                aria-label="Subtitle text colour"
+                onChange={(event) =>
+                  onChange({ subtitle_primary_color: event.currentTarget.value })
+                }
+                style={{ width: 26, height: 20, padding: 0, border: "none", background: "none" }}
+              />
+              {draft.subtitle_primary_color && (
+                <button
+                  type="button"
+                  aria-label="Reset subtitle text colour to default"
+                  disabled={disabled}
+                  onClick={() => onChange({ subtitle_primary_color: "" })}
+                  style={{
+                    border: "none",
+                    background: "none",
+                    color: "#999",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    padding: 0,
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </label>
+            <label
+              style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 3 }}
+            >
+              Outline
+              <input
+                type="color"
+                value={draft.subtitle_outline_color || "#101010"}
+                disabled={disabled}
+                aria-label="Subtitle outline colour"
+                onChange={(event) =>
+                  onChange({ subtitle_outline_color: event.currentTarget.value })
+                }
+                style={{ width: 26, height: 20, padding: 0, border: "none", background: "none" }}
+              />
+              {draft.subtitle_outline_color && (
+                <button
+                  type="button"
+                  aria-label="Reset subtitle outline colour to default"
+                  disabled={disabled}
+                  onClick={() => onChange({ subtitle_outline_color: "" })}
+                  style={{
+                    border: "none",
+                    background: "none",
+                    color: "#999",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    padding: 0,
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </label>
+            <label style={{ ...labelStyle, flexDirection: "row", gap: 4 }}>
+              Position
+              <select
+                value={draft.subtitle_position}
+                disabled={disabled}
+                aria-label="Subtitle position"
+                onChange={(event) =>
+                  onChange({
+                    subtitle_position:
+                      event.currentTarget.value as "" | TimelineSubtitlePositionV1,
+                  })
+                }
+                style={selectInputStyle}
+              >
+                <option value="">Default</option>
+                {SUBTITLE_POSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label
+              style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 3 }}
+            >
+              <input
+                type="checkbox"
+                checked={draft.subtitle_bold}
+                disabled={disabled}
+                aria-label="Subtitle bold"
+                onChange={(event) =>
+                  onChange({ subtitle_bold: event.currentTarget.checked })
+                }
+              />
+              Bold
+            </label>
+            <label
+              style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 3 }}
+            >
+              <input
+                type="checkbox"
+                checked={draft.subtitle_italic}
+                disabled={disabled}
+                aria-label="Subtitle italic"
+                onChange={(event) =>
+                  onChange({ subtitle_italic: event.currentTarget.checked })
+                }
+              />
+              Italic
+            </label>
+          </div>
+        </div>
+      )}
       {orphan && (
         <div
           data-testid="timeline-orphan-inspector-notice"

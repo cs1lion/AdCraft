@@ -7,9 +7,17 @@ time-axis, and how clips are trimmed / transitioned / mixed.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -26,6 +34,7 @@ from app.schemas.timeline import (
     TimelineUpdateV1,
     TimelineV1,
 )
+from app.services.timeline_subtitle_writer import clips_to_ass, clips_to_srt
 
 
 router = APIRouter(prefix="/workflows", tags=["v2-timeline"])
@@ -86,6 +95,7 @@ def update_timeline(
         timeline.timeline_id,
         duration_seconds=payload.duration_seconds,
         fps=payload.fps,
+        subtitle_burn_in=payload.subtitle_burn_in,
         # Explicit-null semantics: only forward ducking when the client sent
         # the field at all (null resets to renderer auto-defaults).
         **(
@@ -162,6 +172,8 @@ def create_clip(
         fade_out=payload.fade_out,
         label=payload.label,
         color=payload.color,
+        subtitle_text=payload.subtitle_text,
+        subtitle_style=payload.subtitle_style,
     )
 
 
@@ -197,6 +209,8 @@ def update_clip(
         "bound_character_id",
         "label",
         "color",
+        "subtitle_text",
+        "subtitle_style",
     ):
         if nullable_field in payload.model_fields_set:
             updates[nullable_field] = getattr(payload, nullable_field)
@@ -241,3 +255,42 @@ def delete_clip(
     repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
 ) -> None:
     repo.delete_clip(clip_id)
+
+
+# --- Subtitle export ---
+
+
+@router.get(
+    "/{workflow_id}/timeline/subtitles",
+    summary="Download subtitle-track cues as an SRT or ASS sidecar file",
+)
+def export_timeline_subtitles(
+    workflow_id: Annotated[str, Path(min_length=1)],
+    repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
+    subtitle_format: Literal["srt", "ass"] = Query(
+        "srt",
+        alias="format",
+        description="Subtitle document format: srt (plain) or ass (styled).",
+    ),
+) -> Response:
+    timeline = repo.get_by_workflow_id(workflow_id)
+    # Muted subtitle tracks are excluded from exports, mirroring burn-in.
+    subtitle_clips = [
+        clip
+        for track in timeline.tracks
+        if track.type == "subtitle" and not track.muted
+        for clip in track.clips
+    ]
+    if subtitle_format == "ass":
+        content = clips_to_ass(subtitle_clips)
+        media_type = "text/x-ass; charset=utf-8"
+        filename = "subtitles.ass"
+    else:
+        content = clips_to_srt(subtitle_clips)
+        media_type = "application/x-subrip; charset=utf-8"
+        filename = "subtitles.srt"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

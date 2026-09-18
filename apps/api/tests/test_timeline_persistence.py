@@ -21,7 +21,10 @@ from app.persistence.models import (
     ProjectRow,
 )
 from app.persistence.timeline_repository import TimelineRepository
-from app.schemas.timeline import TimelineDuckingConfigV1
+from app.schemas.timeline import (
+    TimelineDuckingConfigV1,
+    TimelineSubtitleStyleV1,
+)
 from app.services.timeline_clip_auto_creator import (
     AutoClipContext,
     TimelineClipAutoCreator,
@@ -326,6 +329,81 @@ class TestTimelineRepository:
         assert reloaded.source_duration is None
         assert reloaded.label == "New label"
         assert reloaded.fade_out == pytest.approx(0.3)
+
+    def test_subtitle_clip_text_and_style_round_trip_and_clear(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        style = TimelineSubtitleStyleV1(
+            font_family="Noto Sans",
+            font_size=64,
+            primary_color="#ff8800",
+            outline_color="#101010",
+            position="top",
+            bold=True,
+            italic=False,
+        )
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            subtitle_track = next(t for t in timeline.tracks if t.type == "subtitle")
+
+            clip = repo.add_clip(
+                track_id=subtitle_track.track_id,
+                start_time=0.0,
+                duration=2.0,
+                subtitle_text="Hello world",
+                subtitle_style=style,
+            )
+            assert clip.subtitle_text == "Hello world"
+            assert clip.subtitle_style == style
+
+            updated = repo.update_clip(
+                clip.clip_id,
+                subtitle_text="Second line",
+                subtitle_style=TimelineSubtitleStyleV1(position="middle"),
+            )
+            assert updated.subtitle_text == "Second line"
+            assert updated.subtitle_style == TimelineSubtitleStyleV1(position="middle")
+
+            cleared = repo.update_clip(
+                clip.clip_id,
+                subtitle_text=None,
+                subtitle_style=None,
+            )
+            assert cleared.subtitle_text is None
+            assert cleared.subtitle_style is None
+            session.commit()
+
+        with database.session_factory() as session:
+            reloaded = TimelineRepository(session).get_clip(clip.clip_id)
+        assert reloaded.subtitle_text is None
+        assert reloaded.subtitle_style is None
+
+    def test_timeline_subtitle_burn_in_defaults_and_updates(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            assert timeline.subtitle_burn_in is True
+
+            disabled = repo.update_timeline(
+                timeline.timeline_id, subtitle_burn_in=False
+            )
+            assert disabled.subtitle_burn_in is False
+            # Omitting the flag on a later update preserves the value.
+            still_disabled = repo.update_timeline(
+                timeline.timeline_id, duration_seconds=12.0
+            )
+            assert still_disabled.subtitle_burn_in is False
+            session.commit()
+
+        with database.session_factory() as session:
+            reloaded = TimelineRepository(session).get_by_id(timeline.timeline_id)
+        assert reloaded.subtitle_burn_in is False
+        assert reloaded.duration_seconds == pytest.approx(12.0)
 
     def test_update_clip_relinks_and_unlinks_source_node(
         self, database: V2Database

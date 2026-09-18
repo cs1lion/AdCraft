@@ -9,6 +9,7 @@ import type {
   TimelineV1,
 } from "./timelineTypes.ts";
 import {
+  createClip,
   deleteClip,
   getMediaToolchainCapabilities,
   getTimeline,
@@ -23,11 +24,14 @@ vi.mock("./timelineApi.ts", () => ({
   getTimeline: vi.fn(),
   updateTimeline: vi.fn(),
   updateTrack: vi.fn(),
+  createClip: vi.fn(),
   updateClip: vi.fn(),
   moveClip: vi.fn(),
   deleteClip: vi.fn(),
   getMediaToolchainCapabilities: vi.fn(),
   listLatestAudioDegradations: vi.fn(),
+  subtitleExportUrl: (workflowId: string, format: string) =>
+    `/api/v2/workflows/${workflowId}/timeline/subtitles?format=${format}`,
   AUDIO_DUCKING_UNAVAILABLE: "audio_ducking_unavailable",
 }));
 
@@ -54,6 +58,8 @@ function makeClip(overrides: Partial<TimelineClipV1> = {}): TimelineClipV1 {
     bound_character_id: null,
     label: null,
     color: null,
+    subtitle_text: null,
+    subtitle_style: null,
     created_at: TIMESTAMP,
     updated_at: TIMESTAMP,
     ...overrides,
@@ -88,6 +94,7 @@ function makeTimeline(overrides: Partial<TimelineV1> = {}): TimelineV1 {
     duration_seconds: 10,
     fps: 30,
     ducking: null,
+    subtitle_burn_in: true,
     tracks: [],
     created_at: TIMESTAMP,
     updated_at: TIMESTAMP,
@@ -139,6 +146,8 @@ function stubTimelineSave(fixture: TimelineV1) {
   vi.mocked(updateTimeline).mockImplementation(async (_workflowId, payload) => ({
     ...fixture,
     ducking: payload.ducking ?? null,
+    subtitle_burn_in:
+      payload.subtitle_burn_in ?? fixture.subtitle_burn_in,
   }));
 }
 
@@ -1273,5 +1282,287 @@ describe("GlobalTimelinePanel — promote clips to video nodes", () => {
     const error = await screen.findByTestId("timeline-video-node-error");
     expect(error.textContent).toContain("node creation boom");
     expect(updateClip).not.toHaveBeenCalled();
+  });
+});
+
+describe("GlobalTimelinePanel — subtitle authoring", () => {
+  const subtitleTrack = makeTrack({
+    track_id: "track_subtitle",
+    type: "subtitle",
+    name: "Subtitles",
+    display_order: 5,
+    clips: [
+      makeClip({
+        clip_id: "clip_sub_1",
+        track_id: "track_subtitle",
+        start_time: 1,
+        duration: 2,
+        label: "Intro cue",
+        subtitle_text: "Hello world",
+        subtitle_style: {
+          font_size: 48,
+          position: "bottom",
+          primary_color: "#ffffff",
+          outline_color: "#000000",
+          bold: true,
+          italic: false,
+        },
+      }),
+    ],
+  });
+
+  const plainSubtitleTrack = makeTrack({
+    track_id: "track_subtitle",
+    type: "subtitle",
+    name: "Subtitles",
+    display_order: 5,
+    clips: [
+      makeClip({
+        clip_id: "clip_sub_plain",
+        track_id: "track_subtitle",
+        start_time: 0,
+        duration: 2,
+        label: "Plain cue",
+        subtitle_text: "Plain text",
+      }),
+    ],
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [videoTrack, subtitleTrack] }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(updateClip).mockImplementation(async (_workflowId, _clipId, patch) => ({
+      ...makeClip(),
+      ...patch,
+      clip_id: _clipId as string,
+    }));
+    vi.mocked(createClip).mockResolvedValue(makeClip({ clip_id: "clip_sub_new" }));
+  });
+
+  afterEach(cleanup);
+
+  it("saves subtitle text and full style payload for a subtitle clip", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Intro cue" }));
+    const inspector = await screen.findByTestId("timeline-subtitle-editor");
+
+    fireEvent.change(within(inspector).getByLabelText("Subtitle text"), {
+      target: { value: "Updated line" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Subtitle font family"), {
+      target: { value: "Noto Sans" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Subtitle font size"), {
+      target: { value: "64" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Subtitle text colour"), {
+      target: { value: "#ff8800" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Subtitle outline colour"), {
+      target: { value: "#101010" },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Subtitle position"), {
+      target: { value: "top" },
+    });
+    fireEvent.click(within(inspector).getByLabelText("Subtitle bold"));
+    fireEvent.click(within(inspector).getByLabelText("Subtitle italic"));
+
+    fireEvent.click(
+      within(screen.getByTestId("timeline-clip-inspector")).getByTestId(
+        "timeline-inspector-save",
+      ),
+    );
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(updateClip).mock.calls[0][2];
+    expect(payload.subtitle_text).toBe("Updated line");
+    expect(payload.subtitle_style).toEqual({
+      font_family: "Noto Sans",
+      font_size: 64,
+      primary_color: "#ff8800",
+      outline_color: "#101010",
+      position: "top",
+      bold: false,
+      italic: true,
+    });
+  });
+
+  it("clears subtitle text and style when both are emptied", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Intro cue" }));
+    const inspector = await screen.findByTestId("timeline-subtitle-editor");
+
+    fireEvent.change(within(inspector).getByLabelText("Subtitle text"), {
+      target: { value: "   " },
+    });
+    fireEvent.change(within(inspector).getByLabelText("Subtitle font size"), {
+      target: { value: "" },
+    });
+    fireEvent.click(within(inspector).getByLabelText("Subtitle bold"));
+    fireEvent.click(
+      within(inspector).getByLabelText("Reset subtitle text colour to default"),
+    );
+    fireEvent.click(
+      within(inspector).getByLabelText("Reset subtitle outline colour to default"),
+    );
+    fireEvent.change(within(inspector).getByLabelText("Subtitle position"), {
+      target: { value: "" },
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId("timeline-clip-inspector")).getByTestId(
+        "timeline-inspector-save",
+      ),
+    );
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(updateClip).mock.calls[0][2];
+    expect(payload.subtitle_text).toBeNull();
+    expect(payload.subtitle_style).toBeNull();
+  });
+
+  it("hydrates an unstyled subtitle cue into default form values", async () => {
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [plainSubtitleTrack] }),
+    );
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Plain cue" }));
+    const inspector = await screen.findByTestId("timeline-subtitle-editor");
+
+    expect(
+      (within(inspector).getByLabelText("Subtitle text") as HTMLTextAreaElement)
+        .value,
+    ).toBe("Plain text");
+    expect(
+      (within(inspector).getByLabelText("Subtitle font size") as HTMLInputElement)
+        .value,
+    ).toBe("");
+    expect(
+      (within(inspector).getByLabelText("Subtitle bold") as HTMLInputElement).checked,
+    ).toBe(false);
+  });
+
+  it("blocks save when the subtitle font size is out of range", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Intro cue" }));
+    const inspector = await screen.findByTestId("timeline-subtitle-editor");
+    fireEvent.change(within(inspector).getByLabelText("Subtitle font size"), {
+      target: { value: "5" },
+    });
+    fireEvent.click(
+      within(screen.getByTestId("timeline-clip-inspector")).getByTestId(
+        "timeline-inspector-save",
+      ),
+    );
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(updateClip).not.toHaveBeenCalled();
+  });
+
+  it("shows the subtitle editor only for subtitle clips and never transitions", async () => {
+    renderPanel();
+
+    // Subtitle clip: subtitle editor visible, transitions hidden.
+    fireEvent.click(await screen.findByRole("button", { name: "Intro cue" }));
+    const clipInspector = await screen.findByTestId("timeline-clip-inspector");
+    expect(
+      within(clipInspector).getByTestId("timeline-subtitle-editor"),
+    ).toBeTruthy();
+    expect(
+      within(clipInspector).queryByTestId("timeline-transitions"),
+    ).toBeNull();
+
+    // Video clip: transitions visible, subtitle editor hidden.
+    fireEvent.click(screen.getByRole("button", { name: "Video clip 1" }));
+    expect(
+      within(clipInspector).getByTestId("timeline-transitions"),
+    ).toBeTruthy();
+    expect(
+      within(clipInspector).queryByTestId("timeline-subtitle-editor"),
+    ).toBeNull();
+  });
+
+  it("renders the subtitle text inside the clip row", async () => {
+    const { container } = renderPanel();
+    await screen.findByRole("button", { name: "Intro cue" });
+
+    const row = container.querySelector('[data-clip-subtitle="Hello world"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Hello world");
+    expect(row?.textContent).not.toContain("Intro cue");
+  });
+
+  it("creates a subtitle clip after the last cue via the track add button", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("timeline-add-subtitle"));
+
+    await waitFor(() => expect(createClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(createClip).mock.calls[0]).toEqual([
+      WORKFLOW_ID,
+      {
+        track_id: "track_subtitle",
+        start_time: 3,
+        duration: 2,
+        subtitle_text: "New subtitle",
+      },
+    ]);
+  });
+
+  it("disables the add button on a locked subtitle track", async () => {
+    const lockedTrack = { ...subtitleTrack, locked: true };
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [lockedTrack] }),
+    );
+    renderPanel();
+
+    const addButton = await screen.findByTestId("timeline-add-subtitle");
+    expect(addButton.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(addButton);
+    expect(createClip).not.toHaveBeenCalled();
+  });
+
+  it("PATCHes subtitle_burn_in from the toolbar checkbox", async () => {
+    const fixture = makeTimeline({ tracks: [subtitleTrack], subtitle_burn_in: true });
+    stubTimelineSave(fixture);
+    renderPanel();
+
+    const checkbox = (await screen.findByLabelText(
+      "Burn subtitles into exported video",
+    )) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(updateTimeline).toHaveBeenCalledWith(WORKFLOW_ID, {
+        subtitle_burn_in: false,
+      }),
+    );
+  });
+
+  it("links SRT and ASS sidecar downloads in the toolbar", async () => {
+    renderPanel();
+
+    const srt = await screen.findByTestId("timeline-subtitle-export-srt");
+    expect(srt.getAttribute("href")).toBe(
+      `/api/v2/workflows/${WORKFLOW_ID}/timeline/subtitles?format=srt`,
+    );
+    expect(srt.getAttribute("download")).toBe("subtitles.srt");
+    const ass = screen.getByTestId("timeline-subtitle-export-ass");
+    expect(ass.getAttribute("href")).toBe(
+      `/api/v2/workflows/${WORKFLOW_ID}/timeline/subtitles?format=ass`,
+    );
+    expect(ass.getAttribute("download")).toBe("subtitles.ass");
   });
 });

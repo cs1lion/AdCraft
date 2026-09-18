@@ -103,6 +103,18 @@ export function deleteClip(workflowId: string, clipId: string): Promise<void> {
   });
 }
 
+// --- Subtitle sidecar export ---
+
+export type SubtitleExportFormatV1 = "srt" | "ass";
+
+/** Relative URL for downloading subtitle cues (use with an anchor download). */
+export function subtitleExportUrl(
+  workflowId: string,
+  format: SubtitleExportFormatV1,
+): string {
+  return `${API_BASE}/workflows/${workflowId}/timeline/subtitles?format=${format}`;
+}
+
 // --- Media toolchain capabilities & degradation observability ---
 
 export function getMediaToolchainCapabilities(): Promise<MediaToolchainCapabilitiesV2> {

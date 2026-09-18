@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3 in progress (clip transition authoring UI complete; wipe/slide renderer support, subtitles, volume curves and 3+ clip E2E verification pending)
+**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3 in progress (clip transition authoring UI, subtitle cue authoring with styles and SRT/ASS export complete; subtitle burn-in rendering, text/script node cue backfill, wipe/slide renderer support, volume curves and 3+ clip E2E verification pending)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -140,10 +140,18 @@ layer. Nodes generate assets; the timeline arranges them in time.
   back-to-back edges with duration clamping)
 
 ### 3.3 Subtitle Track
-- [ ] Subtitle clip creation from text/script nodes
-- [ ] SRT/ASS export
-- [ ] Subtitle styling (font, size, color, position)
-- [ ] Burn-in subtitles option during export
+- [x] Manual subtitle clip authoring (subtitle-track "+" button; cue text
+  edited in the clip inspector; empty cues are skipped on export)
+- [x] SRT/ASS export (`GET /workflows/{id}/timeline/subtitles?format=srt|ass`
+  sidecar download; ASS carries per-cue font/size/colour/position/bold/italic;
+  muted subtitle tracks are excluded; `.srt`/`.ass` links in the panel header)
+- [x] Subtitle styling (font, size, colour, position, bold/italic; validated
+  8–160px font size; explicit-null clears text/style)
+- [ ] Auto-creation of subtitle clips from text/script node assets
+  (single clip exists today; multi-cue backfill from subtitle-plan.json is
+  pending)
+- [ ] Burn-in subtitles option during export (timeline `subtitle_burn_in`
+  flag + toolbar toggle landed; renderer ASS burn-in pending)
 
 ### 3.4 Volume Curves
 - [ ] Keyframe-based volume automation
@@ -325,7 +333,7 @@ layer. Nodes generate assets; the timeline arranges them in time.
 
 ### Phase 3
 - [ ] Users can trim clips by dragging edges
-- [ ] Subtitle track can export SRT
+- [x] Subtitle track can export SRT (and styled ASS)
 - [ ] Volume curves apply correctly during export
 
 ### Phase 4

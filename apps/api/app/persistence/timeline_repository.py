@@ -24,6 +24,7 @@ from app.persistence.models import (
 from app.schemas.timeline import (
     TimelineClipV1,
     TimelineDuckingConfigV1,
+    TimelineSubtitleStyleV1,
     TimelineTrackV1,
     TimelineV1,
 )
@@ -51,6 +52,17 @@ def _parse_ducking(raw: str | None) -> TimelineDuckingConfigV1 | None:
         return TimelineDuckingConfigV1.model_validate(json.loads(raw))
     except (ValueError, TypeError):
         logger.warning("Corrupt timeline ducking settings blob, falling back to auto: %s", raw)
+        return None
+
+
+def _parse_subtitle_style(raw: str | None) -> TimelineSubtitleStyleV1 | None:
+    """Deserialize a stored per-cue subtitle style blob; fail open to None."""
+    if not raw:
+        return None
+    try:
+        return TimelineSubtitleStyleV1.model_validate(json.loads(raw))
+    except (ValueError, TypeError):
+        logger.warning("Corrupt subtitle style blob, ignoring style: %s", raw)
         return None
 
 
@@ -96,6 +108,7 @@ class TimelineRepository:
         *,
         duration_seconds: float | None = None,
         fps: int | None = None,
+        subtitle_burn_in: bool | None = None,
         ducking: TimelineDuckingConfigV1 | None | object = _UNSET,
     ) -> TimelineV1:
         row = self._session.execute(
@@ -106,6 +119,8 @@ class TimelineRepository:
             row.duration_seconds = duration_seconds
         if fps is not None:
             row.fps = fps
+        if subtitle_burn_in is not None:
+            row.subtitle_burn_in = subtitle_burn_in
         if ducking is not _UNSET:
             row.ducking_json = (
                 json.dumps(ducking.model_dump(mode="json"))
@@ -171,6 +186,8 @@ class TimelineRepository:
         fade_out: float | None = None,
         label: str | None = None,
         color: str | None = None,
+        subtitle_text: str | None = None,
+        subtitle_style: TimelineSubtitleStyleV1 | None = None,
     ) -> TimelineClipV1:
         now = _utc_now_iso()
         row = TimelineClipRow(
@@ -187,6 +204,12 @@ class TimelineRepository:
             fade_out=fade_out,
             label=label,
             color=color,
+            subtitle_text=subtitle_text,
+            subtitle_style_json=(
+                json.dumps(subtitle_style.model_dump(mode="json"))
+                if subtitle_style is not None
+                else None
+            ),
             created_at=now,
             updated_at=now,
         )
@@ -330,6 +353,8 @@ class TimelineRepository:
         bound_character_id: str | None | object = _UNSET,
         label: str | None | object = _UNSET,
         color: str | None | object = _UNSET,
+        subtitle_text: str | None | object = _UNSET,
+        subtitle_style: TimelineSubtitleStyleV1 | None | object = _UNSET,
     ) -> TimelineClipV1:
         row = self._session.execute(
             select(TimelineClipRow).where(TimelineClipRow.clip_id == clip_id)
@@ -365,6 +390,14 @@ class TimelineRepository:
             row.label = label
         if color is not _UNSET:
             row.color = color
+        if subtitle_text is not _UNSET:
+            row.subtitle_text = subtitle_text
+        if subtitle_style is not _UNSET:
+            row.subtitle_style_json = (
+                json.dumps(subtitle_style.model_dump(mode="json"))
+                if subtitle_style is not None
+                else None
+            )
         row.updated_at = _utc_now_iso()
         self._session.flush()
         return self._hydrate_clip(row)
@@ -462,6 +495,7 @@ class TimelineRepository:
             duration_seconds=row.duration_seconds,
             fps=row.fps,
             ducking=_parse_ducking(row.ducking_json),
+            subtitle_burn_in=row.subtitle_burn_in,
             tracks=tuple(tracks),
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -501,6 +535,8 @@ class TimelineRepository:
             transition_out_type=row.transition_out_type,
             transition_out_duration=row.transition_out_duration,
             bound_character_id=row.bound_character_id,
+            subtitle_text=row.subtitle_text,
+            subtitle_style=_parse_subtitle_style(row.subtitle_style_json),
             label=row.label,
             color=row.color,
             created_at=row.created_at,

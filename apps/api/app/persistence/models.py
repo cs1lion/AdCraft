@@ -2563,6 +2563,10 @@ class TimelineRow(Base):
     fps: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     # JSON-encoded TimelineDuckingConfigV1; NULL = auto defaults on export.
     ducking_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Burn subtitle-track cues into the exported video (ffmpeg ass filter).
+    subtitle_burn_in: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -2604,11 +2608,13 @@ class TimelineClipRow(Base):
         CheckConstraint("duration > 0", name="ck_timeline_clips_positive_duration"),
         CheckConstraint("source_start >= 0", name="ck_timeline_clips_source_start"),
         CheckConstraint(
-            "transition_in_type IS NULL OR transition_in_type IN ('fade','dissolve','wipe')",
+            "transition_in_type IS NULL OR transition_in_type IN "
+            "('fade','dissolve','wipe','slide')",
             name="ck_timeline_clips_transition_in_type",
         ),
         CheckConstraint(
-            "transition_out_type IS NULL OR transition_out_type IN ('fade','dissolve','wipe')",
+            "transition_out_type IS NULL OR transition_out_type IN "
+            "('fade','dissolve','wipe','slide')",
             name="ck_timeline_clips_transition_out_type",
         ),
         Index("ix_timeline_clips_track_start", "track_id", "start_time"),
@@ -2636,5 +2642,9 @@ class TimelineClipRow(Base):
     bound_character_id: Mapped[str | None] = mapped_column(Text)
     label: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(Text)
+    # Subtitle-track cue content (NULL on non-subtitle clips)
+    subtitle_text: Mapped[str | None] = mapped_column(Text)
+    # JSON-encoded TimelineSubtitleStyleV1; NULL = renderer/default SRT styling
+    subtitle_style_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)

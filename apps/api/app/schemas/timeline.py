@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 TimelineTrackTypeV1 = Literal["video", "voice", "bgm", "sfx", "camera", "subtitle"]
 TimelineTransitionTypeV1 = Literal["fade", "dissolve", "wipe", "slide"]
+TimelineSubtitlePositionV1 = Literal["bottom", "middle", "top"]
+
+_SUBTITLE_COLOR_PATTERN = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
 
 
 class TimelineDuckingConfigV1(BaseModel):
@@ -27,6 +30,25 @@ class TimelineDuckingConfigV1(BaseModel):
     attack_ms: int = Field(default=50, ge=0, le=2000)
     release_ms: int = Field(default=250, ge=0, le=5000)
     makeup_gain_db: float = Field(default=0.0, ge=0.0, le=24.0)
+
+
+class TimelineSubtitleStyleV1(BaseModel):
+    """Per-cue subtitle styling; every field left as None falls back to the
+    renderer default when SRT/ASS is generated or the cue is burned in."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    font_family: str | None = Field(default=None, min_length=1, max_length=80)
+    font_size: int | None = Field(default=None, ge=8, le=160)
+    primary_color: str | None = Field(
+        default=None, pattern=_SUBTITLE_COLOR_PATTERN
+    )
+    outline_color: str | None = Field(
+        default=None, pattern=_SUBTITLE_COLOR_PATTERN
+    )
+    position: TimelineSubtitlePositionV1 | None = None
+    bold: bool | None = None
+    italic: bool | None = None
 
 
 class TimelineTrackV1(BaseModel):
@@ -73,6 +95,9 @@ class TimelineClipV1(BaseModel):
     transition_out_duration: float | None = Field(default=None, ge=0.0)
     # Binding (voice clip → 3D character)
     bound_character_id: str | None = None
+    # Subtitle cue content (subtitle-track clips)
+    subtitle_text: str | None = Field(default=None, max_length=4000)
+    subtitle_style: TimelineSubtitleStyleV1 | None = None
     # Display metadata
     label: str | None = Field(default=None, max_length=200)
     color: str | None = None
@@ -91,6 +116,9 @@ class TimelineV1(BaseModel):
     fps: int = Field(default=30, gt=0)
     # None = auto-ducking with renderer defaults; explicit config = user override.
     ducking: TimelineDuckingConfigV1 | None = None
+    # Burn subtitle cues into the exported video instead of shipping them only
+    # as a sidecar SRT/ASS file.
+    subtitle_burn_in: bool = True
     tracks: tuple[TimelineTrackV1, ...] = Field(default_factory=tuple)
     created_at: str
     updated_at: str
@@ -119,6 +147,8 @@ class TimelineClipCreateV1(BaseModel):
     transition_out_type: TimelineTransitionTypeV1 | None = None
     transition_out_duration: float | None = None
     bound_character_id: str | None = None
+    subtitle_text: str | None = Field(default=None, max_length=4000)
+    subtitle_style: TimelineSubtitleStyleV1 | None = None
     label: str | None = None
     color: str | None = None
 
@@ -143,6 +173,10 @@ class TimelineClipUpdateV1(BaseModel):
     transition_out_type: TimelineTransitionTypeV1 | None = None
     transition_out_duration: float | None = None
     bound_character_id: str | None = None
+    subtitle_text: str | None = Field(default=None, max_length=4000)
+    # Explicit-null clears the stored style; omission leaves it untouched
+    # (handled via model_fields_set in the endpoint).
+    subtitle_style: TimelineSubtitleStyleV1 | None = None
     label: str | None = None
     color: str | None = None
     muted: bool | None = None  # for track-level, but kept here for convenience
@@ -168,6 +202,7 @@ class TimelineUpdateV1(BaseModel):
 
     duration_seconds: float | None = Field(default=None, ge=0.0)
     fps: int | None = Field(default=None, gt=0)
+    subtitle_burn_in: bool | None = None
     ducking: TimelineDuckingConfigV1 | None = None
 
 

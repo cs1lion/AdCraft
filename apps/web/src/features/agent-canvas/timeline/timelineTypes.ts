@@ -54,6 +54,19 @@ export interface TimelineAudioDegradationEventV1 {
   } | null;
 }
 
+export type TimelineSubtitlePositionV1 = "bottom" | "middle" | "top";
+
+/** Per-cue subtitle styling; all fields optional (empty object = default). */
+export interface TimelineSubtitleStyleV1 {
+  font_family?: string | null;
+  font_size?: number | null;
+  primary_color?: string | null;
+  outline_color?: string | null;
+  position?: TimelineSubtitlePositionV1 | null;
+  bold?: boolean | null;
+  italic?: boolean | null;
+}
+
 export interface TimelineClipV1 {
   clip_id: string;
   track_id: string;
@@ -73,6 +86,8 @@ export interface TimelineClipV1 {
   bound_character_id: string | null;
   label: string | null;
   color: string | null;
+  subtitle_text: string | null;
+  subtitle_style: TimelineSubtitleStyleV1 | null;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +113,8 @@ export interface TimelineV1 {
   fps: number;
   /** Null/absent = renderer auto-defaults; explicit object = user override. */
   ducking?: TimelineDuckingConfigV1 | null;
+  /** Whether subtitle cues are burned into exported video (default true). */
+  subtitle_burn_in: boolean;
   tracks: TimelineTrackV1[];
   created_at: string;
   updated_at: string;
@@ -116,6 +133,8 @@ export interface TimelineClipCreateV1 {
   fade_out?: number | null;
   label?: string | null;
   color?: string | null;
+  subtitle_text?: string | null;
+  subtitle_style?: TimelineSubtitleStyleV1 | null;
 }
 
 export interface TimelineClipUpdateV1 {
@@ -134,6 +153,8 @@ export interface TimelineClipUpdateV1 {
   bound_character_id?: string | null;
   label?: string | null;
   color?: string | null;
+  subtitle_text?: string | null;
+  subtitle_style?: TimelineSubtitleStyleV1 | null;
 }
 
 export interface TimelineClipMoveV1 {
@@ -157,4 +178,5 @@ export interface TimelineUpdateV1 {
    * auto-defaults; omit the field entirely to leave stored settings untouched.
    */
   ducking?: TimelineDuckingConfigV1 | null;
+  subtitle_burn_in?: boolean;
 }
