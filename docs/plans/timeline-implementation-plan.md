@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3–5 planned (transition authoring UI and 3+ clip E2E verification pending)
+**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3 in progress (clip transition authoring UI complete; wipe/slide renderer support, subtitles, volume curves and 3+ clip E2E verification pending)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -129,10 +129,15 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [ ] Preview trimmed content
 
 ### 3.2 Transitions
-- [ ] Transition types: none, fade, dissolve, wipe, slide
-- [ ] `transition_in_type` / `transition_in_duration` (already in schema)
-- [ ] Visual transition indicators between clips
-- [ ] ffmpeg xfade filter implementation
+- [x] Transition types: none, fade, dissolve, wipe, slide (inspector in/out
+  selectors with duration validation; wipe/slide are stored now and exported
+  as a cut with a warning until renderer support lands)
+- [x] `transition_in_type` / `transition_in_duration` plus out-edge
+  counterparts (already in schema; video clips only, cleared via null PATCH)
+- [x] Visual transition indicators on clip rows (in/out edge badges, type +
+  duration in clip tooltip)
+- [x] ffmpeg xfade filter implementation (delivered in 2.4: fade/dissolve
+  back-to-back edges with duration clamping)
 
 ### 3.3 Subtitle Track
 - [ ] Subtitle clip creation from text/script nodes

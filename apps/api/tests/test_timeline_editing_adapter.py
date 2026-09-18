@@ -506,3 +506,34 @@ class TestVideoTransitions:
 
         assert result.manifest.video_entries[1].transition == "cut"
         assert any("wipe" in warning for warning in result.warnings)
+
+    def test_slide_transition_warns_on_both_edges_and_cuts(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="slide",
+                    transition_out_duration=0.4,
+                ),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=2,
+                    duration=2,
+                    transition_in_type="slide",
+                    transition_in_duration=0.4,
+                ),
+            )
+        )
+
+        assert all(entry.transition == "cut" for entry in result.manifest.video_entries)
+        slide_warnings = [
+            warning for warning in result.warnings if "slide" in warning
+        ]
+        assert len(slide_warnings) == 2
+        assert all("exported as a cut" in warning for warning in slide_warnings)

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 TimelineTrackTypeV1 = Literal["video", "voice", "bgm", "sfx", "camera", "subtitle"]
-TimelineTransitionTypeV1 = Literal["fade", "dissolve", "wipe"]
+TimelineTransitionTypeV1 = Literal["fade", "dissolve", "wipe", "slide"]
 
 
 class TimelineDuckingConfigV1(BaseModel):

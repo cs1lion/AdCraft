@@ -282,6 +282,153 @@ describe("GlobalTimelinePanel — selected clip inspector", () => {
     expect(payload.fade_out).toBeUndefined();
   });
 
+  it("saves incoming and outgoing transitions for a video clip", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-in-type"), {
+      target: { value: "dissolve" },
+    });
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-in-duration"), {
+      target: { value: "0.5" },
+    });
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-out-type"), {
+      target: { value: "fade" },
+    });
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-out-duration"), {
+      target: { value: "0.3" },
+    });
+
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(updateClip).mock.calls[0][2];
+    expect(payload.transition_in_type).toBe("dissolve");
+    expect(payload.transition_in_duration).toBe(0.5);
+    expect(payload.transition_out_type).toBe("fade");
+    expect(payload.transition_out_duration).toBe(0.3);
+  });
+
+  it("clears both transition type and duration when the edge is set back to None", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    const inType = within(inspector).getByTestId("timeline-transition-in-type");
+    fireEvent.change(inType, { target: { value: "wipe" } });
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-in-duration"), {
+      target: { value: "0.4" },
+    });
+    fireEvent.change(inType, { target: { value: "" } });
+
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(updateClip).mock.calls[0][2];
+    expect(payload.transition_in_type).toBeNull();
+    expect(payload.transition_in_duration).toBeNull();
+    expect(payload.transition_out_type).toBeNull();
+    expect(payload.transition_out_duration).toBeNull();
+  });
+
+  it("shows a render note for wipe/slide transitions", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    expect(
+      within(inspector).queryByTestId("timeline-transition-render-note"),
+    ).toBeNull();
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-in-type"), {
+      target: { value: "slide" },
+    });
+    expect(
+      within(inspector).getByTestId("timeline-transition-render-note").textContent,
+    ).toMatch(/exported as a cut/);
+  });
+
+  it("blocks save when a transition type is chosen without a positive duration", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    fireEvent.change(within(inspector).getByTestId("timeline-transition-in-type"), {
+      target: { value: "dissolve" },
+    });
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    expect(await within(inspector).findByRole("alert")).toBeTruthy();
+    expect(updateClip).not.toHaveBeenCalled();
+  });
+
+  it("hides transition controls on audio clip inspectors", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    expect(within(inspector).queryByTestId("timeline-transitions")).toBeNull();
+    expect(
+      within(inspector).queryByTestId("timeline-transition-in-type"),
+    ).toBeNull();
+  });
+
+  it("marks clip rows that carry incoming or outgoing transitions", async () => {
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({
+        tracks: [
+          makeTrack({
+            track_id: "track_video",
+            type: "video",
+            clips: [
+              makeClip({
+                clip_id: "clip_video_t1",
+                track_id: "track_video",
+                label: "With dissolve in",
+                transition_in_type: "dissolve",
+                transition_in_duration: 0.5,
+              }),
+              makeClip({
+                clip_id: "clip_video_t2",
+                track_id: "track_video",
+                start_time: 2,
+                label: "No transitions",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    renderPanel();
+
+    const clipWithTransition = await screen.findByRole("button", {
+      name: "With dissolve in",
+    });
+    expect(clipWithTransition.getAttribute("data-clip-transition-in")).toBe("dissolve");
+    expect(clipWithTransition.getAttribute("data-clip-transition-out")).toBeNull();
+    expect(
+      within(clipWithTransition).getByTestId(
+        "timeline-clip-transition-in-badge",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(clipWithTransition).queryByTestId(
+        "timeline-clip-transition-out-badge",
+      ),
+    ).toBeNull();
+
+    const plainClip = screen.getByRole("button", { name: "No transitions" });
+    expect(plainClip.getAttribute("data-clip-transition-in")).toBeNull();
+    expect(
+      within(plainClip).queryByTestId("timeline-clip-transition-in-badge"),
+    ).toBeNull();
+  });
+
   it("blocks save and shows an error when duration is non-positive", async () => {
     renderPanel();
 

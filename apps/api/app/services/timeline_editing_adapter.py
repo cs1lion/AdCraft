@@ -41,6 +41,8 @@ _AUDIO_ROLES: tuple[EditingAudioTrackRoleV2, ...] = ("voice", "bgm", "sfx")
 _TRANSITION_ADJACENCY_EPSILON = 0.02
 # A dissolve may never consume more than half of either clip.
 _TRANSITION_MAX_CLIP_FRACTION = 0.5
+# Transition types the ffmpeg renderer cannot produce yet (cut + warning).
+_UNRENDERED_TRANSITION_TYPES: frozenset[str] = frozenset({"wipe", "slide"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,8 +288,13 @@ class TimelineEditingAdapter:
                     f"Video clip {clip.clip_id} requests a cross-dissolve but is "
                     "separated from the previous clip by a gap; rendered as a cut."
                 )
+        elif incoming_request in _UNRENDERED_TRANSITION_TYPES:
+            warnings.append(
+                f"Video clip {clip.clip_id} transition-in '{incoming_request}' "
+                "is not rendered yet; exported as a cut."
+            )
         elif incoming_request is not None:
-            # Fade-from-black and wipe-in are not produced by the renderer yet.
+            # Fade-from-black is not produced by the renderer yet.
             warnings.append(
                 f"Video clip {clip.clip_id} transition-in '{incoming_request}' "
                 "is not supported on this boundary; rendered as a cut."
@@ -313,10 +320,10 @@ class TimelineEditingAdapter:
                 f"Video clip {clip.clip_id} requests an outgoing cross-dissolve "
                 "but has no adjacent following clip; rendered as a cut."
             )
-        if outgoing == "wipe":
+        if outgoing in _UNRENDERED_TRANSITION_TYPES:
             warnings.append(
-                f"Video clip {clip.clip_id} outgoing 'wipe' transition is not "
-                "supported by the renderer; rendered as a cut."
+                f"Video clip {clip.clip_id} outgoing '{outgoing}' transition is "
+                "not rendered yet; exported as a cut."
             )
 
         return transition, transition_duration, warnings

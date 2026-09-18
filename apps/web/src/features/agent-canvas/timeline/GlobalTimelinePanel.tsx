@@ -21,6 +21,7 @@ import type {
   TimelineDuckingConfigV1,
   TimelineTrackTypeV1,
   TimelineTrackV1,
+  TimelineTransitionTypeV1,
   TimelineV1,
 } from "./timelineTypes.ts";
 import {
@@ -68,6 +69,17 @@ const TRACK_ICONS: Record<TimelineTrackTypeV1, string> = {
 };
 
 const AUDIO_ROLES: ReadonlySet<TimelineTrackTypeV1> = new Set(["voice", "bgm", "sfx"]);
+
+/** Selectable video transition types ("" / None is handled as a dedicated option). */
+const TRANSITION_OPTIONS: ReadonlyArray<{
+  value: Exclude<TimelineTransitionTypeV1, "none">;
+  label: string;
+}> = [
+  { value: "fade", label: "Fade" },
+  { value: "dissolve", label: "Dissolve" },
+  { value: "wipe", label: "Wipe" },
+  { value: "slide", label: "Slide" },
+];
 
 /** Renderer-side defaults — duplicated on purpose so the timeline chunk has
  *  no import dependency on the editing manifest package. */
@@ -158,6 +170,11 @@ interface ClipInspectorDraft {
   source_duration: string;
   fade_in: string;
   fade_out: string;
+  // "" means "no transition" and clears the edge on save.
+  transition_in_type: "" | TimelineTransitionTypeV1;
+  transition_in_duration: string;
+  transition_out_type: "" | TimelineTransitionTypeV1;
+  transition_out_duration: string;
   label: string;
 }
 
@@ -730,6 +747,12 @@ export function GlobalTimelinePanel({
       source_duration: clip.source_duration == null ? "" : String(clip.source_duration),
       fade_in: clip.fade_in == null ? "" : String(clip.fade_in),
       fade_out: clip.fade_out == null ? "" : String(clip.fade_out),
+      transition_in_type: clip.transition_in_type ?? "",
+      transition_in_duration:
+        clip.transition_in_duration == null ? "" : String(clip.transition_in_duration),
+      transition_out_type: clip.transition_out_type ?? "",
+      transition_out_duration:
+        clip.transition_out_duration == null ? "" : String(clip.transition_out_duration),
       label: clip.label ?? "",
     });
   }, [selectedClip]);
@@ -775,6 +798,47 @@ export function GlobalTimelinePanel({
       return;
     }
 
+    // Video transitions: type "" clears the edge (type + duration null);
+    // a selected type requires a positive duration (leeway 1 ms).
+    const isVideoClip = selectedClip.track.type === "video";
+    const resolveTransitionEdge = (
+      edgeLabel: string,
+      rawType: "" | TimelineTransitionTypeV1,
+      rawDuration: string,
+    ): { type: TimelineTransitionTypeV1 | null; duration: number | null } | null => {
+      if (rawType === "") return { type: null, duration: null };
+      const duration = Number(rawDuration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        setInspectorError(
+          `${edgeLabel} transition needs a duration greater than 0 seconds.`,
+        );
+        return null;
+      }
+      return { type: rawType, duration };
+    };
+    let transitionIn: {
+      type: TimelineTransitionTypeV1 | null;
+      duration: number | null;
+    } | null = { type: null, duration: null };
+    let transitionOut: {
+      type: TimelineTransitionTypeV1 | null;
+      duration: number | null;
+    } | null = { type: null, duration: null };
+    if (isVideoClip) {
+      transitionIn = resolveTransitionEdge(
+        "Incoming",
+        draft.transition_in_type,
+        draft.transition_in_duration,
+      );
+      if (transitionIn === null) return;
+      transitionOut = resolveTransitionEdge(
+        "Outgoing",
+        draft.transition_out_type,
+        draft.transition_out_duration,
+      );
+      if (transitionOut === null) return;
+    }
+
     setInspectorSaving(true);
     setInspectorError(null);
     try {
@@ -785,6 +849,14 @@ export function GlobalTimelinePanel({
         source_duration: sourceDuration,
         fade_in: AUDIO_ROLES.has(selectedClip.track.type) ? fadeIn : undefined,
         fade_out: AUDIO_ROLES.has(selectedClip.track.type) ? fadeOut : undefined,
+        transition_in_type: isVideoClip ? transitionIn?.type ?? null : undefined,
+        transition_in_duration: isVideoClip
+          ? transitionIn?.duration ?? null
+          : undefined,
+        transition_out_type: isVideoClip ? transitionOut?.type ?? null : undefined,
+        transition_out_duration: isVideoClip
+          ? transitionOut?.duration ?? null
+          : undefined,
         label: draft.label.trim() ? draft.label.trim() : null,
       });
       setTimeline((prev) => {
@@ -1632,16 +1704,38 @@ export function GlobalTimelinePanel({
                         clip.source_node_id != null
                         && clip.source_node_id === highlightedSourceNodeId;
                       const isOverlapping = overlappingClipIds.has(clip.clip_id);
+                      const transitionInLabel = clip.transition_in_type
+                        ? `${clip.transition_in_type}${
+                            clip.transition_in_duration != null
+                              ? ` ${clip.transition_in_duration.toFixed(2)}s`
+                              : ""
+                          }`
+                        : null;
+                      const transitionOutLabel = clip.transition_out_type
+                        ? `${clip.transition_out_type}${
+                            clip.transition_out_duration != null
+                              ? ` ${clip.transition_out_duration.toFixed(2)}s`
+                              : ""
+                          }`
+                        : null;
                       const clipTitle =
                         clip.label ||
                         `Clip: ${clip.start_time.toFixed(2)}s - ${(
                           clip.start_time + clip.duration
                         ).toFixed(2)}s`;
-                      const resolvedTitle = isOrphan
-                        ? `${clipTitle} — source node deleted`
-                        : isOverlapping
-                          ? `${clipTitle} — overlaps another clip on this track`
-                          : clipTitle;
+                      const titleSuffix = [
+                        isOrphan ? "source node deleted" : null,
+                        isOverlapping ? "overlaps another clip on this track" : null,
+                        transitionInLabel ? `transition in: ${transitionInLabel}` : null,
+                        transitionOutLabel
+                          ? `transition out: ${transitionOutLabel}`
+                          : null,
+                      ]
+                        .filter((part): part is string => part != null)
+                        .join(" — ");
+                      const resolvedTitle = titleSuffix
+                        ? `${clipTitle} — ${titleSuffix}`
+                        : clipTitle;
                       return (
                         <div
                           key={clip.clip_id}
@@ -1650,6 +1744,12 @@ export function GlobalTimelinePanel({
                           data-testid="timeline-clip"
                           data-clip-orphan={isOrphan ? "true" : undefined}
                           data-clip-overlap={isOverlapping ? "true" : undefined}
+                          data-clip-transition-in={
+                            clip.transition_in_type ?? undefined
+                          }
+                          data-clip-transition-out={
+                            clip.transition_out_type ?? undefined
+                          }
                           data-clip-canvas-linked={
                             isCanvasLinked ? "true" : undefined
                           }
@@ -1750,6 +1850,48 @@ export function GlobalTimelinePanel({
                           >
                             {clip.label || `${clip.duration.toFixed(2)}s`}
                           </span>
+                          {transitionInLabel && (
+                            <span
+                              aria-hidden="true"
+                              data-testid="timeline-clip-transition-in-badge"
+                              title={`Transition in: ${transitionInLabel}`}
+                              style={{
+                                position: "absolute",
+                                left: 7,
+                                bottom: 1,
+                                fontSize: 9,
+                                lineHeight: 1,
+                                color: "#fff",
+                                background: "rgba(0,0,0,0.45)",
+                                borderRadius: 2,
+                                padding: "1px 2px",
+                                pointerEvents: "none",
+                              }}
+                            >
+                              ▸
+                            </span>
+                          )}
+                          {transitionOutLabel && (
+                            <span
+                              aria-hidden="true"
+                              data-testid="timeline-clip-transition-out-badge"
+                              title={`Transition out: ${transitionOutLabel}`}
+                              style={{
+                                position: "absolute",
+                                right: 7,
+                                bottom: 1,
+                                fontSize: 9,
+                                lineHeight: 1,
+                                color: "#fff",
+                                background: "rgba(0,0,0,0.45)",
+                                borderRadius: 2,
+                                padding: "1px 2px",
+                                pointerEvents: "none",
+                              }}
+                            >
+                              ◂
+                            </span>
+                          )}
                           {/* Right trim handle */}
                           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Pointer-only trim affordance; precise numeric trimming is available via the selected-clip editor. */}
                           <div
@@ -1897,6 +2039,14 @@ function SelectedClipInspector({
     flexDirection: "column",
     gap: 1,
   };
+  const selectInputStyle: React.CSSProperties = {
+    fontSize: 11,
+    background: "#1a1a1a",
+    color: "#eee",
+    border: "1px solid #444",
+    borderRadius: 3,
+    padding: "2px 4px",
+  };
 
   return (
     <div
@@ -2001,6 +2151,114 @@ function SelectedClipInspector({
               />
             </label>
           </>
+        )}
+        {!isAudio && (
+          <div
+            role="group"
+            aria-label="Clip transitions"
+            data-testid="timeline-transitions"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              flexWrap: "wrap",
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#888" }}>
+              Transitions
+            </span>
+            <label style={{ ...labelStyle, flexDirection: "row", gap: 4 }}>
+              In
+              <select
+                value={draft.transition_in_type}
+                disabled={disabled}
+                aria-label="Incoming transition type"
+                data-testid="timeline-transition-in-type"
+                onChange={(event) =>
+                  onChange({
+                    transition_in_type: event.currentTarget
+                      .value as "" | TimelineTransitionTypeV1,
+                  })
+                }
+                style={selectInputStyle}
+              >
+                <option value="">None</option>
+                {TRANSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={labelStyle}>
+              In dur (s)
+              <input
+                type="number"
+                min={0.05}
+                step={0.05}
+                placeholder="auto"
+                value={draft.transition_in_duration}
+                disabled={disabled || draft.transition_in_type === ""}
+                aria-label="Incoming transition duration in seconds"
+                data-testid="timeline-transition-in-duration"
+                onChange={(event) =>
+                  onChange({ transition_in_duration: event.currentTarget.value })
+                }
+                style={numberInputStyle}
+              />
+            </label>
+            <label style={{ ...labelStyle, flexDirection: "row", gap: 4 }}>
+              Out
+              <select
+                value={draft.transition_out_type}
+                disabled={disabled}
+                aria-label="Outgoing transition type"
+                data-testid="timeline-transition-out-type"
+                onChange={(event) =>
+                  onChange({
+                    transition_out_type: event.currentTarget
+                      .value as "" | TimelineTransitionTypeV1,
+                  })
+                }
+                style={selectInputStyle}
+              >
+                <option value="">None</option>
+                {TRANSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={labelStyle}>
+              Out dur (s)
+              <input
+                type="number"
+                min={0.05}
+                step={0.05}
+                placeholder="auto"
+                value={draft.transition_out_duration}
+                disabled={disabled || draft.transition_out_type === ""}
+                aria-label="Outgoing transition duration in seconds"
+                data-testid="timeline-transition-out-duration"
+                onChange={(event) =>
+                  onChange({ transition_out_duration: event.currentTarget.value })
+                }
+                style={numberInputStyle}
+              />
+            </label>
+            {(draft.transition_in_type === "wipe" ||
+              draft.transition_in_type === "slide" ||
+              draft.transition_out_type === "wipe" ||
+              draft.transition_out_type === "slide") && (
+              <span
+                style={{ fontSize: 10, color: "#d48806" }}
+                data-testid="timeline-transition-render-note"
+              >
+                Wipe/slide are stored now and exported as a cut until renderer support lands.
+              </span>
+            )}
+          </div>
         )}
         <label style={{ ...labelStyle, flex: 1, minWidth: 120 }}>
           Label
