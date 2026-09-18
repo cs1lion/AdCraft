@@ -343,21 +343,18 @@ describe("GlobalTimelinePanel — selected clip inspector", () => {
     expect(payload.transition_out_duration).toBeNull();
   });
 
-  it("shows a render note for wipe/slide transitions", async () => {
+  it("renders wipe/slide transitions without an unsupported-render note", async () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
     const inspector = await screen.findByTestId("timeline-clip-inspector");
 
-    expect(
-      within(inspector).queryByTestId("timeline-transition-render-note"),
-    ).toBeNull();
     fireEvent.change(within(inspector).getByTestId("timeline-transition-in-type"), {
       target: { value: "slide" },
     });
     expect(
-      within(inspector).getByTestId("timeline-transition-render-note").textContent,
-    ).toMatch(/exported as a cut/);
+      within(inspector).queryByTestId("timeline-transition-render-note"),
+    ).toBeNull();
   });
 
   it("blocks save when a transition type is chosen without a positive duration", async () => {

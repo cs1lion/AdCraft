@@ -40,10 +40,11 @@ _AUDIO_ROLES: tuple[EditingAudioTrackRoleV2, ...] = ("voice", "bgm", "sfx")
 # Clips whose boundaries differ by more than this (seconds) are treated as
 # separated by a gap, so a cross-dissolve cannot join them.
 _TRANSITION_ADJACENCY_EPSILON = 0.02
-# A dissolve may never consume more than half of either clip.
+# A transition may never consume more than half of either clip.
 _TRANSITION_MAX_CLIP_FRACTION = 0.5
-# Transition types the ffmpeg renderer cannot produce yet (cut + warning).
-_UNRENDERED_TRANSITION_TYPES: frozenset[str] = frozenset({"wipe", "slide"})
+# Transition types rendered as an ffmpeg xfade between back-to-back clips.
+# The incoming clip carries the resolved transition onto the manifest entry.
+_XFADE_TRANSITION_TYPES: frozenset[str] = frozenset({"dissolve", "wipe", "slide"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,9 +266,12 @@ class TimelineEditingAdapter:
     ) -> tuple[str, float, list[str]]:
         """Resolve the render transition for a clip's incoming/outgoing edges.
 
-        A cross-dissolve is carried by the *incoming* clip entry and only
-        applies when the two clips are back-to-back; its duration is the
-        shortest of the two configured edges, capped to half of either clip.
+        A cross-clip transition (dissolve / wipe / slide) is carried by the
+        *incoming* clip entry and only applies when the two clips are
+        back-to-back; its duration is the shortest of the two configured
+        edges that match the resolved type, capped to half of either clip.
+        When both edges request different transition types the incoming
+        clip's edge wins.
         """
         warnings: list[str] = []
 
@@ -275,25 +279,34 @@ class TimelineEditingAdapter:
         transition = "cut"
         transition_duration = 0.0
         incoming_request = clip.transition_in_type
-        if previous_clip is not None and (
-            incoming_request == "dissolve"
-            or previous_clip.transition_out_type == "dissolve"
-        ):
-            if self._clips_are_adjacent(previous_clip, clip):
+        previous_out = previous_clip.transition_out_type if previous_clip else None
+        incoming_edge = incoming_request in _XFADE_TRANSITION_TYPES
+        outgoing_edge = previous_out in _XFADE_TRANSITION_TYPES
+        if incoming_edge or outgoing_edge:
+            requested_type = incoming_request if incoming_edge else previous_out
+            if previous_clip is None or not self._clips_are_adjacent(previous_clip, clip):
+                warnings.append(
+                    f"Video clip {clip.clip_id} requests a {requested_type} transition "
+                    "but is separated from the previous clip by a gap; rendered as a cut."
+                )
+            else:
+                if incoming_edge and outgoing_edge and incoming_request != previous_out:
+                    warnings.append(
+                        f"Video clip {clip.clip_id} requests a {incoming_request} transition "
+                        f"but the previous clip's outgoing edge is {previous_out}; "
+                        f"using the incoming {incoming_request}."
+                    )
                 candidates = [
                     value
                     for value, owner_type in (
                         (clip.transition_in_duration, incoming_request),
-                        (
-                            previous_clip.transition_out_duration,
-                            previous_clip.transition_out_type,
-                        ),
+                        (previous_clip.transition_out_duration, previous_out),
                     )
-                    if owner_type == "dissolve" and value and value > 0
+                    if owner_type == requested_type and value and value > 0
                 ]
                 if not candidates:
                     warnings.append(
-                        f"Video clip {clip.clip_id} requests a cross-dissolve "
+                        f"Video clip {clip.clip_id} requests a {requested_type} transition "
                         "without a duration; rendered as a cut."
                     )
                 else:
@@ -306,21 +319,12 @@ class TimelineEditingAdapter:
                     )
                     if clamped < requested - 1e-6:
                         warnings.append(
-                            f"Cross-dissolve into clip {clip.clip_id} shortened "
-                            f"from {requested:.3f}s to {clamped:.3f}s to fit the clips."
+                            f"{requested_type.capitalize()} transition into clip "
+                            f"{clip.clip_id} shortened from {requested:.3f}s to "
+                            f"{clamped:.3f}s to fit the clips."
                         )
-                    transition = "dissolve"
+                    transition = requested_type
                     transition_duration = clamped
-            else:
-                warnings.append(
-                    f"Video clip {clip.clip_id} requests a cross-dissolve but is "
-                    "separated from the previous clip by a gap; rendered as a cut."
-                )
-        elif incoming_request in _UNRENDERED_TRANSITION_TYPES:
-            warnings.append(
-                f"Video clip {clip.clip_id} transition-in '{incoming_request}' "
-                "is not rendered yet; exported as a cut."
-            )
         elif incoming_request is not None:
             # Fade-from-black is not produced by the renderer yet.
             warnings.append(
@@ -329,29 +333,24 @@ class TimelineEditingAdapter:
             )
 
         # --- Outgoing boundary -------------------------------------------------
-        # The dissolve itself is attached to the incoming clip; here we only
-        # flag an outgoing dissolve that can never meet a successor.
+        # The transition itself is attached to the incoming clip; here we only
+        # flag an outgoing edge that can never meet a successor.
         outgoing = clip.transition_out_type
         if transition == "cut" and outgoing == "fade":
             superseded = (
                 next_clip is not None
                 and self._clips_are_adjacent(clip, next_clip)
-                and next_clip.transition_in_type == "dissolve"
+                and next_clip.transition_in_type in _XFADE_TRANSITION_TYPES
             )
             if not superseded and clip.transition_out_duration and clip.transition_out_duration > 0:
                 transition = "fade"
                 transition_duration = clip.transition_out_duration
-        if outgoing == "dissolve" and (
+        if outgoing in _XFADE_TRANSITION_TYPES and (
             next_clip is None or not self._clips_are_adjacent(clip, next_clip)
         ):
             warnings.append(
-                f"Video clip {clip.clip_id} requests an outgoing cross-dissolve "
+                f"Video clip {clip.clip_id} requests an outgoing {outgoing} transition "
                 "but has no adjacent following clip; rendered as a cut."
-            )
-        if outgoing in _UNRENDERED_TRANSITION_TYPES:
-            warnings.append(
-                f"Video clip {clip.clip_id} outgoing '{outgoing}' transition is "
-                "not rendered yet; exported as a cut."
             )
 
         return transition, transition_duration, warnings

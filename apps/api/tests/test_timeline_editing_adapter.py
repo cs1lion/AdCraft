@@ -495,7 +495,7 @@ class TestVideoTransitions:
         assert result.manifest.video_entries[0].transition == "cut"
         assert any("no adjacent following clip" in warning for warning in result.warnings)
 
-    def test_wipe_transition_warns_and_cuts(self) -> None:
+    def test_wipe_transition_renders_on_incoming_edge(self) -> None:
         result = TimelineEditingAdapter().convert(
             _video_timeline(
                 _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=2),
@@ -511,10 +511,13 @@ class TestVideoTransitions:
             )
         )
 
-        assert result.manifest.video_entries[1].transition == "cut"
-        assert any("wipe" in warning for warning in result.warnings)
+        first, second = result.manifest.video_entries
+        assert first.transition == "cut"
+        assert second.transition == "wipe"
+        assert second.transition_duration_seconds == pytest.approx(0.5)
+        assert result.warnings == ()
 
-    def test_slide_transition_warns_on_both_edges_and_cuts(self) -> None:
+    def test_slide_transition_on_both_edges_uses_shortest_duration(self) -> None:
         result = TimelineEditingAdapter().convert(
             _video_timeline(
                 _clip(
@@ -533,17 +536,141 @@ class TestVideoTransitions:
                     start_time=2,
                     duration=2,
                     transition_in_type="slide",
-                    transition_in_duration=0.4,
+                    transition_in_duration=0.8,
                 ),
             )
         )
 
-        assert all(entry.transition == "cut" for entry in result.manifest.video_entries)
-        slide_warnings = [
-            warning for warning in result.warnings if "slide" in warning
-        ]
-        assert len(slide_warnings) == 2
-        assert all("exported as a cut" in warning for warning in slide_warnings)
+        first, second = result.manifest.video_entries
+        assert first.transition == "cut"
+        assert second.transition == "slide"
+        assert second.transition_duration_seconds == pytest.approx(0.4)
+        assert result.warnings == ()
+
+    def test_outgoing_wipe_alone_is_consumed_by_successor(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="wipe",
+                    transition_out_duration=0.6,
+                ),
+                _clip("c2", track_id="track-video", asset_id="v2", start_time=2, duration=2),
+            )
+        )
+
+        first, second = result.manifest.video_entries
+        assert first.transition == "cut"
+        assert second.transition == "wipe"
+        assert second.transition_duration_seconds == pytest.approx(0.6)
+
+    def test_mismatched_edges_prefer_incoming_type_and_warn(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="wipe",
+                    transition_out_duration=0.5,
+                ),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=2,
+                    duration=2,
+                    transition_in_type="slide",
+                    transition_in_duration=0.5,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition == "slide"
+        assert any("using the incoming slide" in warning for warning in result.warnings)
+
+    def test_wipe_across_a_gap_cuts_with_warning(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=2),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=3,
+                    duration=3,
+                    transition_in_type="wipe",
+                    transition_in_duration=0.5,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition == "cut"
+        assert any("gap" in warning for warning in result.warnings)
+
+    def test_wipe_duration_is_capped_to_half_the_shorter_clip(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=2),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=2,
+                    duration=4,
+                    transition_in_type="slide",
+                    transition_in_duration=2.0,
+                ),
+            )
+        )
+
+        # min(2.0, 0.5*2, 0.5*4) == 1.0
+        entry = result.manifest.video_entries[1]
+        assert entry.transition == "slide"
+        assert entry.transition_duration_seconds == pytest.approx(1.0)
+        assert any("shortened" in warning for warning in result.warnings)
+
+    def test_dangling_outgoing_slide_warns_and_cuts(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip(
+                    "c1",
+                    track_id="track-video",
+                    asset_id="v1",
+                    start_time=0,
+                    duration=2,
+                    transition_out_type="slide",
+                    transition_out_duration=0.5,
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[0].transition == "cut"
+        assert any("no adjacent following clip" in warning for warning in result.warnings)
+
+    def test_wipe_without_duration_is_a_cut_with_warning(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _video_timeline(
+                _clip("c1", track_id="track-video", asset_id="v1", start_time=0, duration=2),
+                _clip(
+                    "c2",
+                    track_id="track-video",
+                    asset_id="v2",
+                    start_time=2,
+                    duration=2,
+                    transition_in_type="wipe",
+                ),
+            )
+        )
+
+        assert result.manifest.video_entries[1].transition == "cut"
+        assert any("without a duration" in warning for warning in result.warnings)
 
 
 class TestSubtitleEntries:

@@ -2467,17 +2467,6 @@ function SelectedClipInspector({
                 style={numberInputStyle}
               />
             </label>
-            {(draft.transition_in_type === "wipe" ||
-              draft.transition_in_type === "slide" ||
-              draft.transition_out_type === "wipe" ||
-              draft.transition_out_type === "slide") && (
-              <span
-                style={{ fontSize: 10, color: "#d48806" }}
-                data-testid="timeline-transition-render-note"
-              >
-                Wipe/slide are stored now and exported as a cut until renderer support lands.
-              </span>
-            )}
           </div>
         )}
         <label style={{ ...labelStyle, flex: 1, minWidth: 120 }}>

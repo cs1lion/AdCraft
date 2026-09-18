@@ -219,3 +219,82 @@ class TestVideoChainGraph:
             "[vc1][v2]xfade=transition=fade:duration=0.500000:offset=2.500000[vx2]"
             in script
         )
+
+    def test_wipe_boundary_emits_wipeleft_xfade(self, tmp_path: Path) -> None:
+        script = _render(
+            (
+                _video("v1", start=0.0, duration=2.0),
+                _video(
+                    "v2",
+                    start=2.0,
+                    duration=2.0,
+                    transition="wipe",
+                    transition_duration=1.0,
+                ),
+            ),
+            tmp_path=tmp_path,
+            timeline_duration=4.0,
+        )
+
+        assert (
+            "xfade=transition=wipeleft:duration=1.000000:offset=1.000000[vx1]"
+            in script
+        )
+
+    def test_slide_boundary_emits_slideleft_xfade(self, tmp_path: Path) -> None:
+        script = _render(
+            (
+                _video("v1", start=0.0, duration=2.0),
+                _video(
+                    "v2",
+                    start=2.0,
+                    duration=2.0,
+                    transition="slide",
+                    transition_duration=0.5,
+                ),
+            ),
+            tmp_path=tmp_path,
+            timeline_duration=4.0,
+        )
+
+        assert (
+            "xfade=transition=slideleft:duration=0.500000:offset=1.500000[vx1]"
+            in script
+        )
+
+    def test_three_clips_chain_mixed_cut_slide_and_dissolve(self, tmp_path: Path) -> None:
+        script = _render(
+            (
+                _video("v1", start=0.0, duration=2.0),
+                _video(
+                    "v2",
+                    start=2.0,
+                    duration=2.0,
+                    transition="slide",
+                    transition_duration=1.0,
+                ),
+                _video(
+                    "v3",
+                    start=4.0,
+                    duration=2.0,
+                    transition="dissolve",
+                    transition_duration=1.0,
+                ),
+            ),
+            tmp_path=tmp_path,
+            timeline_duration=6.0,
+        )
+
+        # Join 1 (slide): 2 s chain - 1 s overlap -> running length 3 s.
+        assert (
+            "[v0][v1]xfade=transition=slideleft:duration=1.000000:offset=1.000000[vx1]"
+            in script
+        )
+        # Join 2 (dissolve): offset measured on the shortened chain, 3 - 1 = 2 s.
+        assert (
+            "[vx1][v2]xfade=transition=fade:duration=1.000000:offset=2.000000[vx2]"
+            in script
+        )
+        # Two overlaps shorten the chain by 2 s; tpad restores the 6 s timeline.
+        assert "[vx2]tpad=stop_mode=add:stop_duration=6.000000" in script
+        assert script.count("xfade=") == 2

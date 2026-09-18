@@ -1,8 +1,10 @@
-"""Real-FFmpeg acceptance test for video cross-dissolves (timeline plan 2.4).
+"""Real-FFmpeg acceptance test for video cross-clip transitions (plan 2.4/3.2).
 
-Marked ``media``: renders two solid-color sources with a 1 s xfade through the
-production renderer and samples luma before/during/after the dissolve (and on
-the tail padding) to prove the cross-fade and the fixed timeline duration.
+Marked ``media``: renders solid-color sources with a 1 s xfade through the
+production renderer and samples luma before/during/after the transition (and
+on the tail padding) to prove the motion blend and the fixed timeline
+duration. Runs for each manifest transition type (dissolve / wipe / slide),
+plus a three-clip mixed chain.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ pytestmark = [
 ]
 
 _TIMELINE_SECONDS = 6.0
-_DISSOLVE_SECONDS = 1.0
+_TRANSITION_SECONDS = 1.0
 
 
 def _run(args: list[str]) -> None:
@@ -61,9 +63,9 @@ def _asset(asset_id: str) -> ProjectAssetSummaryV2:
     )
 
 
-def _rendered(tmp_path: Path) -> Path:
-    navy = tmp_path / "navy.mp4"
-    white = tmp_path / "white.mp4"
+def _rendered(tmp_path: Path, transition: str = "dissolve") -> Path:
+    navy = tmp_path / f"navy-{transition}.mp4"
+    white = tmp_path / f"white-{transition}.mp4"
     _solid_source(navy, "navy")
     _solid_source(white, "white")
 
@@ -85,8 +87,8 @@ def _rendered(tmp_path: Path) -> Path:
                     asset_id="v2",
                     timeline_start_seconds=3.0,
                     trim_end_seconds=3.0,
-                    transition="dissolve",
-                    transition_duration_seconds=_DISSOLVE_SECONDS,
+                    transition=transition,  # type: ignore[arg-type]
+                    transition_duration_seconds=_TRANSITION_SECONDS,
                 ),
             ),
         ),
@@ -97,7 +99,7 @@ def _rendered(tmp_path: Path) -> Path:
     )
 
     settings = Settings(agent_runtime_mode="fake", media_data_dir=tmp_path / "data")
-    output = tmp_path / "dissolve.mp4"
+    output = tmp_path / f"{transition}.mp4"
     AgentCanvasCompositionRenderer(settings).render(
         inputs,
         EditingOutputSettingsV2(),
@@ -132,9 +134,12 @@ def _luma(path: Path, at_seconds: float, *, fps: int = 12) -> float:
     return float(match.group(1))
 
 
-class TestRealFfmpegCrossDissolve:
-    def test_output_duration_stays_pinned_to_timeline(self, tmp_path: Path) -> None:
-        output = _rendered(tmp_path)
+class TestRealFfmpegCrossTransitions:
+    @pytest.mark.parametrize("transition", ["dissolve", "wipe", "slide"])
+    def test_output_duration_stays_pinned_to_timeline(
+        self, tmp_path: Path, transition: str
+    ) -> None:
+        output = _rendered(tmp_path, transition)
         probe = subprocess.run(
             [
                 "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -146,10 +151,11 @@ class TestRealFfmpegCrossDissolve:
         )
         assert abs(float(probe.stdout.strip()) - _TIMELINE_SECONDS) < 0.2
 
-    def test_dissolve_blends_the_two_sources_and_pads_black_tail(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("transition", ["dissolve", "wipe", "slide"])
+    def test_transition_blends_the_two_sources_and_pads_black_tail(
+        self, tmp_path: Path, transition: str
     ) -> None:
-        output = _rendered(tmp_path)
+        output = _rendered(tmp_path, transition)
 
         # Chain timeline after xfade: 0-2 navy, 2-3 blend, 3-5 white, 5-6 pad.
         navy_luma = _luma(output, 0.5)
@@ -159,8 +165,99 @@ class TestRealFfmpegCrossDissolve:
 
         assert navy_luma < 60.0
         assert white_luma > 200.0
-        # Mid-dissolve frame must be clearly brighter than navy but not yet
-        # the full white frame.
+        # Mid-transition frame must be clearly brighter than navy but not yet
+        # the full white frame (a dissolve alpha-blends; wipe/slide split the
+        # frame between the two sources at the boundary).
         assert navy_luma + 40.0 < blend_luma < white_luma - 20.0
-        # The dissolve shortens the chain by 1 s; tpad restores it as black.
+        # The transition shortens the chain by 1 s; tpad restores it as black.
         assert pad_luma < 40.0
+
+
+_THREE_CLIP_TIMELINE_SECONDS = 9.0
+
+
+def _three_clips_rendered(tmp_path: Path) -> Path:
+    """Three back-to-back 3 s clips: navy, white, navy; dissolve then wipe."""
+    sources = []
+    for index, color in enumerate(("navy", "white", "navy"), start=1):
+        path = tmp_path / f"clip-{index}.mp4"
+        _solid_source(path, color)
+        sources.append(path)
+
+    inputs = ResolvedEditingInputs(
+        videos=(
+            ResolvedEditingMedia(
+                asset=_asset("v1"),
+                path=sources[0],
+                video_entry=EditingVideoEntryV2(
+                    asset_id="v1",
+                    timeline_start_seconds=0.0,
+                    trim_end_seconds=3.0,
+                ),
+            ),
+            ResolvedEditingMedia(
+                asset=_asset("v2"),
+                path=sources[1],
+                video_entry=EditingVideoEntryV2(
+                    asset_id="v2",
+                    timeline_start_seconds=3.0,
+                    trim_end_seconds=3.0,
+                    transition="dissolve",
+                    transition_duration_seconds=1.0,
+                ),
+            ),
+            ResolvedEditingMedia(
+                asset=_asset("v3"),
+                path=sources[2],
+                video_entry=EditingVideoEntryV2(
+                    asset_id="v3",
+                    timeline_start_seconds=6.0,
+                    trim_end_seconds=3.0,
+                    transition="wipe",
+                    transition_duration_seconds=1.0,
+                ),
+            ),
+        ),
+        bgm=None,
+        audios=(),
+        skipped=(),
+        timeline_duration_seconds=_THREE_CLIP_TIMELINE_SECONDS,
+    )
+
+    settings = Settings(agent_runtime_mode="fake", media_data_dir=tmp_path / "data")
+    output = tmp_path / "three-clips.mp4"
+    AgentCanvasCompositionRenderer(settings).render(
+        inputs,
+        EditingOutputSettingsV2(),
+        staging_path=output,
+    )
+    return output
+
+
+class TestRealFfmpegThreeClipChain:
+    def test_three_clips_export_with_two_transitions_and_pinned_duration(
+        self, tmp_path: Path
+    ) -> None:
+        output = _three_clips_rendered(tmp_path)
+
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", output.as_posix(),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert abs(float(probe.stdout.strip()) - _THREE_CLIP_TIMELINE_SECONDS) < 0.2
+
+        # Chain: 0-2 navy, 2-3 dissolve→white, 3-4 full white, 4-5
+        # wipe→navy, 5-7 navy; 7-9 is the black tpad tail.
+        assert _luma(output, 0.5) < 60.0
+        first_blend = _luma(output, 2.5)
+        assert 60.0 < first_blend < 200.0
+        assert _luma(output, 4.0) > 200.0
+        second_blend = _luma(output, 4.5)
+        assert 60.0 < second_blend < 200.0
+        assert _luma(output, 5.5) < 60.0
+        assert _luma(output, 8.0) < 40.0

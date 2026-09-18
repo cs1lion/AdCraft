@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3 in progress (clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill — complete; wipe/slide renderer support, volume curves and 3+ clip E2E verification pending)
+**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI); Phase 3 in progress (clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill — complete; volume curves remaining)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -130,8 +130,9 @@ layer. Nodes generate assets; the timeline arranges them in time.
 
 ### 3.2 Transitions
 - [x] Transition types: none, fade, dissolve, wipe, slide (inspector in/out
-  selectors with duration validation; wipe/slide are stored now and exported
-  as a cut with a warning until renderer support lands)
+  selectors with duration validation; wipe/slide render as libavfilter
+  `wipeleft`/`slideleft` xfade joins — mismatched edges prefer the incoming
+  type with a warning, gaps/dangling edges/zero-duration fall back to a cut)
 - [x] `transition_in_type` / `transition_in_duration` plus out-edge
   counterparts (already in schema; video clips only, cleared via null PATCH)
 - [x] Visual transition indicators on clip rows (in/out edge badges, type +
@@ -335,9 +336,10 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [x] Frontend panel renders 6 tracks + 50 clips smoothly
 
 ### Phase 2
-- [ ] Editing node can export a video with 3+ clips from timeline
+- [x] Editing node can export a video with 3+ clips from timeline
 - [x] Audio mixing produces correct voice+BGM output (verified by ffmpeg ducking media tests)
-- [ ] Video transitions work between clips
+- [x] Video transitions work between clips (real-ffmpeg media tests for
+  dissolve/wipe/slide xfade joins and a three-clip mixed chain)
 
 ### Phase 3
 - [ ] Users can trim clips by dragging edges

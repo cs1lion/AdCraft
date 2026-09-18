@@ -669,18 +669,28 @@ def _gap_filters(
     )
 
 
+# Manifest transition types → libavfilter xfade transition names. Dissolve
+# renders as a cross-fade; wipe/slide use the canonical left-to-right motion.
+_XFADE_FILTER_NAMES: dict[str, str] = {
+    "dissolve": "fade",
+    "wipe": "wipeleft",
+    "slide": "slideleft",
+}
+
+
 def _video_chain_filters(
     pieces: Sequence[tuple[str, float, EditingVideoEntryV2 | None]],
     *,
     fps: float,
 ) -> tuple[list[str], str]:
-    """Join normalized video pieces with cuts or cross-dissolves.
+    """Join normalized video pieces with cuts or cross-clip transitions.
 
-    Cut boundaries use a video-only concat; dissolve boundaries (marked on
-    the *incoming* piece) chain ``xfade=transition=fade``. Dissolves
-    overlap the two pieces and shorten the chain, so durations are tracked
-    cumulatively to compute each xfade offset. The fixed-length audio graph
-    (and the final tpad/trim) keeps the exported timeline duration intact.
+    Cut boundaries use a video-only concat; transition boundaries (marked on
+    the *incoming* piece) chain ``xfade`` — dissolve cross-fades, wipe and
+    slide move the boundary across the frame. Transitions overlap the two
+    pieces and shorten the chain, so durations are tracked cumulatively to
+    compute each xfade offset. The fixed-length audio graph (and the final
+    tpad/trim) keeps the exported timeline duration intact.
     """
     if not pieces:
         raise _error(
@@ -693,12 +703,13 @@ def _video_chain_filters(
     label, current_duration, _ = pieces[0]
 
     for step, (next_label, piece_duration, entry) in enumerate(pieces[1:], start=1):
-        requested = (
-            entry.transition_duration_seconds
-            if entry is not None and entry.transition == "dissolve"
-            else 0.0
+        xfade_name = (
+            _XFADE_FILTER_NAMES[entry.transition]
+            if entry is not None and entry.transition in _XFADE_FILTER_NAMES
+            else None
         )
-        dissolve_duration = 0.0
+        requested = entry.transition_duration_seconds if xfade_name is not None else 0.0
+        overlap_duration = 0.0
         if requested > 0.0:
             capped = min(
                 requested,
@@ -707,17 +718,17 @@ def _video_chain_filters(
             )
             quantized = math.floor(capped * fps + 1e-9) / fps
             if quantized >= frame - 1e-9:
-                dissolve_duration = quantized
+                overlap_duration = quantized
 
-        if dissolve_duration > 0.0:
-            offset = current_duration - dissolve_duration
+        if overlap_duration > 0.0 and xfade_name is not None:
+            offset = current_duration - overlap_duration
             output = f"[vx{step}]"
             filters.append(
-                f"{label}{next_label}xfade=transition=fade:"
-                f"duration={dissolve_duration:.6f}:offset={offset:.6f}{output}"
+                f"{label}{next_label}xfade=transition={xfade_name}:"
+                f"duration={overlap_duration:.6f}:offset={offset:.6f}{output}"
             )
             label = output
-            current_duration += piece_duration - dissolve_duration
+            current_duration += piece_duration - overlap_duration
         else:
             output = f"[vc{step}]"
             filters.append(
