@@ -8,6 +8,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from app.schemas.timeline import (
 from app.services.timeline_clip_auto_creator import (
     AutoClipContext,
     TimelineClipAutoCreator,
+    parse_subtitle_cue_plan,
 )
 
 pytestmark = pytest.mark.integration
@@ -979,3 +981,293 @@ class TestNodeClipUpsertScoping:
                 if t.type == "video"
             )
         assert len(video_track.clips) == 1
+
+
+# ---------------------------------------------------------------------------
+# Subtitle cue plan parsing
+# ---------------------------------------------------------------------------
+
+
+class TestSubtitleCuePlanParsing:
+    def test_canvas_structured_output_lines(self) -> None:
+        payload = {
+            "structured_output": {
+                "subtitleLines": [
+                    {"lineId": "line_001", "startTime": 0.0, "endTime": 1.5, "text": "A"},
+                    {"lineId": "line_002", "startTime": 1.5, "endTime": 3.0, "text": "B"},
+                ]
+            }
+        }
+        cues = parse_subtitle_cue_plan(payload)
+        assert cues is not None
+        assert [(c.start_seconds, c.end_seconds, c.text) for c in cues] == [
+            (0.0, 1.5, "A"),
+            (1.5, 3.0, "B"),
+        ]
+
+    def test_top_level_lines_are_sorted_and_sanitized(self) -> None:
+        cues = parse_subtitle_cue_plan(
+            {
+                "subtitleLines": [
+                    {"startTime": 4.0, "endTime": 5.0, "text": " later "},
+                    {"startTime": 0.0, "endTime": 1.0, "text": "first"},
+                    {"startTime": 1.0, "endTime": 1.0, "text": "zero duration"},
+                    {"startTime": 2.0, "endTime": 3.0, "text": "   "},
+                    "not-a-dict",
+                ]
+            }
+        )
+        assert cues is not None
+        assert [c.text for c in cues] == ["first", "later"]
+
+    def test_provider_srt_cue_plan(self) -> None:
+        cues = parse_subtitle_cue_plan(
+            {
+                "cues": [
+                    {
+                        "cue_id": "cue-1",
+                        "start_time": "00:00:01,500",
+                        "end_time": "00:00:03,000",
+                        "text": "Hello",
+                    },
+                    {
+                        "cue_id": "cue-2",
+                        "start_time": "00:00:03.000",
+                        "end_time": "00:01:04.250",
+                        "text": "World",
+                    },
+                ]
+            }
+        )
+        assert cues is not None
+        assert [(c.start_seconds, c.end_seconds, c.text) for c in cues] == [
+            (1.5, 3.0, "Hello"),
+            (3.0, 64.25, "World"),
+        ]
+
+    def test_unrecognized_or_invalid_payloads_return_none(self) -> None:
+        assert parse_subtitle_cue_plan(None) is None
+        assert parse_subtitle_cue_plan("nope") is None
+        assert parse_subtitle_cue_plan({}) is None
+        assert parse_subtitle_cue_plan({"other": 1}) is None
+
+    def test_recognized_empty_plan_returns_empty_tuple(self) -> None:
+        assert parse_subtitle_cue_plan({"subtitleLines": []}) == ()
+
+
+# ---------------------------------------------------------------------------
+# Subtitle node -> multi-cue clip sync
+# ---------------------------------------------------------------------------
+
+
+def _subtitle_clips(database: V2Database) -> list:
+    with database.session_factory() as session:
+        timeline = TimelineRepository(session).get_by_workflow_id(_WORKFLOW_ID)
+    track = next(t for t in timeline.tracks if t.type == "subtitle")
+    return list(track.clips)
+
+
+def _subtitle_context(
+    *,
+    asset_id: str = "asset_sub_1",
+    version_id: str | None = "asset_sub_1_v1",
+) -> AutoClipContext:
+    return AutoClipContext(
+        workflow_id=_WORKFLOW_ID,
+        node_id="node_sub_1",
+        node_type="script",
+        semantic_role="subtitle",
+        output_asset_id=asset_id,
+        output_asset_version_id=version_id,
+        title="Ad script",
+    )
+
+
+def _make_creator_with_plan(
+    database: V2Database,
+    data_dir: Path,
+    payload: dict,
+    *,
+    asset_id: str = "asset_sub_1",
+):
+    plan_path = data_dir / f"{asset_id}.json"
+    plan_path.write_text(json.dumps(payload), encoding="utf-8")
+    creator = TimelineClipAutoCreator(
+        repository_factory=lambda: TimelineRepository(database.session_factory()),
+        enabled=True,
+        asset_path_resolver=lambda candidate: data_dir / f"{candidate}.json",
+    )
+    return creator, plan_path
+
+
+def _script_plan(lines: list[tuple[float, float, str]]) -> dict:
+    return {
+        "structured_output": {
+            "subtitleLines": [
+                {"lineId": f"line_{index:03d}", "startTime": start, "endTime": end, "text": text}
+                for index, (start, end, text) in enumerate(lines, start=1)
+            ]
+        }
+    }
+
+
+class TestSubtitleClipSync:
+    def test_first_run_creates_one_clip_per_cue(
+        self, database: V2Database, v2_media_data_dir: Path
+    ) -> None:
+        _seed_workflow(database)
+        creator, _path = _make_creator_with_plan(
+            database,
+            v2_media_data_dir,
+            _script_plan([(0.0, 1.5, "Hook"), (1.5, 3.0, "Body"), (3.0, 4.5, "CTA")]),
+        )
+
+        clip_id = creator.create_clip_for_node(_subtitle_context())
+        assert clip_id is not None
+
+        clips = _subtitle_clips(database)
+        assert [c.subtitle_text for c in clips] == ["Hook", "Body", "CTA"]
+        assert [c.start_time for c in clips] == [pytest.approx(0.0), pytest.approx(1.5), pytest.approx(3.0)]
+        assert [c.duration for c in clips] == [pytest.approx(1.5), pytest.approx(1.5), pytest.approx(1.5)]
+        assert all(c.source_node_id == "node_sub_1" for c in clips)
+        assert all(c.asset_id == "asset_sub_1" for c in clips)
+        assert [c.label for c in clips] == ["Ad script 1", "Ad script 2", "Ad script 3"]
+
+    def test_rerun_refreshes_matched_clips_and_deletes_surplus(
+        self, database: V2Database, v2_media_data_dir: Path
+    ) -> None:
+        _seed_workflow(database)
+        creator, _path = _make_creator_with_plan(
+            database,
+            v2_media_data_dir,
+            _script_plan([(0.0, 1.0, "One"), (1.0, 2.0, "Two"), (2.0, 3.0, "Three")]),
+        )
+        creator.create_clip_for_node(_subtitle_context())
+        first_ids = [c.clip_id for c in _subtitle_clips(database)]
+
+        # User restyles and renames the first cue after generation.
+        with database.session_factory() as session:
+            TimelineRepository(session).update_clip(
+                first_ids[0],
+                label="My hook",
+                subtitle_style=TimelineSubtitleStyleV1(position="top", font_size=40),
+            )
+            session.commit()
+
+        # Rerun: plan now carries two regenerated cues under a new version.
+        plan_path = v2_media_data_dir / "asset_sub_1.json"
+        plan_path.write_text(
+            json.dumps(_script_plan([(0.0, 2.0, "One v2"), (2.0, 4.0, "Two v2")])),
+            encoding="utf-8",
+        )
+        result = creator.create_clip_for_node(
+            _subtitle_context(version_id="asset_sub_1_v2")
+        )
+        assert result == first_ids[0]
+
+        clips = _subtitle_clips(database)
+        assert len(clips) == 2
+        assert [c.clip_id for c in clips] == first_ids[:2]
+        first, second = clips
+        assert first.subtitle_text == "One v2"
+        assert first.duration == pytest.approx(2.0)
+        assert first.asset_version_id == "asset_sub_1_v2"
+        # User authorship on the matched clip survives.
+        assert first.label == "My hook"
+        assert first.subtitle_style == TimelineSubtitleStyleV1(position="top", font_size=40)
+        assert second.subtitle_text == "Two v2"
+        assert second.start_time == pytest.approx(2.0)
+
+    def test_provider_srt_plan_creates_clips(
+        self, database: V2Database, v2_media_data_dir: Path
+    ) -> None:
+        _seed_workflow(database)
+        payload = {
+            "cues": [
+                {"start_time": "00:00:00,000", "end_time": "00:00:02,000", "text": "A"},
+                {"start_time": "00:00:02,000", "end_time": "00:00:04,000", "text": "B"},
+            ]
+        }
+        creator, _path = _make_creator_with_plan(database, v2_media_data_dir, payload)
+
+        creator.create_clip_for_node(_subtitle_context())
+
+        clips = _subtitle_clips(database)
+        assert [c.subtitle_text for c in clips] == ["A", "B"]
+        assert clips[0].duration == pytest.approx(2.0)
+
+    def test_manual_clip_is_untouched_by_sync(
+        self, database: V2Database, v2_media_data_dir: Path
+    ) -> None:
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            subtitle_track = next(t for t in timeline.tracks if t.type == "subtitle")
+            repo.add_clip(
+                track_id=subtitle_track.track_id,
+                start_time=9.0,
+                duration=1.0,
+                subtitle_text="Manual note",
+                label="Mine",
+            )
+            session.commit()
+
+        creator, _path = _make_creator_with_plan(
+            database, v2_media_data_dir, _script_plan([(0.0, 1.0, "Auto")])
+        )
+        creator.create_clip_for_node(_subtitle_context())
+
+        clips = sorted(_subtitle_clips(database), key=lambda c: c.start_time)
+        assert [c.subtitle_text for c in clips] == ["Auto", "Manual note"]
+        manual = next(c for c in clips if c.subtitle_text == "Manual note")
+        assert manual.source_node_id is None
+        assert manual.label == "Mine"
+
+    def test_missing_resolver_falls_back_to_single_clip(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        creator = TimelineClipAutoCreator(
+            repository_factory=lambda: TimelineRepository(database.session_factory()),
+            enabled=True,
+        )
+
+        clip_id = creator.create_clip_for_node(_subtitle_context(asset_id="asset_legacy"))
+        assert clip_id is not None
+        clips = _subtitle_clips(database)
+        assert len(clips) == 1
+        assert clips[0].subtitle_text is None
+        assert clips[0].duration == pytest.approx(3.0)
+
+    def test_unreadable_plan_falls_back_to_single_clip(
+        self, database: V2Database, v2_media_data_dir: Path
+    ) -> None:
+        _seed_workflow(database)
+        missing = v2_media_data_dir / "asset_missing.json"
+        creator = TimelineClipAutoCreator(
+            repository_factory=lambda: TimelineRepository(database.session_factory()),
+            enabled=True,
+            asset_path_resolver=lambda _id: missing,
+        )
+
+        clip_id = creator.create_clip_for_node(_subtitle_context(asset_id="asset_missing"))
+        assert clip_id is not None
+        assert len(_subtitle_clips(database)) == 1
+
+    def test_recognized_empty_plan_clears_node_clips(
+        self, database: V2Database, v2_media_data_dir: Path
+    ) -> None:
+        _seed_workflow(database)
+        creator, _path = _make_creator_with_plan(
+            database, v2_media_data_dir, _script_plan([(0.0, 1.0, "One")])
+        )
+        creator.create_clip_for_node(_subtitle_context())
+        assert len(_subtitle_clips(database)) == 1
+
+        (v2_media_data_dir / "asset_sub_1.json").write_text(
+            json.dumps({"subtitleLines": []}), encoding="utf-8"
+        )
+        result = creator.create_clip_for_node(_subtitle_context())
+        assert result == ""
+        assert _subtitle_clips(database) == []

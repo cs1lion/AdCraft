@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3 in progress (clip transition authoring UI, subtitle cue authoring with styles, SRT/ASS export and ASS burn-in complete; text/script node multi-cue backfill, wipe/slide renderer support, volume curves and 3+ clip E2E verification pending)
+**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve rendering, editing UI); Phase 3 in progress (clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill — complete; wipe/slide renderer support, volume curves and 3+ clip E2E verification pending)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -147,9 +147,13 @@ layer. Nodes generate assets; the timeline arranges them in time.
   muted subtitle tracks are excluded; `.srt`/`.ass` links in the panel header)
 - [x] Subtitle styling (font, size, colour, position, bold/italic; validated
   8–160px font size; explicit-null clears text/style)
-- [ ] Auto-creation of subtitle clips from text/script node assets
-  (single clip exists today; multi-cue backfill from subtitle-plan.json is
-  pending)
+- [x] Auto-creation of subtitle clips from text/script node assets (the
+  node output JSON is parsed for `structured_output.subtitleLines`
+  (float seconds) or provider `cues` (`HH:MM:SS,mmm`); one clip per cue
+  is synced by ordinal position — matched clips refresh text/timing/asset
+  pointers while preserving the user's label and per-clip style, surplus
+  clips are deleted, manual clips are never touched; unreadable or
+  unrecognized assets fall back to the legacy single clip)
 - [x] Burn-in subtitles option during export (timeline `subtitle_burn_in`
   flag + toolbar toggle; renderer stages an ASS sidecar next to the export
   and mounts the libass `ass` filter after the final video chain, with the

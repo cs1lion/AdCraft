@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -36,6 +37,15 @@ def _utc_now_iso() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+@dataclass(frozen=True, slots=True)
+class NodeSubtitleCue:
+    """One timed subtitle line sourced from a text/script node output asset."""
+
+    start_seconds: float
+    end_seconds: float
+    text: str
 
 
 # Sentinel distinguishing "field omitted from PATCH" from an explicit null.
@@ -334,6 +344,82 @@ class TimelineRepository:
             label=label,
         )
         return created, True
+
+    def sync_node_subtitle_clips(
+        self,
+        *,
+        timeline_id: str,
+        source_node_id: str,
+        track_id: str,
+        cues: Sequence[NodeSubtitleCue],
+        asset_id: str | None,
+        asset_version_id: str | None,
+        label: str,
+    ) -> tuple[TimelineClipV1, ...]:
+        """Reconcile a node's subtitle cues onto its track (ordinal matching).
+
+        The node owns all clips carrying its ``source_node_id`` on this track;
+        manual clips (no source node) are never touched. Existing clips match
+        cues by order (sorted start time): matched clips refresh text, timing
+        and asset pointers while preserving the user's label and subtitle
+        style; extra cues are appended; surplus clips are deleted.
+        """
+        rows = list(
+            self._session.execute(
+                select(TimelineClipRow)
+                .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
+                .where(
+                    TimelineTrackRow.timeline_id == timeline_id,
+                    TimelineClipRow.track_id == track_id,
+                    TimelineClipRow.source_node_id == source_node_id,
+                )
+                .order_by(TimelineClipRow.start_time, TimelineClipRow.clip_id)
+            ).scalars()
+        )
+        ordered_cues = sorted(cues, key=lambda cue: cue.start_seconds)
+        shared = min(len(rows), len(ordered_cues))
+        now = _utc_now_iso()
+
+        for index in range(shared):
+            row = rows[index]
+            cue = ordered_cues[index]
+            row.asset_id = asset_id
+            row.asset_version_id = asset_version_id
+            row.start_time = max(cue.start_seconds, 0.0)
+            row.duration = max(cue.end_seconds - cue.start_seconds, 0.001)
+            row.subtitle_text = cue.text
+            row.updated_at = now
+
+        for offset, cue in enumerate(ordered_cues[shared:], start=1):
+            self.add_clip(
+                track_id=track_id,
+                start_time=max(cue.start_seconds, 0.0),
+                duration=max(cue.end_seconds - cue.start_seconds, 0.001),
+                asset_id=asset_id,
+                asset_version_id=asset_version_id,
+                source_node_id=source_node_id,
+                subtitle_text=cue.text,
+                label=f"{label} {shared + offset}",
+            )
+
+        for row in rows[shared:]:
+            self._session.delete(row)
+
+        self._session.flush()
+        self._grow_timeline_duration(timeline_id)
+        final_rows = list(
+            self._session.execute(
+                select(TimelineClipRow)
+                .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
+                .where(
+                    TimelineTrackRow.timeline_id == timeline_id,
+                    TimelineClipRow.track_id == track_id,
+                    TimelineClipRow.source_node_id == source_node_id,
+                )
+                .order_by(TimelineClipRow.start_time, TimelineClipRow.clip_id)
+            ).scalars()
+        )
+        return tuple(self._hydrate_clip(row) for row in final_rows)
 
     def update_clip(
         self,
