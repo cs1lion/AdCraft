@@ -86,6 +86,13 @@ class EditingBgmEntryV2(_EditingModel):
 EditingAudioTrackRoleV2 = Literal["voice", "bgm", "sfx"]
 
 
+class EditingVolumeKeyframeV2(_EditingModel):
+    """One point of a clip-relative volume envelope (linear gain 0–1)."""
+
+    time_seconds: float = Field(ge=0.0)
+    value: float = Field(ge=0.0, le=1.0)
+
+
 class EditingAudioEntryV2(_EditingModel):
     """One timeline-positioned audio clip (voice-over, BGM segment, or SFX)."""
 
@@ -99,6 +106,8 @@ class EditingAudioEntryV2(_EditingModel):
     volume: float = Field(default=1.0, ge=0.0, le=1.0)
     fade_in_seconds: float = Field(default=0.0, ge=0.0, le=30.0)
     fade_out_seconds: float = Field(default=0.0, ge=0.0, le=30.0)
+    # Clip-relative automation points; one or zero points means a flat clip.
+    volume_keyframes: tuple[EditingVolumeKeyframeV2, ...] = ()
 
     @model_validator(mode="after")
     def validate_source_and_timing(self) -> "EditingAudioEntryV2":
@@ -106,6 +115,13 @@ class EditingAudioEntryV2(_EditingModel):
             raise ValueError("Editing audio entries require one Binding or Asset reference.")
         if self.trim_end_seconds is not None and self.trim_end_seconds <= self.trim_start_seconds:
             raise ValueError("Editing audio trim end must be after trim start.")
+        previous_time: float | None = None
+        for point in sorted(self.volume_keyframes, key=lambda item: item.time_seconds):
+            if previous_time is not None and abs(point.time_seconds - previous_time) < 1e-6:
+                raise ValueError("Volume keyframe times must be unique.")
+            previous_time = point.time_seconds
+        if len(self.volume_keyframes) > 64:
+            raise ValueError("A volume envelope supports at most 64 points.")
         return self
 
     @property

@@ -272,6 +272,7 @@ describe("GlobalTimelinePanel — selected clip inspector", () => {
       source_duration: null,
       fade_in: 0.2,
       fade_out: null,
+      volume_keyframes: null,
       label: null,
     });
   });
@@ -289,6 +290,76 @@ describe("GlobalTimelinePanel — selected clip inspector", () => {
     const payload = vi.mocked(updateClip).mock.calls[0][2];
     expect(payload.fade_in).toBeUndefined();
     expect(payload.fade_out).toBeUndefined();
+    expect(payload.volume_keyframes).toBeUndefined();
+    expect(within(inspector).queryByTestId("timeline-volume-envelope")).toBeNull();
+  });
+
+  it("seeds edge anchors and saves a keyframed volume envelope", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    const envelope = within(inspector).getByTestId("timeline-volume-envelope");
+    expect(within(envelope).queryByTestId(/timeline-envelope-point-/)).toBeNull();
+
+    // jsdom has no layout; give the SVG the editor's pixel box.
+    const svg = within(envelope).getByRole("img");
+    const rectSpy = vi
+      .spyOn(svg, "getBoundingClientRect")
+      .mockReturnValue({
+        x: 0, y: 0, top: 0, left: 0, right: 228, bottom: 64,
+        width: 228, height: 64, toJSON: () => ({}),
+      } as DOMRect);
+    // Click at (114, 32) -> t=1.0s (duration 2), gain 0.5.
+    fireEvent.click(svg.querySelector("rect") as SVGRectElement, {
+      clientX: 114,
+      clientY: 32,
+    });
+
+    const points = within(envelope).getAllByTestId(/timeline-envelope-point-/);
+    expect(points).toHaveLength(3);
+
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0][2].volume_keyframes).toEqual([
+      { time_seconds: 0, value: 1 },
+      { time_seconds: 1, value: 0.5 },
+      { time_seconds: 2, value: 1 },
+    ]);
+    rectSpy.mockRestore();
+  });
+
+  it("clears a stored volume envelope with an explicit null payload", async () => {
+    const envelopedVoice = {
+      ...voiceTrack,
+      clips: [
+        makeClip({
+          clip_id: "clip_voice_1",
+          track_id: "track_voice",
+          label: "Voice line 1",
+          volume_keyframes: [
+            { time_seconds: 0, value: 1 },
+            { time_seconds: 2, value: 0 },
+          ],
+        }),
+      ],
+    };
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [videoTrack, envelopedVoice, bgmTrack] }),
+    );
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    const envelope = within(inspector).getByTestId("timeline-volume-envelope");
+    expect(within(envelope).getAllByTestId(/timeline-envelope-point-/)).toHaveLength(2);
+
+    fireEvent.click(within(envelope).getByTestId("timeline-envelope-clear"));
+    expect(within(envelope).queryByTestId(/timeline-envelope-point-/)).toBeNull();
+
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0][2].volume_keyframes).toBeNull();
   });
 
   it("saves incoming and outgoing transitions for a video clip", async () => {

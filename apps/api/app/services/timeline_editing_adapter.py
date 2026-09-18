@@ -24,6 +24,7 @@ from app.schemas.agent_canvas_editing import (
     EditingManifestV2,
     EditingSubtitleEntryV2,
     EditingVideoEntryV2,
+    EditingVolumeKeyframeV2,
 )
 from app.schemas.timeline import TimelineClipV1, TimelineTrackV1, TimelineV1
 
@@ -385,6 +386,17 @@ class TimelineEditingAdapter:
             volume=min(1.0, max(0.0, _ROLE_BASE_VOLUME[role] * track.volume)),
             fade_in_seconds=clip.fade_in or 0.0,
             fade_out_seconds=clip.fade_out or 0.0,
+            volume_keyframes=(
+                tuple(
+                    EditingVolumeKeyframeV2(
+                        time_seconds=point.time_seconds,
+                        value=point.value,
+                    )
+                    for point in clip.volume_keyframes
+                )
+                if len(clip.volume_keyframes) >= 2
+                else ()
+            ),
         )
 
     def _calculate_total_duration(self, timeline: TimelineV1) -> float:

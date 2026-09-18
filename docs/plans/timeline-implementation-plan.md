@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI); Phase 3 in progress (clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill — complete; volume curves remaining)
+**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI); Phase 3 in progress (clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill, and keyframed volume curves/fades — complete; edge-drag trimming remaining)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -163,10 +163,20 @@ layer. Nodes generate assets; the timeline arranges them in time.
   proceeds without burned text)
 
 ### 3.4 Volume Curves
-- [ ] Keyframe-based volume automation
-- [ ] Visual volume envelope editor
-- [ ] Fade in/out handles on audio clips
-- [ ] ffmpeg volume filter with expression
+- [x] Keyframe-based volume automation (`timeline_clips.volume_keyframes_json`,
+  clip-relative points `(time_seconds, value 0–1)`, ≤64 points; PATCH
+  explicit-null clears; agent editing adapter passes ≥2-point envelopes)
+- [x] Visual volume envelope editor (SVG polyline in the audio-clip
+  inspector: click adds points, drag moves, double-click/right-click removes,
+  Clear sends an explicit null; points clamp to clip duration and 0–1 gain)
+- [x] Fade in/out handles on audio clips (existing inspector inputs; fades
+  are rendered through the same piecewise envelope as keyframes — the native
+  `afade` filter's timestamps proved unreliable on the target build)
+- [x] ffmpeg gain automation rendered as quantised constant-`volume` pieces
+  (`atrim` + `asetpts` + `volume`, unified `aresample`/`aformat` before
+  `asplit`, then `concat`) — a runtime `volume=if(…)` expression was rejected
+  after real-FFmpeg testing; verified end-to-end by media acceptance tests
+  sampling head/middle/tail levels of the exported audio
 
 ### 3.5 Clip Drag & Drop
 - [x] Drag clips horizontally to change start time (snaps to 1/fps frames)
@@ -344,7 +354,7 @@ layer. Nodes generate assets; the timeline arranges them in time.
 ### Phase 3
 - [ ] Users can trim clips by dragging edges
 - [x] Subtitle track can export SRT (and styled ASS)
-- [ ] Volume curves apply correctly during export
+- [x] Volume curves apply correctly during export
 
 ### Phase 4
 - [ ] Timeline playhead controls 3D preview frame

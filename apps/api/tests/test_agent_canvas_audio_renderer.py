@@ -7,8 +7,11 @@ parse the -filter_complex script to verify structural round-trip stability.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from app.core.config import Settings
 from app.schemas.agent_canvas_editing import (
@@ -17,11 +20,13 @@ from app.schemas.agent_canvas_editing import (
     EditingManifestV2,
     EditingOutputSettingsV2,
     EditingVideoEntryV2,
+    EditingVolumeKeyframeV2,
 )
 from app.schemas.workflow_v2 import V2MediaToolchainCapabilities
 from app.services.agent_canvas_composition_renderer import (
     DEGRADATION_DUCKING_UNAVAILABLE,
     AgentCanvasCompositionRenderer,
+    _volume_envelope_plan,
 )
 from app.services.agent_canvas_editing import ResolvedEditingInputs, ResolvedEditingMedia
 from app.services.v2_final_composition_renderer import V2MediaProbeResult
@@ -56,6 +61,9 @@ def _audio_media(
     start: float,
     trim_end: float,
     volume: float = 1.0,
+    fade_in: float = 0.0,
+    fade_out: float = 0.0,
+    volume_keyframes: tuple[EditingVolumeKeyframeV2, ...] = (),
 ) -> ResolvedEditingMedia:
     return ResolvedEditingMedia(
         asset=_asset(asset_id, "audio"),  # type: ignore[arg-type]
@@ -66,6 +74,9 @@ def _audio_media(
             timeline_start_seconds=start,
             trim_end_seconds=trim_end,
             volume=volume,
+            fade_in_seconds=fade_in,
+            fade_out_seconds=fade_out,
+            volume_keyframes=volume_keyframes,
         ),
     )
 
@@ -311,3 +322,172 @@ class TestTimelineAudioGraph:
         assert manifest.ducking is not None
         assert manifest.ducking.ratio == 12.0
         assert manifest.ducking.threshold_db == -35.0
+
+
+class TestVolumeEnvelopePlan:
+    def test_single_or_no_points_means_flat_clip(self) -> None:
+        assert _volume_envelope_plan((), clip_duration=2.0) is None
+        assert (
+            _volume_envelope_plan(
+                (EditingVolumeKeyframeV2(time_seconds=0.5, value=0.5),),
+                clip_duration=2.0,
+            )
+            is None
+        )
+
+    def test_two_point_ramp_tiles_the_clip_and_holds_at_the_tail(self) -> None:
+        plan = _volume_envelope_plan(
+            (
+                EditingVolumeKeyframeV2(time_seconds=0.0, value=1.0),
+                EditingVolumeKeyframeV2(time_seconds=2.0, value=0.0),
+            ),
+            clip_duration=3.0,
+        )
+        assert plan is not None
+        assert plan[0][0] == 0.0
+        # Pieces tile the clip without gaps.
+        for earlier, later in zip(plan[:-1], plan[1:], strict=True):
+            assert earlier[1] == pytest.approx(later[0])
+        assert plan[-1][1] == pytest.approx(3.0)
+        # Midpoint gains descend linearly and hold at zero past the last point.
+        gains = [piece[2] for piece in plan]
+        assert gains == sorted(gains, reverse=True)
+        assert gains[0] == pytest.approx(1.0, abs=0.02)
+        tail = [gain for (_start, end, gain) in plan if end > 2.0 + 1e-9]
+        assert tail and all(gain == pytest.approx(0.0, abs=1e-9) for gain in tail)
+
+    def test_first_point_after_zero_holds_unity_shape_before_it(self) -> None:
+        plan = _volume_envelope_plan(
+            (
+                EditingVolumeKeyframeV2(time_seconds=1.0, value=0.5),
+                EditingVolumeKeyframeV2(time_seconds=2.0, value=1.0),
+            ),
+            clip_duration=2.0,
+        )
+        assert plan is not None
+        assert plan[-1][1] == pytest.approx(2.0)
+        head = [gain for (start, _end, gain) in plan if start < 1.0 - 1e-9]
+        assert head and all(gain == pytest.approx(0.5, abs=0.02) for gain in head)
+        assert plan[-1][2] == pytest.approx(1.0, abs=0.02)
+
+    def test_three_unsorted_points_are_ordered(self) -> None:
+        plan = _volume_envelope_plan(
+            (
+                EditingVolumeKeyframeV2(time_seconds=3.0, value=0.3),
+                EditingVolumeKeyframeV2(time_seconds=0.0, value=1.0),
+                EditingVolumeKeyframeV2(time_seconds=1.0, value=0.0),
+            ),
+            clip_duration=3.0,
+        )
+        assert plan is not None
+        assert plan[0][0] == 0.0
+        assert plan[-1][1] == pytest.approx(3.0)
+        # Last piece midpoint is 2.975 s on the 0.0 -> 0.3 tail ramp (~= 0.296).
+        assert plan[-1][2] == pytest.approx(0.3, abs=0.02)
+
+    def test_constant_envelope_is_one_whole_clip_piece(self) -> None:
+        plan = _volume_envelope_plan(
+            (
+                EditingVolumeKeyframeV2(time_seconds=0.0, value=0.4),
+                EditingVolumeKeyframeV2(time_seconds=2.0, value=0.4),
+            ),
+            clip_duration=2.0,
+        )
+        assert plan == ((0.0, 2.0, 0.4),)
+
+    def test_fade_in_ramp_without_keyframes_quantises_gain(self) -> None:
+        plan = _volume_envelope_plan((), clip_duration=2.0, fade_in_seconds=1.0)
+        assert plan is not None
+        assert plan[0][0] == 0.0 and plan[-1][1] == pytest.approx(2.0)
+        assert plan[0][2] < 0.05  # near silence at the very start
+        for earlier, later in zip(plan[:-1], plan[1:], strict=True):
+            assert earlier[1] == pytest.approx(later[0])
+        # Fully open once the fade has elapsed.
+        assert all(gain == pytest.approx(1.0) for (_s, end, gain) in plan if end > 1.0)
+
+    def test_fade_out_multiplies_the_keyframed_envelope(self) -> None:
+        plan = _volume_envelope_plan(
+            (
+                EditingVolumeKeyframeV2(time_seconds=0.0, value=1.0),
+                EditingVolumeKeyframeV2(time_seconds=2.0, value=1.0),
+            ),
+            clip_duration=2.0,
+            fade_out_seconds=1.0,
+        )
+        assert plan is not None
+        # Midpoint of the last 50 ms piece is 25 ms before the clip end:
+        # fade factor 0.025 against unity envelope.
+        assert plan[-1][2] == pytest.approx(0.025, abs=0.005)
+        assert plan[0][2] == pytest.approx(1.0)
+
+
+class TestVolumeEnvelopeGraph:
+    def test_envelope_clip_splits_trims_and_concats_before_positioning(
+        self, tmp_path: Path
+    ) -> None:
+        voice = _audio_media(
+            "voice1",
+            "voice",
+            start=1.0,
+            trim_end=3.0,
+            volume=0.9,
+            volume_keyframes=(
+                EditingVolumeKeyframeV2(time_seconds=0.0, value=1.0),
+                EditingVolumeKeyframeV2(time_seconds=1.0, value=0.0),
+                EditingVolumeKeyframeV2(time_seconds=2.0, value=1.0),
+            ),
+        )
+        _result, _command, script = _render(_inputs(audios=(voice,)), tmp_path=tmp_path)
+
+        # Base level applies once on the prefix; PTS is reset after the trim so
+        # the segment atrims are clip-relative.
+        assert (
+            "[1:a:0]atrim=start=0.000000:end=3.000000,asetpts=PTS-STARTPTS,"
+            "volume=0.900000,aresample=48000,aformat=sample_fmts=fltp:"
+            "channel_layouts=stereo[ad0envpre]" in script
+        )
+        assert "[ad0envpre]asplit=" in script
+        assert "atrim=start=0.000000:end=" in script
+        # PTS must be reset *before* the per-piece volume: a non-zero starting
+        # PTS makes the volume filter ramp in from the previous piece's level.
+        first_piece = next(
+            part for part in script.split(";") if part.endswith("[ad0seg0]")
+        )
+        assert "asetpts=PTS-STARTPTS,volume=" in first_piece
+        assert "concat=n=" in script and "[ad0envmix]" in script
+        # The assembled envelope is placed onto the timeline last.
+        final = next(part for part in script.split(";") if part.endswith("[ad0]"))
+        assert final.startswith("[ad0envmix]")
+        assert "adelay=1000" in final
+
+    def test_fade_only_clip_uses_envelope_graph_without_afade(
+        self, tmp_path: Path
+    ) -> None:
+        voice = _audio_media(
+            "voice1",
+            "voice",
+            start=0.0,
+            trim_end=2.0,
+            fade_in=0.5,
+            fade_out=0.5,
+        )
+        _result, _command, script = _render(_inputs(audios=(voice,)), tmp_path=tmp_path)
+
+        assert "afade=" not in script
+        assert "asplit=" in script and "concat=n=" in script
+        # First 50 ms piece of a 0.5 s fade-in has a 0.05 midpoint gain.
+        first_gain = re.search(r"volume=([0-9.]+)\[ad0seg0\]", script)
+        assert first_gain is not None
+        assert float(first_gain.group(1)) < 0.06
+
+    def test_flat_clip_keeps_the_legacy_linear_chain(self, tmp_path: Path) -> None:
+        voice = _audio_media("voice1", "voice", start=0.0, trim_end=2.0)
+        _result, _command, script = _render(_inputs(audios=(voice,)), tmp_path=tmp_path)
+
+        chain = next(part for part in script.split(";") if part.endswith("[ad0]"))
+        assert (
+            "[1:a:0]atrim=start=0.000000:end=2.000000,volume=1.000000," in chain
+        )
+        assert chain.count("asetpts=PTS-STARTPTS") == 1
+        assert "asplit=" not in chain
+        assert "concat=n=" not in chain

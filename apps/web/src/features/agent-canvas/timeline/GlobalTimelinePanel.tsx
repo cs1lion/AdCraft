@@ -24,6 +24,7 @@ import type {
   TimelineTrackTypeV1,
   TimelineTrackV1,
   TimelineTransitionTypeV1,
+  TimelineVolumeKeyframeV1,
   TimelineV1,
 } from "./timelineTypes.ts";
 import {
@@ -199,6 +200,8 @@ interface ClipInspectorDraft {
   subtitle_position: "" | TimelineSubtitlePositionV1;
   subtitle_bold: boolean;
   subtitle_italic: boolean;
+  // Audio clips only; null = no keyframed envelope (constant clip gain).
+  volume_keyframes: TimelineVolumeKeyframeV1[] | null;
 }
 
 function duckingToForm(config: TimelineDuckingConfigV1 | null | undefined): DuckingFormState {
@@ -230,6 +233,272 @@ function clipIsOrphan(
     clip.source_node_id != null
     && workflowNodeIds != null
     && !workflowNodeIds.has(clip.source_node_id)
+  );
+}
+
+// --- Clip-relative volume envelope editor ---
+
+const ENVELOPE_MAX_POINTS = 64;
+const ENVELOPE_WIDTH = 228;
+const ENVELOPE_HEIGHT = 64;
+const ENVELOPE_POINT_RADIUS = 4;
+/** Minimum seconds between two keyframes while dragging/adding. */
+const ENVELOPE_MIN_GAP_SECONDS = 0.02;
+
+function clampEnvelopePoints(
+  points: ReadonlyArray<TimelineVolumeKeyframeV1>,
+  durationSeconds: number,
+): TimelineVolumeKeyframeV1[] {
+  const duration = Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? durationSeconds
+    : 0;
+  const byTime = new Map<number, TimelineVolumeKeyframeV1>();
+  for (const point of points) {
+    if (!Number.isFinite(point.time_seconds) || !Number.isFinite(point.value)) continue;
+    const timeSeconds = Math.min(Math.max(point.time_seconds, 0), duration);
+    const value = Math.min(Math.max(point.value, 0), 1);
+    byTime.set(timeSeconds, { time_seconds: timeSeconds, value });
+  }
+  return [...byTime.values()].sort((a, b) => a.time_seconds - b.time_seconds);
+}
+
+interface VolumeEnvelopeEditorProps {
+  points: TimelineVolumeKeyframeV1[] | null;
+  durationSeconds: number;
+  disabled: boolean;
+  onChange: (points: TimelineVolumeKeyframeV1[] | null) => void;
+}
+
+function VolumeEnvelopeEditor({
+  points,
+  durationSeconds,
+  disabled,
+  onChange,
+}: VolumeEnvelopeEditorProps) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragIndexRef = useRef<number | null>(null);
+  const dragMovedRef = useRef(false);
+  const suppressClickRef = useRef(false);
+
+  const duration = Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? durationSeconds
+    : 0;
+  const safePoints = useMemo(
+    () => (points ? clampEnvelopePoints(points, duration) : []),
+    [points, duration],
+  );
+
+  const toTime = (clientX: number) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return 0;
+    const ratio = Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+    return ratio * duration;
+  };
+  const toValue = (clientY: number) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect || rect.height === 0) return 1;
+    const ratio = Math.min(Math.max((clientY - rect.top) / rect.height, 0), 1);
+    return 1 - ratio;
+  };
+
+  const commit = (next: TimelineVolumeKeyframeV1[] | null) => {
+    if (next === null) {
+      onChange(null);
+      return;
+    }
+    const cleaned = clampEnvelopePoints(next, duration);
+    onChange(cleaned.length === 0 ? null : cleaned);
+  };
+
+  const handleBackgroundClick = (event: React.MouseEvent<SVGRectElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    if (disabled) return;
+    const timeSeconds = toTime(event.clientX);
+    const value = toValue(event.clientY);
+    // The first click seeds unity anchors at both clip edges so a single
+    // click immediately produces an audible, editable envelope.
+    const seeded = safePoints.length === 0
+      ? [
+          { time_seconds: 0, value: 1 },
+          { time_seconds: duration, value: 1 },
+        ]
+      : safePoints;
+    if (seeded.length >= ENVELOPE_MAX_POINTS) return;
+    if (
+      seeded.some(
+        (point) => Math.abs(point.time_seconds - timeSeconds) < ENVELOPE_MIN_GAP_SECONDS,
+      )
+    ) {
+      return;
+    }
+    commit([...seeded, { time_seconds: timeSeconds, value }]);
+  };
+
+  const removePoint = (index: number) => {
+    if (disabled) return;
+    const next = safePoints.filter((_, pointIndex) => pointIndex !== index);
+    commit(next);
+  };
+
+  const handlePointMouseDown = (
+    event: React.MouseEvent<SVGCircleElement>,
+    index: number,
+  ) => {
+    if (disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragIndexRef.current = index;
+    dragMovedRef.current = false;
+  };
+
+  const handleMouseMove = (event: React.MouseEvent<SVGSVGElement>) => {
+    const index = dragIndexRef.current;
+    if (index === null || disabled) return;
+    dragMovedRef.current = true;
+    const dragged = safePoints[index];
+    if (!dragged) return;
+    const timeSeconds = toTime(event.clientX);
+    const value = toValue(event.clientY);
+    // Keep a minimum gap from neighbouring points while dragging.
+    const previous = safePoints[index - 1];
+    const following = safePoints[index + 1];
+    const minTime = previous
+      ? Math.min(previous.time_seconds + ENVELOPE_MIN_GAP_SECONDS, duration)
+      : 0;
+    const maxTime = following
+      ? Math.max(following.time_seconds - ENVELOPE_MIN_GAP_SECONDS, 0)
+      : duration;
+    const next = safePoints.map((point, pointIndex) =>
+      pointIndex === index
+        ? {
+            time_seconds: Math.min(Math.max(timeSeconds, minTime), maxTime),
+            value,
+          }
+        : point,
+    );
+    commit(next);
+  };
+
+  const handleMouseUp = () => {
+    if (dragIndexRef.current !== null && dragMovedRef.current) {
+      // The click event that follows a drag must not add a new point.
+      suppressClickRef.current = true;
+    }
+    dragIndexRef.current = null;
+    dragMovedRef.current = false;
+  };
+
+  const xFor = (timeSeconds: number) =>
+    duration === 0 ? 0 : (timeSeconds / duration) * ENVELOPE_WIDTH;
+  const yFor = (value: number) => (1 - value) * ENVELOPE_HEIGHT;
+
+  const polylinePoints = safePoints
+    .map((point) => `${xFor(point.time_seconds).toFixed(2)},${yFor(point.value).toFixed(2)}`)
+    .join(" ");
+  const areaPath = safePoints.length >= 2
+    ? `M ${xFor(safePoints[0].time_seconds).toFixed(2)} ${ENVELOPE_HEIGHT} ` +
+      safePoints
+        .map(
+          (point) =>
+            `L ${xFor(point.time_seconds).toFixed(2)} ${yFor(point.value).toFixed(2)}`,
+        )
+        .join(" ") +
+      ` L ${xFor(safePoints[safePoints.length - 1].time_seconds).toFixed(2)} ${ENVELOPE_HEIGHT} Z`
+    : null;
+
+  return (
+    <div
+      role="group"
+      aria-label="Clip volume envelope"
+      data-testid="timeline-volume-envelope"
+      style={{ display: "flex", alignItems: "center", gap: 6 }}
+    >
+      <svg
+        ref={svgRef}
+        width={ENVELOPE_WIDTH}
+        height={ENVELOPE_HEIGHT}
+        viewBox={`0 0 ${ENVELOPE_WIDTH} ${ENVELOPE_HEIGHT}`}
+        role="img"
+        aria-label="Volume envelope editor: click to add a point, drag to move, double-click to remove"
+        style={{ background: "#111", border: "1px solid #3a3a3a", borderRadius: 3 }}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <rect
+          x={0}
+          y={0}
+          width={ENVELOPE_WIDTH}
+          height={ENVELOPE_HEIGHT}
+          fill="transparent"
+          onClick={handleBackgroundClick}
+        />
+        <line
+          x1={0}
+          y1={yFor(1)}
+          x2={ENVELOPE_WIDTH}
+          y2={yFor(1)}
+          stroke="#3a3a3a"
+          strokeWidth={1}
+          strokeDasharray="3 3"
+        />
+        {areaPath && <path d={areaPath} fill="rgba(82,196,26,0.18)" stroke="none" />}
+        {safePoints.length >= 2 && (
+          <polyline
+            points={polylinePoints}
+            fill="none"
+            stroke="#52c41a"
+            strokeWidth={1.5}
+            pointerEvents="none"
+          />
+        )}
+        {safePoints.map((point, index) => (
+          <circle
+            key={`${point.time_seconds.toFixed(4)}-${index}`}
+            cx={xFor(point.time_seconds)}
+            cy={yFor(point.value)}
+            r={ENVELOPE_POINT_RADIUS}
+            fill="#52c41a"
+            stroke="#0b0b0b"
+            strokeWidth={1}
+            style={{ cursor: disabled ? "default" : "grab" }}
+            aria-label={`Volume keyframe at ${point.time_seconds.toFixed(2)} seconds, ${Math.round(point.value * 100)} percent`}
+            data-testid={`timeline-envelope-point-${index}`}
+            onMouseDown={(event) => handlePointMouseDown(event, index)}
+            onDoubleClick={(event) => {
+              event.stopPropagation();
+              removePoint(index);
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              removePoint(index);
+            }}
+          />
+        ))}
+      </svg>
+      <button
+        type="button"
+        disabled={disabled || safePoints.length === 0}
+        data-testid="timeline-envelope-clear"
+        title="Remove all volume keyframes"
+        onClick={() => commit(null)}
+        style={{
+          fontSize: 10,
+          background: "#262626",
+          color: "#ccc",
+          border: "1px solid #444",
+          borderRadius: 3,
+          padding: "2px 6px",
+          cursor: disabled ? "default" : "pointer",
+        }}
+      >
+        Clear
+      </button>
+    </div>
   );
 }
 
@@ -792,6 +1061,9 @@ export function GlobalTimelinePanel({
       subtitle_position: style?.position ?? "",
       subtitle_bold: style?.bold === true,
       subtitle_italic: style?.italic === true,
+      volume_keyframes: clip.volume_keyframes && clip.volume_keyframes.length > 0
+        ? clip.volume_keyframes.map((point) => ({ ...point }))
+        : null,
     });
   }, [selectedClip]);
 
@@ -835,6 +1107,18 @@ export function GlobalTimelinePanel({
       setInspectorError("Fade out must be a non-negative number of seconds.");
       return;
     }
+
+    // Keyframed volume: clamp to clip duration, require at least two points
+    // (a lone point is indistinguishable from constant gain and is dropped).
+    const isAudioClip = AUDIO_ROLES.has(selectedClip.track.type);
+    const envelopePoints = draft.volume_keyframes
+      ? clampEnvelopePoints(draft.volume_keyframes, duration)
+      : [];
+    const volumeKeyframes = isAudioClip
+      ? envelopePoints.length >= 2
+        ? envelopePoints
+        : null
+      : undefined;
 
     // Subtitle styling is only meaningful on subtitle-track clips.
     const isSubtitleClip = selectedClip.track.type === "subtitle";
@@ -929,6 +1213,7 @@ export function GlobalTimelinePanel({
         source_duration: sourceDuration,
         fade_in: AUDIO_ROLES.has(selectedClip.track.type) ? fadeIn : undefined,
         fade_out: AUDIO_ROLES.has(selectedClip.track.type) ? fadeOut : undefined,
+        volume_keyframes: volumeKeyframes,
         transition_in_type: isVideoClip ? transitionIn?.type ?? null : undefined,
         transition_in_duration: isVideoClip
           ? transitionIn?.duration ?? null
@@ -2370,6 +2655,25 @@ function SelectedClipInspector({
                 style={numberInputStyle}
               />
             </label>
+            <div
+              style={{
+                flexBasis: "100%",
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+              }}
+            >
+              <span style={{ fontSize: 10, color: "#999" }}>
+                Volume envelope — click to add, drag to move, double-click to
+                remove
+              </span>
+              <VolumeEnvelopeEditor
+                points={draft.volume_keyframes}
+                durationSeconds={Number(draft.duration)}
+                disabled={disabled}
+                onChange={(points) => onChange({ volume_keyframes: points })}
+              />
+            </div>
           </>
         )}
         {isVideo && (

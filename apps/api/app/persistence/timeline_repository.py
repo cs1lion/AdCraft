@@ -28,6 +28,7 @@ from app.schemas.timeline import (
     TimelineSubtitleStyleV1,
     TimelineTrackV1,
     TimelineV1,
+    TimelineVolumeKeyframeV1,
 )
 
 
@@ -74,6 +75,32 @@ def _parse_subtitle_style(raw: str | None) -> TimelineSubtitleStyleV1 | None:
     except (ValueError, TypeError):
         logger.warning("Corrupt subtitle style blob, ignoring style: %s", raw)
         return None
+
+
+def _dump_volume_keyframes(
+    keyframes: Sequence[TimelineVolumeKeyframeV1] | None,
+) -> str | None:
+    if not keyframes:
+        return None
+    return json.dumps(
+        [
+            {"time_seconds": point.time_seconds, "value": point.value}
+            for point in keyframes
+        ]
+    )
+
+
+def _parse_volume_keyframes(raw: str | None) -> tuple[TimelineVolumeKeyframeV1, ...]:
+    """Deserialize a stored envelope blob; fail open to a flat clip."""
+    if not raw:
+        return ()
+    try:
+        payload = json.loads(raw)
+        points = tuple(TimelineVolumeKeyframeV1.model_validate(item) for item in payload)
+        return tuple(sorted(points, key=lambda point: point.time_seconds))
+    except (ValueError, TypeError):
+        logger.warning("Corrupt volume keyframe blob, ignoring envelope: %s", raw)
+        return ()
 
 
 # Default track definitions for a new timeline
@@ -194,6 +221,7 @@ class TimelineRepository:
         source_duration: float | None = None,
         fade_in: float | None = None,
         fade_out: float | None = None,
+        volume_keyframes: Sequence[TimelineVolumeKeyframeV1] | None = None,
         label: str | None = None,
         color: str | None = None,
         subtitle_text: str | None = None,
@@ -212,6 +240,7 @@ class TimelineRepository:
             source_duration=source_duration,
             fade_in=fade_in,
             fade_out=fade_out,
+            volume_keyframes_json=_dump_volume_keyframes(volume_keyframes),
             label=label,
             color=color,
             subtitle_text=subtitle_text,
@@ -432,6 +461,7 @@ class TimelineRepository:
         source_duration: float | None | object = _UNSET,
         fade_in: float | None | object = _UNSET,
         fade_out: float | None | object = _UNSET,
+        volume_keyframes: Sequence[TimelineVolumeKeyframeV1] | None | object = _UNSET,
         transition_in_type: str | None | object = _UNSET,
         transition_in_duration: float | None | object = _UNSET,
         transition_out_type: str | None | object = _UNSET,
@@ -462,6 +492,8 @@ class TimelineRepository:
             row.fade_in = fade_in
         if fade_out is not _UNSET:
             row.fade_out = fade_out
+        if volume_keyframes is not _UNSET:
+            row.volume_keyframes_json = _dump_volume_keyframes(volume_keyframes)
         if transition_in_type is not _UNSET:
             row.transition_in_type = transition_in_type
         if transition_in_duration is not _UNSET:
@@ -616,6 +648,7 @@ class TimelineRepository:
             source_duration=row.source_duration,
             fade_in=row.fade_in,
             fade_out=row.fade_out,
+            volume_keyframes=_parse_volume_keyframes(row.volume_keyframes_json),
             transition_in_type=row.transition_in_type,
             transition_in_duration=row.transition_in_duration,
             transition_out_type=row.transition_out_type,

@@ -15,6 +15,7 @@ from app.schemas.agent_canvas_editing import (
     EditingBgmEntryV2,
     EditingOutputSettingsV2,
     EditingVideoEntryV2,
+    EditingVolumeKeyframeV2,
 )
 from app.services.agent_canvas_editing import ResolvedEditingInputs, ResolvedEditingMedia
 from app.services.agent_canvas_editing_timeline import TIMELINE_EPSILON
@@ -34,6 +35,11 @@ Probe = Callable[[Path, str], V2MediaProbeResult]
 
 # Observable degradation markers surfaced on EditingRenderResult and export events.
 DEGRADATION_DUCKING_UNAVAILABLE = "audio_ducking_unavailable"
+
+# Volume envelopes are rendered as constant-gain piece segments (see
+# ``_volume_envelope_plan``): 20 Hz pieces by default, bounded for argv size.
+_ENVELOPE_STEP_SECONDS = 0.05
+_ENVELOPE_MAX_SEGMENTS = 200
 DEGRADATION_SUBTITLE_BURN_UNAVAILABLE = "subtitle_burn_in_unavailable"
 
 
@@ -396,16 +402,15 @@ class AgentCanvasCompositionRenderer:
             entry = _audio_entry(media)
             input_index = video_count + index
             label = f"[ad{index}]"
-            filters.append(
-                f"[{input_index}:a:0]"
-                + ",".join(
-                    _timeline_audio_chain(
-                        entry,
-                        start_seconds=entry.timeline_start_seconds,
-                        timeline_duration=timeline_duration,
-                    )
+            filters.extend(
+                _timeline_audio_chain(
+                    entry,
+                    start_seconds=entry.timeline_start_seconds,
+                    timeline_duration=timeline_duration,
+                    input_index=input_index,
+                    tag=f"ad{index}",
+                    output_label=label,
                 )
-                + label
             )
             if entry.role == "voice":
                 voice_labels.append(label)
@@ -417,16 +422,15 @@ class AgentCanvasCompositionRenderer:
         if inputs.bgm is not None:
             bgm_entry = _bgm_entry(inputs.bgm)
             bgm_input_index = video_count + len(inputs.audios)
-            filters.append(
-                f"[{bgm_input_index}:a:0]"
-                + ",".join(
-                    _timeline_audio_chain(
-                        bgm_entry,
-                        start_seconds=0.0,
-                        timeline_duration=timeline_duration,
-                    )
+            filters.extend(
+                _timeline_audio_chain(
+                    bgm_entry,
+                    start_seconds=0.0,
+                    timeline_duration=timeline_duration,
+                    input_index=bgm_input_index,
+                    tag="bgmleg",
+                    output_label="[bgmlegacy]",
                 )
-                + "[bgmlegacy]"
             )
             bgm_labels.append("[bgmlegacy]")
 
@@ -560,37 +564,167 @@ def _audio_entry(media: ResolvedEditingMedia) -> EditingAudioEntryV2:
     return EditingAudioEntryV2(asset_id=media.asset.asset_id, role="voice")
 
 
+def _volume_envelope_plan(
+    keyframes: Sequence[EditingVolumeKeyframeV2],
+    *,
+    clip_duration: float,
+    fade_in_seconds: float = 0.0,
+    fade_out_seconds: float = 0.0,
+) -> tuple[tuple[float, float, float], ...] | None:
+    """Plan gain automation as ``(start, end, gain)`` pieces tiling the clip.
+
+    Combines the keyframed envelope (piecewise linear with head/tail holds)
+    with fade in/out ramps. The combined curve is quantised to fixed-width
+    constant-gain pieces rendered with ``atrim``/``volume`` segments and
+    concatenated — sample-accurate across ffmpeg builds whose expression
+    evaluation and ``afade`` timestamps disagree with the link timebase.
+    Returns None when nothing automates gain (a flat clip keeps its constant
+    base volume).
+    """
+    if clip_duration <= 0.0:
+        return None
+
+    ordered = sorted(keyframes, key=lambda point: point.time_seconds)
+    times = [point.time_seconds for point in ordered]
+    values = [point.value for point in ordered]
+
+    def envelope_gain(time_seconds: float) -> float:
+        if len(ordered) < 2:
+            return 1.0
+        if time_seconds <= times[0]:
+            return values[0]
+        if time_seconds >= times[-1]:
+            return values[-1]
+        for index in range(len(times) - 1):
+            t0, t1 = times[index], times[index + 1]
+            if t0 <= time_seconds <= t1:
+                ratio = (time_seconds - t0) / (t1 - t0) if t1 > t0 else 0.0
+                return values[index] + (values[index + 1] - values[index]) * ratio
+        return values[-1]
+
+    fade_in = max(0.0, fade_in_seconds)
+    fade_out = max(0.0, fade_out_seconds)
+    fade_out_start = clip_duration - fade_out
+
+    def fade_gain(time_seconds: float) -> float:
+        gain = 1.0
+        if fade_in > 0.0:
+            gain *= min(1.0, time_seconds / fade_in)
+        if fade_out > 0.0 and time_seconds >= fade_out_start:
+            gain *= max(0.0, (clip_duration - time_seconds) / fade_out)
+        return gain
+
+    if len(ordered) < 2 and fade_in == 0.0 and fade_out == 0.0:
+        return None
+
+    def gain_at(time_seconds: float) -> float:
+        return envelope_gain(time_seconds) * fade_gain(time_seconds)
+
+    # A fully constant envelope (no fades) stays on the linear chain.
+    if fade_in == 0.0 and fade_out == 0.0 and len(ordered) >= 2:
+        if all(abs(value - values[0]) <= 1e-9 for value in values):
+            return ((0.0, clip_duration, values[0]),)
+
+    step_seconds = max(
+        _ENVELOPE_STEP_SECONDS, clip_duration / _ENVELOPE_MAX_SEGMENTS
+    )
+    segment_count = max(1, round(clip_duration / step_seconds))
+    pieces: list[tuple[float, float, float]] = []
+    for index in range(segment_count):
+        start = clip_duration * index / segment_count
+        end = clip_duration * (index + 1) / segment_count
+        midpoint = (start + end) / 2.0
+        pieces.append((start, end, gain_at(midpoint)))
+    return tuple(pieces)
+
+
 def _timeline_audio_chain(
     entry: EditingAudioEntryV2 | EditingBgmEntryV2,
     *,
     start_seconds: float,
     timeline_duration: float,
+    input_index: int,
+    tag: str,
+    output_label: str,
 ) -> list[str]:
     """Trim/level/fade one audio source, place it, and pad to timeline length."""
 
-    chain = [_trim_filter(entry.trim_start_seconds, entry.trim_end_seconds, audio=True)]
-    chain.append(f"volume={entry.volume:.6f}")
     if entry.trim_end_seconds is not None:
         clip_duration = entry.trim_end_seconds - entry.trim_start_seconds
     else:
         # Looped legacy BGM is expected to cover the rest of the timeline.
         clip_duration = max(timeline_duration - entry.trim_start_seconds, 0.0)
-    if entry.fade_in_seconds > 0:
-        chain.append(f"afade=t=in:st=0:d={entry.fade_in_seconds:.6f}")
-    if entry.fade_out_seconds > 0 and clip_duration > 0:
-        fade_start = max(clip_duration - entry.fade_out_seconds, 0.0)
-        chain.append(f"afade=t=out:st={fade_start:.6f}:d={entry.fade_out_seconds:.6f}")
-    chain.extend(
-        (
-            "aresample=48000",
-            "aformat=sample_fmts=fltp:channel_layouts=stereo",
-            f"adelay={max(0, round(start_seconds * 1000))}:all=1",
-            f"apad=whole_dur={timeline_duration:.6f}",
-            f"atrim=duration={timeline_duration:.6f}",
-            "asetpts=PTS-STARTPTS",
-        )
+
+    keyframes = getattr(entry, "volume_keyframes", ())
+    plan = _volume_envelope_plan(
+        keyframes,
+        clip_duration=clip_duration,
+        fade_in_seconds=entry.fade_in_seconds,
+        fade_out_seconds=entry.fade_out_seconds,
     )
-    return chain
+
+    prefix = [_trim_filter(entry.trim_start_seconds, entry.trim_end_seconds, audio=True)]
+    if plan is not None:
+        # Segment atrims are clip-relative, so reset PTS after the source trim.
+        prefix.append("asetpts=PTS-STARTPTS")
+    prefix.append(f"volume={entry.volume:.6f}")
+    # Fade in/out ride the same piecewise envelope as keyframes: the afade
+    # filter's timestamp progression is unreliable on some ffmpeg builds.
+
+    normalize = [
+        "aresample=48000",
+        "aformat=sample_fmts=fltp:channel_layouts=stereo",
+    ]
+    positioning = [
+        f"adelay={max(0, round(start_seconds * 1000))}:all=1",
+        f"apad=whole_dur={timeline_duration:.6f}",
+        f"atrim=duration={timeline_duration:.6f}",
+        "asetpts=PTS-STARTPTS",
+    ]
+
+    if plan is None:
+        return [
+            f"[{input_index}:a:0]"
+            + ",".join(prefix + normalize + positioning)
+            + output_label
+        ]
+
+    # A single whole-clip piece is a constant gain: keep the linear chain.
+    if len(plan) == 1:
+        prefix.append(f"volume={plan[0][2]:.6f}")
+        return [
+            f"[{input_index}:a:0]"
+            + ",".join(prefix + normalize + positioning)
+            + output_label
+        ]
+
+    # Uniform sample format/rate BEFORE the split: concat corrupts gain when
+    # its inputs negotiate different sample formats independently.
+    prefix.extend(normalize)
+    statements: list[str] = []
+    statements.append(
+        f"[{input_index}:a:0]" + ",".join(prefix) + f"[{tag}envpre]"
+    )
+    split_labels = [f"[{tag}env{index}]" for index in range(len(plan))]
+    statements.append(f"[{tag}envpre]asplit={len(plan)}" + "".join(split_labels))
+    piece_labels: list[str] = []
+    for index, (start, end, gain) in enumerate(plan):
+        piece_label = f"[{tag}seg{index}]"
+        piece_labels.append(piece_label)
+        statements.append(
+            f"{split_labels[index]}atrim=start={start:.6f}:end={end:.6f},"
+            # Reset PTS before applying volume: a non-zero starting PTS makes
+            # the volume filter ramp in from its previous level on this build.
+            f"asetpts=PTS-STARTPTS,volume={gain:.6f}{piece_label}"
+        )
+    statements.append(
+        "".join(piece_labels)
+        + f"concat=n={len(plan)}:v=0:a=1[{tag}envmix]"
+    )
+    statements.append(
+        f"[{tag}envmix]" + ",".join(positioning) + output_label
+    )
+    return statements
 
 
 def _mix_bus(filters: list[str], labels: list[str], name: str) -> str | None:

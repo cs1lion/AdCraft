@@ -25,6 +25,7 @@ from app.persistence.timeline_repository import TimelineRepository
 from app.schemas.timeline import (
     TimelineDuckingConfigV1,
     TimelineSubtitleStyleV1,
+    TimelineVolumeKeyframeV1,
 )
 from app.services.timeline_clip_auto_creator import (
     AutoClipContext,
@@ -381,6 +382,51 @@ class TestTimelineRepository:
             reloaded = TimelineRepository(session).get_clip(clip.clip_id)
         assert reloaded.subtitle_text is None
         assert reloaded.subtitle_style is None
+
+    def test_volume_envelope_round_trips_replaces_and_clears(
+        self, database: V2Database
+    ) -> None:
+        _seed_workflow(database)
+        envelope = (
+            TimelineVolumeKeyframeV1(time_seconds=2.0, value=0.0),
+            TimelineVolumeKeyframeV1(time_seconds=0.0, value=1.0),
+            TimelineVolumeKeyframeV1(time_seconds=1.0, value=0.2),
+        )
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            voice_track = next(t for t in timeline.tracks if t.type == "voice")
+
+            clip = repo.add_clip(
+                track_id=voice_track.track_id,
+                start_time=0.0,
+                duration=3.0,
+                volume_keyframes=envelope,
+            )
+            # Stored sorted by time even when supplied out of order.
+            assert [point.time_seconds for point in clip.volume_keyframes] == [
+                0.0,
+                1.0,
+                2.0,
+            ]
+            assert clip.volume_keyframes[1].value == pytest.approx(0.2)
+
+            replaced = repo.update_clip(
+                clip.clip_id,
+                volume_keyframes=(
+                    TimelineVolumeKeyframeV1(time_seconds=0.0, value=1.0),
+                    TimelineVolumeKeyframeV1(time_seconds=0.5, value=0.5),
+                ),
+            )
+            assert len(replaced.volume_keyframes) == 2
+
+            cleared = repo.update_clip(clip.clip_id, volume_keyframes=None)
+            assert cleared.volume_keyframes == ()
+            session.commit()
+
+        with database.session_factory() as session:
+            reloaded = TimelineRepository(session).get_clip(clip.clip_id)
+        assert reloaded.volume_keyframes == ()
 
     def test_timeline_subtitle_burn_in_defaults_and_updates(
         self, database: V2Database
@@ -1271,3 +1317,54 @@ class TestSubtitleClipSync:
         result = creator.create_clip_for_node(_subtitle_context())
         assert result == ""
         assert _subtitle_clips(database) == []
+
+
+class TestVolumeKeyframeSchema:
+    @staticmethod
+    def _clip_kwargs() -> dict:
+        return {
+            "clip_id": "c1",
+            "track_id": "track-voice",
+            "start_time": 0.0,
+            "duration": 2.0,
+            "created_at": "2026-09-18T00:00:00+00:00",
+            "updated_at": "2026-09-18T00:00:00+00:00",
+        }
+
+    def test_points_are_sorted_on_validation(self) -> None:
+        from app.schemas.timeline import TimelineClipV1
+
+        clip = TimelineClipV1(
+            **self._clip_kwargs(),
+            volume_keyframes=[
+                {"time_seconds": 1.0, "value": 0.0},
+                {"time_seconds": 0.0, "value": 1.0},
+            ],
+        )
+        assert [point.time_seconds for point in clip.volume_keyframes] == [0.0, 1.0]
+
+    def test_duplicate_times_are_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        from app.schemas.timeline import TimelineClipUpdateV1
+
+        with pytest.raises(ValidationError):
+            TimelineClipUpdateV1(
+                volume_keyframes=[
+                    {"time_seconds": 0.5, "value": 1.0},
+                    {"time_seconds": 0.5, "value": 0.0},
+                ]
+            )
+
+    def test_values_outside_unit_range_are_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        from app.schemas.timeline import TimelineClipUpdateV1
+
+        with pytest.raises(ValidationError):
+            TimelineClipUpdateV1(
+                volume_keyframes=[
+                    {"time_seconds": 0.0, "value": 1.0},
+                    {"time_seconds": 1.0, "value": 1.5},
+                ]
+            )

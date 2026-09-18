@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import math
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 
 TimelineTrackTypeV1 = Literal["video", "voice", "bgm", "sfx", "camera", "subtitle"]
@@ -12,6 +13,55 @@ TimelineTransitionTypeV1 = Literal["fade", "dissolve", "wipe", "slide"]
 TimelineSubtitlePositionV1 = Literal["bottom", "middle", "top"]
 
 _SUBTITLE_COLOR_PATTERN = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+
+# A clip envelope may carry at most this many automation points.
+_MAX_VOLUME_KEYFRAMES = 64
+
+
+class TimelineVolumeKeyframeV1(BaseModel):
+    """One point of a clip-relative volume automation envelope.
+
+    ``time_seconds`` is measured from the start of the clip (not the source
+    in-point); ``value`` is a linear gain of 0–1.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    time_seconds: float = Field(ge=0.0)
+    value: float = Field(ge=0.0, le=1.0)
+
+
+def _normalize_volume_keyframes(
+    points: tuple[TimelineVolumeKeyframeV1, ...] | None,
+) -> tuple[TimelineVolumeKeyframeV1, ...] | None:
+    """Sort envelope points by time and reject duplicates/non-finite input."""
+    if points is None:
+        return None
+    for point in points:
+        if not math.isfinite(point.time_seconds) or not math.isfinite(point.value):
+            raise ValueError("Volume keyframes must use finite numbers.")
+    ordered = tuple(sorted(points, key=lambda point: point.time_seconds))
+    previous_time: float | None = None
+    for point in ordered:
+        if previous_time is not None and abs(point.time_seconds - previous_time) < 1e-6:
+            raise ValueError("Volume keyframe times must be unique.")
+        previous_time = point.time_seconds
+    if len(ordered) > _MAX_VOLUME_KEYFRAMES:
+        raise ValueError(f"A volume envelope supports at most {_MAX_VOLUME_KEYFRAMES} points.")
+    return ordered
+
+
+# Explicit-null capable: None on PATCH clears the stored envelope.
+VolumeKeyframesField = Annotated[
+    tuple[TimelineVolumeKeyframeV1, ...] | None,
+    AfterValidator(_normalize_volume_keyframes),
+]
+
+# Stored/hydrated clips always carry a (possibly empty) sorted tuple.
+StoredVolumeKeyframesField = Annotated[
+    tuple[TimelineVolumeKeyframeV1, ...],
+    AfterValidator(_normalize_volume_keyframes),
+]
 
 
 class TimelineDuckingConfigV1(BaseModel):
@@ -88,6 +138,8 @@ class TimelineClipV1(BaseModel):
     # Audio fades
     fade_in: float | None = Field(default=None, ge=0.0)
     fade_out: float | None = Field(default=None, ge=0.0)
+    # Clip-relative volume automation envelope (audio clips); empty = flat.
+    volume_keyframes: StoredVolumeKeyframesField = Field(default_factory=tuple)
     # Video transitions
     transition_in_type: TimelineTransitionTypeV1 | None = None
     transition_in_duration: float | None = Field(default=None, ge=0.0)
@@ -142,6 +194,7 @@ class TimelineClipCreateV1(BaseModel):
     source_duration: float | None = Field(default=None, gt=0.0)
     fade_in: float | None = None
     fade_out: float | None = None
+    volume_keyframes: VolumeKeyframesField = None
     transition_in_type: TimelineTransitionTypeV1 | None = None
     transition_in_duration: float | None = None
     transition_out_type: TimelineTransitionTypeV1 | None = None
@@ -168,6 +221,7 @@ class TimelineClipUpdateV1(BaseModel):
     source_duration: float | None = Field(default=None, gt=0.0)
     fade_in: float | None = None
     fade_out: float | None = None
+    volume_keyframes: VolumeKeyframesField = None
     transition_in_type: TimelineTransitionTypeV1 | None = None
     transition_in_duration: float | None = None
     transition_out_type: TimelineTransitionTypeV1 | None = None

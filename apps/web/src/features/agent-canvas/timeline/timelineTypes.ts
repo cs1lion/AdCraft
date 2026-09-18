@@ -56,6 +56,17 @@ export interface TimelineAudioDegradationEventV1 {
 
 export type TimelineSubtitlePositionV1 = "bottom" | "middle" | "top";
 
+/**
+ * One keyframe of a clip-relative volume envelope. `time_seconds` is measured
+ * from the start of the clip; `value` is linear gain (0 = silence, 1 = unity).
+ * The renderer linearly interpolates between keyframes; fewer than two
+ * keyframes means a constant-gain clip.
+ */
+export interface TimelineVolumeKeyframeV1 {
+  time_seconds: number;
+  value: number;
+}
+
 /** Per-cue subtitle styling; all fields optional (empty object = default). */
 export interface TimelineSubtitleStyleV1 {
   font_family?: string | null;
@@ -88,6 +99,8 @@ export interface TimelineClipV1 {
   color: string | null;
   subtitle_text: string | null;
   subtitle_style: TimelineSubtitleStyleV1 | null;
+  /** Stored only on audio clips; empty/null = constant clip gain. */
+  volume_keyframes?: TimelineVolumeKeyframeV1[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -135,6 +148,7 @@ export interface TimelineClipCreateV1 {
   color?: string | null;
   subtitle_text?: string | null;
   subtitle_style?: TimelineSubtitleStyleV1 | null;
+  volume_keyframes?: TimelineVolumeKeyframeV1[] | null;
 }
 
 export interface TimelineClipUpdateV1 {
@@ -155,6 +169,8 @@ export interface TimelineClipUpdateV1 {
   color?: string | null;
   subtitle_text?: string | null;
   subtitle_style?: TimelineSubtitleStyleV1 | null;
+  /** Explicit null clears a stored envelope. */
+  volume_keyframes?: TimelineVolumeKeyframeV1[] | null;
 }
 
 export interface TimelineClipMoveV1 {

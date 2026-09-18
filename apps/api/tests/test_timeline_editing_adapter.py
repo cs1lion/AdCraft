@@ -11,6 +11,7 @@ from app.schemas.timeline import (
     TimelineSubtitleStyleV1,
     TimelineTrackV1,
     TimelineV1,
+    TimelineVolumeKeyframeV1,
 )
 from app.services.timeline_editing_adapter import TimelineEditingAdapter
 
@@ -34,6 +35,7 @@ def _clip(
     transition_out_duration: float | None = None,
     subtitle_text: str | None = None,
     subtitle_style: TimelineSubtitleStyleV1 | None = None,
+    volume_keyframes: tuple[TimelineVolumeKeyframeV1, ...] = (),
 ) -> TimelineClipV1:
     return TimelineClipV1(
         clip_id=clip_id,
@@ -51,6 +53,7 @@ def _clip(
         transition_out_duration=transition_out_duration,
         subtitle_text=subtitle_text,
         subtitle_style=subtitle_style,
+        volume_keyframes=volume_keyframes,
         created_at=_TS,
         updated_at=_TS,
     )
@@ -199,6 +202,61 @@ class TestAudioEntries:
         assert sfx.volume == 0.4
         assert sfx.fade_in_seconds == 0.1
         assert sfx.fade_out_seconds == 0.2
+
+    def test_volume_envelope_maps_onto_audio_entry(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _timeline(
+                _track("video", (_clip("c-v", track_id="track-video", asset_id="v1", start_time=0, duration=3),)),
+                _track(
+                    "voice",
+                    (
+                        _clip(
+                            "c-voice",
+                            track_id="track-voice",
+                            asset_id="av",
+                            start_time=0.0,
+                            duration=3.0,
+                            volume_keyframes=(
+                                TimelineVolumeKeyframeV1(time_seconds=2.0, value=0.1),
+                                TimelineVolumeKeyframeV1(time_seconds=0.0, value=1.0),
+                                TimelineVolumeKeyframeV1(time_seconds=1.0, value=0.1),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        voice = result.manifest.audio_entries[0]
+        assert [(point.time_seconds, point.value) for point in voice.volume_keyframes] == [
+            (0.0, 1.0),
+            (1.0, 0.1),
+            (2.0, 0.1),
+        ]
+
+    def test_single_envelope_point_is_treated_as_flat(self) -> None:
+        result = TimelineEditingAdapter().convert(
+            _timeline(
+                _track("video", (_clip("c-v", track_id="track-video", asset_id="v1", start_time=0, duration=2),)),
+                _track(
+                    "sfx",
+                    (
+                        _clip(
+                            "c-sfx",
+                            track_id="track-sfx",
+                            asset_id="sfx1",
+                            start_time=0.0,
+                            duration=2.0,
+                            volume_keyframes=(
+                                TimelineVolumeKeyframeV1(time_seconds=0.5, value=0.2),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        assert result.manifest.audio_entries[0].volume_keyframes == ()
 
     def test_muted_track_clips_skipped_with_warning(self) -> None:
         result = TimelineEditingAdapter().convert(
