@@ -8,6 +8,7 @@ import {
   EDGE_SNAP_PX_THRESHOLD,
   findClipOverlap,
   intervalsOverlap,
+  resizeLeftBounds,
   snapGridSeconds,
   snapToTimeGrid,
   withClipRelocated,
@@ -341,5 +342,27 @@ describe("applyEdgeSnap quantization", () => {
     });
     expect(result.startTime).toBe(2.5);
     expect(result.guide).toBe(2.5);
+  });
+});
+
+describe("resizeLeftBounds", () => {
+  it("uses source in-point headroom as the earliest trim-in position", () => {
+    // Clip starts at 5s using source from 2s: 2s of headroom to reveal.
+    const bounds = resizeLeftBounds(5, 3, 2, 30);
+    expect(bounds.minStartTime).toBe(3);
+    expect(bounds.maxStartTime).toBeCloseTo(8 - 1 / 30, 10);
+  });
+
+  it("never lets the left edge move earlier than timeline zero", () => {
+    // Clip starts at 1s but already uses source from 3s: mathematically the
+    // edge could go to -2s; the timeline floor pins it at 0.
+    const bounds = resizeLeftBounds(1, 2, 3, 30);
+    expect(bounds.minStartTime).toBe(0);
+  });
+
+  it("treats missing/zero source in-points as shrink-only (no earlier media)", () => {
+    expect(resizeLeftBounds(4, 2, 0, 30).minStartTime).toBe(4);
+    expect(resizeLeftBounds(4, 2, null, 30).minStartTime).toBe(4);
+    expect(resizeLeftBounds(4, 2, undefined, 30).minStartTime).toBe(4);
   });
 });

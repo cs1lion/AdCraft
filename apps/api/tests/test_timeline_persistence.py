@@ -333,6 +333,45 @@ class TestTimelineRepository:
         assert reloaded.label == "New label"
         assert reloaded.fade_out == pytest.approx(0.3)
 
+    def test_update_clip_edge_trim_moves_source_window_with_edge(
+        self, database: V2Database
+    ) -> None:
+        # Mirrors the panel's left-edge trim PATCH: timeline start and the
+        # source in-point slide together while the used window length is
+        # pinned to the new clip duration.
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            voice_track = next(t for t in timeline.tracks if t.type == "voice")
+            clip = repo.add_clip(
+                track_id=voice_track.track_id,
+                start_time=5.0,
+                duration=2.0,
+                source_start=2.0,
+                source_duration=2.0,
+            )
+
+            trimmed = repo.update_clip(
+                clip.clip_id,
+                start_time=3.0,
+                duration=4.0,
+                source_start=0.0,
+                source_duration=4.0,
+            )
+            assert trimmed.start_time == pytest.approx(3.0)
+            assert trimmed.duration == pytest.approx(4.0)
+            assert trimmed.source_start == pytest.approx(0.0)
+            assert trimmed.source_duration == pytest.approx(4.0)
+            session.commit()
+
+        with database.session_factory() as session:
+            reloaded = TimelineRepository(session).get_clip(clip.clip_id)
+        assert reloaded.start_time == pytest.approx(3.0)
+        assert reloaded.duration == pytest.approx(4.0)
+        assert reloaded.source_start == pytest.approx(0.0)
+        assert reloaded.source_duration == pytest.approx(4.0)
+
     def test_subtitle_clip_text_and_style_round_trip_and_clear(
         self, database: V2Database
     ) -> None:

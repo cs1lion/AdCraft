@@ -47,6 +47,7 @@ import {
   collectSnapCandidates,
   EDGE_SNAP_PX_THRESHOLD,
   findClipOverlap,
+  resizeLeftBounds,
   snapGridSeconds,
   SNAP_GRID_PRESETS,
   snapToTimeGrid,
@@ -156,6 +157,8 @@ interface DragInteractionState {
   pointerStartY: number;
   origStartTime: number;
   origDuration: number;
+  /** Clip's source in-point at drag start; trim-in drags move it with the edge. */
+  origSourceStart: number;
   sourceTrackId: string;
   sourceTrackType: TimelineTrackTypeV1;
   /** Last legal row the pointer crossed (resize modes stay on the source). */
@@ -816,6 +819,7 @@ export function GlobalTimelinePanel({
       pointerStartY: e.clientY,
       origStartTime: clip.start_time,
       origDuration: clip.duration,
+      origSourceStart: clip.source_start ?? 0,
       sourceTrackId: track.track_id,
       sourceTrackType: track.type,
       targetTrackId: track.track_id,
@@ -881,19 +885,35 @@ export function GlobalTimelinePanel({
     // Raw grid-snapped geometry (same bounds as single-track dragging).
     let nextStart = interaction.origStartTime;
     let nextDuration = interaction.origDuration;
+    const leftBounds =
+      interaction.mode === "resize-left"
+        ? resizeLeftBounds(
+            interaction.origStartTime,
+            interaction.origDuration,
+            interaction.origSourceStart,
+            fps,
+          )
+        : null;
 
     if (interaction.mode === "move") {
       nextStart = snapToGrid(interaction.origStartTime + delta);
     } else if (interaction.mode === "resize-left") {
       const bounded = Math.min(
-        interaction.origStartTime + delta,
-        interaction.origStartTime + interaction.origDuration - frame,
+        Math.max(
+          interaction.origStartTime + delta,
+          leftBounds!.minStartTime,
+        ),
+        leftBounds!.maxStartTime,
       );
-      nextStart = snapToGrid(bounded);
+      // Grid rounding can cross a bound by half a frame; re-clamp so the
+      // source in-point can never be pushed below zero.
+      nextStart = Math.min(
+        Math.max(snapToGrid(bounded), leftBounds!.minStartTime),
+        leftBounds!.maxStartTime,
+      );
       nextDuration = Math.max(
         frame,
-        interaction.origDuration -
-          (nextStart - interaction.origStartTime),
+        interaction.origStartTime + interaction.origDuration - nextStart,
       );
     } else {
       nextDuration = Math.max(
@@ -920,8 +940,22 @@ export function GlobalTimelinePanel({
           ? interaction.origStartTime + interaction.origDuration - frame
           : undefined,
     });
+    let snappedGuide: number | null = snapped.guide;
     nextStart = snapped.startTime;
     if (interaction.mode === "resize-left") {
+      // A snap candidate below the source-headroom bound would reveal media
+      // that does not exist; keep the bounded grid result instead.
+      if (
+        leftBounds !== null &&
+        (nextStart < leftBounds.minStartTime - 1e-9 ||
+          nextStart > leftBounds.maxStartTime + 1e-9)
+      ) {
+        nextStart = Math.min(
+          Math.max(nextStart, leftBounds.minStartTime),
+          leftBounds.maxStartTime,
+        );
+        snappedGuide = null;
+      }
       nextDuration = Math.max(
         frame,
         interaction.origStartTime + interaction.origDuration - nextStart,
@@ -963,7 +997,7 @@ export function GlobalTimelinePanel({
       hoverTrackId,
       dropValid,
       targetTrackId,
-      snapGuide: snapped.guide,
+      snapGuide: snappedGuide,
     });
   };
 
@@ -997,9 +1031,28 @@ export function GlobalTimelinePanel({
           start_time: draggedClip.start_time,
         });
       } else {
+        // Edge trims must move the source window with the clip edge so the
+        // renderer keeps showing the same media: trim-in slides source_start
+        // with the left edge; both trims pin the used source window length
+        // to the new clip duration. A plain move leaves source fields alone.
+        const trimPatch =
+          interaction.mode === "resize-left"
+            ? {
+                source_start:
+                  Math.round(
+                    (interaction.origSourceStart +
+                      (draggedClip.start_time - interaction.origStartTime)) *
+                      1e6,
+                  ) / 1e6,
+                source_duration: draggedClip.duration,
+              }
+            : interaction.mode === "resize-right"
+              ? { source_duration: draggedClip.duration }
+              : {};
         await updateClip(workflowId, interaction.clipId, {
           start_time: draggedClip.start_time,
           duration: draggedClip.duration,
+          ...trimPatch,
         });
       }
     } catch (err) {
@@ -1904,7 +1957,10 @@ export function GlobalTimelinePanel({
           cursor:
             dragInteraction && !dragInteraction.dropValid
               ? "not-allowed"
-              : undefined,
+              : dragInteraction?.mode === "resize-left" ||
+                  dragInteraction?.mode === "resize-right"
+                ? "ew-resize"
+                : undefined,
         }}
         onMouseMove={handleContainerMouseMove}
         onMouseUp={() => void finishClipDrag()}

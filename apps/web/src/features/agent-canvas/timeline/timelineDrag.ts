@@ -68,6 +68,29 @@ export function intervalsOverlap(
 }
 
 /**
+ * Legal start-time interval while dragging a clip's left (trim-in) edge.
+ *
+ * The edge cannot move earlier than the headroom the clip has inside its
+ * source window (no media exists before `source_start = 0`), and it cannot
+ * pass the clip's original right edge (a one-frame clip is the minimum).
+ * Clips without a source in-point behave as if `source_start` were 0, so
+ * their left edge can only shrink, never extend earlier.
+ */
+export function resizeLeftBounds(
+  origStartTime: number,
+  origDuration: number,
+  origSourceStart: number | null | undefined,
+  fps: number,
+): { minStartTime: number; maxStartTime: number } {
+  const frame = 1 / fps;
+  const sourceHeadroom = Math.max(0, origSourceStart ?? 0);
+  return {
+    minStartTime: Math.max(0, origStartTime - sourceHeadroom),
+    maxStartTime: origStartTime + origDuration - frame,
+  };
+}
+
+/**
  * Return the first clip on the target track overlapped by the dragged
  * interval, or null. The dragged clip itself must be filtered out by the
  * caller. Touching edges are allowed (back-to-back placement).

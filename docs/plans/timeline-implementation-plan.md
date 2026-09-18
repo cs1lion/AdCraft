@@ -1,7 +1,7 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–2 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI); Phase 3 in progress (clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill, and keyframed volume curves/fades — complete; edge-drag trimming remaining)
+**Status**: Phase 1–3 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI; clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill; keyframed volume curves/fades; edge-drag trimming with source-window linkage); Phase 4 next (preview sync, character binding, beat markers)
 **Last Updated**: 2026-09-18
 
 ## Overview
@@ -190,6 +190,13 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [x] Overlap detection and resolution (same-track overlapping drops are
   rejected and trigger a server resync; back-to-back edges are allowed;
   existing overlaps are flagged with a red outline in the panel)
+- [x] Edge-drag trimming (left/right handles on every unlocked clip; trim-in
+  slides `source_start` with the edge so the remaining media stays anchored,
+  and both trims pin the used source window (`source_duration`) to the new
+  clip length; bounded by source headroom — no revealing media before the
+  source — and a one-frame minimum; same grid/edge snapping and overlap
+  rejection as moves; precise numeric trimming stays available in the
+  inspector)
 
 ### 3.6 Multi-Select & Batch Operations
 - [ ] Select multiple clips (Ctrl+click, box select)
@@ -352,7 +359,8 @@ layer. Nodes generate assets; the timeline arranges them in time.
   dissolve/wipe/slide xfade joins and a three-clip mixed chain)
 
 ### Phase 3
-- [ ] Users can trim clips by dragging edges
+- [x] Users can trim clips by dragging edges (left/right handles move the
+  source window with the edge; source-headroom and one-frame bounds)
 - [x] Subtitle track can export SRT (and styled ASS)
 - [x] Volume curves apply correctly during export
 

@@ -955,6 +955,102 @@ describe("GlobalTimelinePanel — cross-track drag & edge snapping", () => {
     // C starts exactly when B ends (3.5s) — touching is not an overlap.
     expect(byId.C?.getAttribute("data-clip-overlap")).toBeNull();
   });
+
+  it("trims the right edge and pins the used source window to the new length", async () => {
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Voice line 1" });
+    const trimEnd = within(clip).getByTitle("Trim end");
+
+    // +40px = +1s: the 2s clip grows to 3s; source_duration must follow so
+    // the renderer reveals another second of media instead of padding.
+    fireEvent.mouseDown(trimEnd, { clientX: 200, clientY: 96 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 240,
+      clientY: 96,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 240,
+      clientY: 96,
+    });
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0]).toEqual([
+      WORKFLOW_ID,
+      "clip_voice_1",
+      { start_time: 0, duration: 3, source_duration: 3 },
+    ]);
+    expect(moveClip).not.toHaveBeenCalled();
+  });
+
+  it("trims the left edge and slides the source in-point along with it", async () => {
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Voice line 1" });
+    const trimStart = within(clip).getByTitle("Trim start");
+
+    // +40px = +1s: the clip becomes 1s long starting at 1s while the right
+    // edge stays put, so the remaining media starts at source 1s (the
+    // visible content must not jump).
+    fireEvent.mouseDown(trimStart, { clientX: 200, clientY: 96 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 240,
+      clientY: 96,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 240,
+      clientY: 96,
+    });
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0]).toEqual([
+      WORKFLOW_ID,
+      "clip_voice_1",
+      { start_time: 1, duration: 1, source_start: 1, source_duration: 1 },
+    ]);
+  });
+
+  it("clamps a left-edge trim so it cannot reveal media before the source head", async () => {
+    const trimTrack = makeTrack({
+      track_id: "track_video",
+      type: "video",
+      name: "Video",
+      display_order: 0,
+      clips: [
+        makeClip({
+          clip_id: "c_trim",
+          track_id: "track_video",
+          label: "Trimmy",
+          start_time: 5,
+          duration: 2,
+          source_start: 2,
+        }),
+      ],
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [trimTrack] }),
+    );
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Trimmy" });
+    const trimStart = within(clip).getByTitle("Trim start");
+
+    // -120px = -3s but only 2s of source headroom exists, so the edge clamps
+    // at 3s: the clip grows to 4s with source in-point reaching exactly 0.
+    fireEvent.mouseDown(trimStart, { clientX: 300, clientY: 48 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 180,
+      clientY: 48,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 180,
+      clientY: 48,
+    });
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0]).toEqual([
+      WORKFLOW_ID,
+      "c_trim",
+      { start_time: 3, duration: 4, source_start: 0, source_duration: 4 },
+    ]);
+  });
 });
 
 describe("GlobalTimelinePanel — live refresh & orphan clips", () => {
