@@ -1131,6 +1131,7 @@ def create_agent_canvas_runtime(
     timeline_clip_auto_creator = TimelineClipAutoCreator(
         repository_factory=_create_timeline_repository,
         enabled=True,
+        asset_path_resolver=asset_service.resolve_asset_path,
     )
 
     # Timeline → Editing integration (ADR 0007, Phase 2)
