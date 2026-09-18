@@ -25,6 +25,7 @@ from app.schemas.agent_canvas_editing import (
     EditingPreviewClipV2,
     EditingPreviewV2,
     EditingSkippedInputV2,
+    EditingSubtitleEntryV2,
     EditingVideoEntryV2,
 )
 from app.services.agent_canvas_editing_timeline import normalize_manifest
@@ -57,6 +58,8 @@ class ResolvedEditingInputs:
     audios: tuple[ResolvedEditingMedia, ...] = ()
     timeline_duration_seconds: float | None = None
     ducking: EditingDuckingConfigV2 | None = None
+    subtitles: tuple[EditingSubtitleEntryV2, ...] = ()
+    subtitle_burn_in: bool = True
 
 
 class EditingNodeService:
@@ -497,6 +500,8 @@ class EditingInputResolver:
             skipped=tuple(skipped),
             timeline_duration_seconds=manifest.timeline_duration_seconds,
             ducking=manifest.ducking,
+            subtitles=manifest.subtitle_entries,
+            subtitle_burn_in=manifest.subtitle_burn_in,
         )
 
     def _resolve_audio_media(

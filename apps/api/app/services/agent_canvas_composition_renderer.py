@@ -18,6 +18,7 @@ from app.schemas.agent_canvas_editing import (
 )
 from app.services.agent_canvas_editing import ResolvedEditingInputs, ResolvedEditingMedia
 from app.services.agent_canvas_editing_timeline import TIMELINE_EPSILON
+from app.services.timeline_subtitle_writer import SubtitleCue, cues_to_ass
 from app.services.v2_final_composition_renderer import (
     V2MediaProbe,
     V2MediaProbeResult,
@@ -33,6 +34,7 @@ Probe = Callable[[Path, str], V2MediaProbeResult]
 
 # Observable degradation markers surfaced on EditingRenderResult and export events.
 DEGRADATION_DUCKING_UNAVAILABLE = "audio_ducking_unavailable"
+DEGRADATION_SUBTITLE_BURN_UNAVAILABLE = "subtitle_burn_in_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +81,8 @@ class AgentCanvasCompositionRenderer:
         timeline_duration = _timeline_duration(inputs, probes)
         if cancelled():
             raise _error("editing_export_cancelled", "Editing Export was cancelled.")
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_ass_path, subtitle_degradations = self._prepare_subtitles(inputs, staging_path)
         command, degradations = self._command(
             inputs,
             probes,
@@ -88,8 +92,9 @@ class AgentCanvasCompositionRenderer:
             encoder=encoder,
             timeline_duration=timeline_duration,
             staging_path=staging_path,
+            subtitle_ass_path=subtitle_ass_path,
         )
-        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        degradations = (*subtitle_degradations, *degradations)
         try:
             completed = self._runner(
                 command,
@@ -192,6 +197,7 @@ class AgentCanvasCompositionRenderer:
         encoder: str,
         timeline_duration: float,
         staging_path: Path,
+        subtitle_ass_path: Path | None = None,
     ) -> tuple[list[str], tuple[str, ...]]:
         command = [self._settings.ffmpeg_path, "-y"]
         for item in inputs.videos:
@@ -334,10 +340,13 @@ class AgentCanvasCompositionRenderer:
             timeline_duration,
         )
         filters.extend(audio_filters)
-        filters.append(
+        video_chain = (
             f"{video_chain_label}tpad=stop_mode=add:stop_duration={timeline_duration:.6f},"
-            f"trim=duration={timeline_duration:.6f},setpts=PTS-STARTPTS[vout]"
+            f"trim=duration={timeline_duration:.6f},setpts=PTS-STARTPTS"
         )
+        if subtitle_ass_path is not None:
+            video_chain += f",{_ass_filter(subtitle_ass_path, settings=self._settings)}"
+        filters.append(video_chain + "[vout]")
         filters.append(
             f"{audio_label}apad=pad_dur={timeline_duration:.6f},"
             f"atrim=duration={timeline_duration:.6f},asetpts=PTS-STARTPTS[aout]"
@@ -495,6 +504,36 @@ class AgentCanvasCompositionRenderer:
 
     def _audio_ducking_supported(self) -> bool:
         return bool(self._capabilities().feature_flags.get("audio_ducking", False))
+
+    def _subtitle_burn_supported(self) -> bool:
+        return bool(self._capabilities().feature_flags.get("subtitle_burn_in", False))
+
+    def _prepare_subtitles(
+        self,
+        inputs: ResolvedEditingInputs,
+        staging_path: Path,
+    ) -> tuple[Path | None, tuple[str, ...]]:
+        """Stage the ASS sidecar when burn-in is requested and renderable.
+
+        Returns the ASS path for the ``ass`` filter plus an observable
+        degradation marker when cues exist but the toolchain cannot burn them.
+        """
+        if not inputs.subtitle_burn_in or not inputs.subtitles:
+            return None, ()
+        if not self._subtitle_burn_supported():
+            return None, (DEGRADATION_SUBTITLE_BURN_UNAVAILABLE,)
+        ass_path = staging_path.parent / "subtitles.ass"
+        cues = tuple(
+            SubtitleCue(
+                text=entry.text,
+                start_seconds=entry.start_seconds,
+                end_seconds=entry.end_seconds,
+                style=entry.style,
+            )
+            for entry in inputs.subtitles
+        )
+        ass_path.write_text(cues_to_ass(cues), encoding="utf-8")
+        return ass_path, ()
 
 
 def _video_entry(media: ResolvedEditingMedia) -> EditingVideoEntryV2:
@@ -741,6 +780,20 @@ def _output_geometry(
 def _safe_ffmpeg_error(value: str) -> str:
     line = next((line.strip() for line in value.splitlines() if line.strip()), "")
     return f"Editing FFmpeg failed: {line[:300]}" if line else "Editing FFmpeg failed."
+
+
+def _escape_filter_path(path: Path) -> str:
+    """Escape a filesystem path for use inside a filtergraph argument."""
+    return path.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:")
+
+
+def _ass_filter(path: Path, *, settings: Settings) -> str:
+    """Build the libass ``ass`` filter, exposing the configured font dir."""
+    result = f"ass={_escape_filter_path(path)}"
+    if settings.final_composition_subtitle_font_path:
+        fonts_dir = Path(settings.final_composition_subtitle_font_path).expanduser().parent
+        result += f":fontsdir={_escape_filter_path(fonts_dir)}"
+    return result
 
 
 def _error(code: str, message: str) -> V2PersistenceError:

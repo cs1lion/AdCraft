@@ -22,6 +22,7 @@ from app.schemas.agent_canvas_editing import (
     EditingAudioTrackRoleV2,
     EditingDuckingConfigV2,
     EditingManifestV2,
+    EditingSubtitleEntryV2,
     EditingVideoEntryV2,
 )
 from app.schemas.timeline import TimelineClipV1, TimelineTrackV1, TimelineV1
@@ -54,6 +55,7 @@ class TimelineEditingConversionResult:
     voice_clip_count: int
     bgm_clip_count: int
     sfx_clip_count: int
+    subtitle_clip_count: int
     total_duration_seconds: float
     warnings: tuple[str, ...]
 
@@ -162,6 +164,29 @@ class TimelineEditingAdapter:
                     makeup_gain_db=configured.makeup_gain_db,
                 )
 
+        # Convert subtitle clips to text-only cues (no asset resolution).
+        subtitle_entries: list[EditingSubtitleEntryV2] = []
+        subtitle_track = tracks_by_type.get("subtitle")
+        if subtitle_track and subtitle_track.clips:
+            if subtitle_track.muted:
+                warnings.append("Subtitle track is muted, skipped")
+            else:
+                for clip in sorted(subtitle_track.clips, key=lambda c: c.start_time):
+                    text = (clip.subtitle_text or "").strip()
+                    if not text:
+                        warnings.append(
+                            f"Subtitle clip {clip.clip_id} has no text, skipped"
+                        )
+                        continue
+                    subtitle_entries.append(
+                        EditingSubtitleEntryV2(
+                            start_seconds=max(clip.start_time, 0.0),
+                            end_seconds=clip.start_time + clip.duration,
+                            text=text,
+                            style=clip.subtitle_style,
+                        )
+                    )
+
         # Calculate total duration
         total_duration = self._calculate_total_duration(timeline)
 
@@ -169,6 +194,8 @@ class TimelineEditingAdapter:
         manifest = EditingManifestV2(
             video_entries=tuple(video_entries),
             audio_entries=tuple(audio_entries),
+            subtitle_entries=tuple(subtitle_entries),
+            subtitle_burn_in=timeline.subtitle_burn_in,
             ducking=ducking,
             timeline_duration_seconds=total_duration if video_entries else None,
         )
@@ -179,6 +206,7 @@ class TimelineEditingAdapter:
             voice_clip_count=role_entry_counts["voice"],
             bgm_clip_count=role_entry_counts["bgm"],
             sfx_clip_count=role_entry_counts["sfx"],
+            subtitle_clip_count=len(subtitle_entries),
             total_duration_seconds=total_duration,
             warnings=tuple(warnings),
         )

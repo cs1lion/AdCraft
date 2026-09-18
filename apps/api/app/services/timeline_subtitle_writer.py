@@ -93,8 +93,24 @@ def clips_to_ass(
     play_res_y: int = ASS_PLAY_RES_Y,
 ) -> str:
     """Render subtitle clips as an ASS v4+ document with one style per cue."""
-    cues = collect_subtitle_cues(clips)
+    return cues_to_ass(
+        collect_subtitle_cues(clips),
+        play_res_x=play_res_x,
+        play_res_y=play_res_y,
+    )
 
+
+def cues_to_ass(
+    cues: Sequence[SubtitleCue],
+    *,
+    play_res_x: int = ASS_PLAY_RES_X,
+    play_res_y: int = ASS_PLAY_RES_Y,
+) -> str:
+    """Render pre-collected cues as an ASS v4+ document.
+
+    Cues are expected to already be filtered and ordered; the export renderer
+    builds them directly from EditingSubtitleEntryV2 instead of timeline clips.
+    """
     styled_indexes = [
         index
         for index, cue in enumerate(cues, start=1)

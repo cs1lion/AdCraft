@@ -8,6 +8,7 @@ from app.schemas.agent_canvas_editing import EditingDuckingConfigV2
 from app.schemas.timeline import (
     TimelineClipV1,
     TimelineDuckingConfigV1,
+    TimelineSubtitleStyleV1,
     TimelineTrackV1,
     TimelineV1,
 )
@@ -31,6 +32,8 @@ def _clip(
     transition_in_duration: float | None = None,
     transition_out_type: str | None = None,
     transition_out_duration: float | None = None,
+    subtitle_text: str | None = None,
+    subtitle_style: TimelineSubtitleStyleV1 | None = None,
 ) -> TimelineClipV1:
     return TimelineClipV1(
         clip_id=clip_id,
@@ -46,6 +49,8 @@ def _clip(
         transition_in_duration=transition_in_duration,
         transition_out_type=transition_out_type,
         transition_out_duration=transition_out_duration,
+        subtitle_text=subtitle_text,
+        subtitle_style=subtitle_style,
         created_at=_TS,
         updated_at=_TS,
     )
@@ -75,12 +80,14 @@ def _timeline(
     *tracks: TimelineTrackV1,
     duration_seconds: float = 3.0,
     ducking: TimelineDuckingConfigV1 | None = None,
+    subtitle_burn_in: bool = True,
 ) -> TimelineV1:
     return TimelineV1(
         timeline_id="timeline-1",
         workflow_id="workflow-1",
         duration_seconds=duration_seconds,
         ducking=ducking,
+        subtitle_burn_in=subtitle_burn_in,
         tracks=tracks,
         created_at=_TS,
         updated_at=_TS,
@@ -537,3 +544,125 @@ class TestVideoTransitions:
         ]
         assert len(slide_warnings) == 2
         assert all("exported as a cut" in warning for warning in slide_warnings)
+
+
+class TestSubtitleEntries:
+    @staticmethod
+    def _video_track() -> TimelineTrackV1:
+        return _track(
+            "video",
+            (_clip("c-v", track_id="track-video", asset_id="v1", start_time=0, duration=4),),
+        )
+
+    def test_subtitle_clips_become_ordered_cues_with_style(self) -> None:
+        style = TimelineSubtitleStyleV1(font_size=40, position="top", primary_color="#ff0000")
+        later = _clip(
+            "c-s2",
+            track_id="track-subtitle",
+            asset_id=None,
+            start_time=2.0,
+            duration=1.5,
+            subtitle_text=" Second line ",
+        )
+        earlier = _clip(
+            "c-s1",
+            track_id="track-subtitle",
+            asset_id=None,
+            start_time=0.5,
+            duration=1.0,
+            subtitle_text="First line",
+            subtitle_style=style,
+        )
+        result = TimelineEditingAdapter().convert(
+            _timeline(
+                self._video_track(),
+                _track("subtitle", (later, earlier)),
+                duration_seconds=4.0,
+            )
+        )
+
+        cues = result.manifest.subtitle_entries
+        assert [cue.text for cue in cues] == ["First line", "Second line"]
+        first, second = cues
+        assert first.start_seconds == 0.5
+        assert first.end_seconds == pytest.approx(1.5)
+        assert first.style == style
+        assert second.start_seconds == 2.0
+        assert second.end_seconds == pytest.approx(3.5)
+        assert second.style is None
+        assert result.subtitle_clip_count == 2
+        assert result.manifest.subtitle_burn_in is True
+
+    def test_muted_subtitle_track_skips_all_clips_with_warning(self) -> None:
+        clip = _clip(
+            "c-s1",
+            track_id="track-subtitle",
+            asset_id=None,
+            start_time=0.0,
+            duration=1.0,
+            subtitle_text="Hidden",
+        )
+        result = TimelineEditingAdapter().convert(
+            _timeline(
+                self._video_track(),
+                _track("subtitle", (clip,), muted=True),
+            )
+        )
+
+        assert result.manifest.subtitle_entries == ()
+        assert result.subtitle_clip_count == 0
+        assert any("muted" in warning for warning in result.warnings)
+
+    def test_blank_text_clips_are_skipped_with_warning(self) -> None:
+        blank = _clip(
+            "c-blank",
+            track_id="track-subtitle",
+            asset_id=None,
+            start_time=0.0,
+            duration=1.0,
+            subtitle_text="   ",
+        )
+        voiced = _clip(
+            "c-ok",
+            track_id="track-subtitle",
+            asset_id=None,
+            start_time=1.0,
+            duration=1.0,
+            subtitle_text="Kept",
+        )
+        result = TimelineEditingAdapter().convert(
+            _timeline(
+                self._video_track(),
+                _track("subtitle", (blank, voiced)),
+            )
+        )
+
+        assert [cue.text for cue in result.manifest.subtitle_entries] == ["Kept"]
+        assert any("c-blank" in warning and "no text" in warning for warning in result.warnings)
+
+    def test_burn_in_flag_false_is_passed_through(self) -> None:
+        clip = _clip(
+            "c-s1",
+            track_id="track-subtitle",
+            asset_id=None,
+            start_time=0.0,
+            duration=1.0,
+            subtitle_text="Not burned",
+        )
+        result = TimelineEditingAdapter().convert(
+            _timeline(
+                self._video_track(),
+                _track("subtitle", (clip,)),
+                subtitle_burn_in=False,
+            )
+        )
+
+        assert result.manifest.subtitle_burn_in is False
+        assert len(result.manifest.subtitle_entries) == 1
+
+    def test_no_subtitle_track_keeps_empty_defaults(self) -> None:
+        result = TimelineEditingAdapter().convert(_timeline(self._video_track()))
+
+        assert result.manifest.subtitle_entries == ()
+        assert result.manifest.subtitle_burn_in is True
+        assert result.subtitle_clip_count == 0

@@ -152,6 +152,7 @@ class V2MediaToolchainCapabilityService:
         font_readable = bool(key.font_path and Path(key.font_path).is_file())
         feature_flags = {
             "subtitles": font_readable and "drawtext" in filters,
+            "subtitle_burn_in": font_readable and "ass" in filters,
             "source_audio": {"atrim", "amix", "adelay"}.issubset(filters),
             "audio_ducking": "sidechaincompress" in filters,
             "visual_composition": {"overlay", "colorbalance", "colorlevels", "hue"}.issubset(

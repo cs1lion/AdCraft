@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.agent_canvas import CanvasNodeErrorV2, CanvasNodeStatusV2
+from app.schemas.timeline import TimelineSubtitleStyleV1
 
 
 class _EditingModel(BaseModel):
@@ -123,10 +124,27 @@ class EditingDuckingConfigV2(_EditingModel):
     makeup_gain_db: float = Field(default=0.0, ge=0.0, le=24.0)
 
 
+class EditingSubtitleEntryV2(_EditingModel):
+    """One subtitle cue positioned on the export timeline (text-only, no asset)."""
+
+    start_seconds: float = Field(default=0.0, ge=0.0)
+    end_seconds: float = Field(gt=0.0)
+    text: str = Field(min_length=1, max_length=4000)
+    style: TimelineSubtitleStyleV1 | None = None
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> "EditingSubtitleEntryV2":
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("Subtitle cue end must be after its start.")
+        return self
+
+
 class EditingManifestV2(_EditingModel):
     video_entries: tuple[EditingVideoEntryV2, ...] = ()
     bgm: EditingBgmEntryV2 | None = None
     audio_entries: tuple[EditingAudioEntryV2, ...] = ()
+    subtitle_entries: tuple[EditingSubtitleEntryV2, ...] = ()
+    subtitle_burn_in: bool = True
     ducking: EditingDuckingConfigV2 | None = None
     output: EditingOutputSettingsV2 = Field(default_factory=EditingOutputSettingsV2)
     manifest_revision: int = Field(default=1, ge=1)
