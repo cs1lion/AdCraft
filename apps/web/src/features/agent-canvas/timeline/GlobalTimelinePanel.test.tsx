@@ -2,6 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GlobalTimelinePanel } from "./GlobalTimelinePanel.tsx";
+import {
+  PlayheadSyncProvider,
+  usePlayheadSync,
+} from "../PlayheadSyncContext.tsx";
 import type {
   TimelineClipV1,
   TimelineDuckingConfigV1,
@@ -11,6 +15,7 @@ import type {
 import {
   createClip,
   deleteClip,
+  getClipBeats,
   getMediaToolchainCapabilities,
   getTimeline,
   listLatestAudioDegradations,
@@ -28,6 +33,7 @@ vi.mock("./timelineApi.ts", () => ({
   updateClip: vi.fn(),
   moveClip: vi.fn(),
   deleteClip: vi.fn(),
+  getClipBeats: vi.fn(),
   getMediaToolchainCapabilities: vi.fn(),
   listLatestAudioDegradations: vi.fn(),
   subtitleExportUrl: (workflowId: string, format: string) =>
@@ -273,6 +279,7 @@ describe("GlobalTimelinePanel — selected clip inspector", () => {
       fade_in: 0.2,
       fade_out: null,
       volume_keyframes: null,
+      bound_character_id: null,
       label: null,
     });
   });
@@ -1728,5 +1735,346 @@ describe("GlobalTimelinePanel — subtitle authoring", () => {
       `/api/v2/workflows/${WORKFLOW_ID}/timeline/subtitles?format=ass`,
     );
     expect(ass.getAttribute("download")).toBe("subtitles.ass");
+  });
+});
+
+describe("GlobalTimelinePanel — voice clip character binding", () => {
+  const CHARACTERS = [
+    { id: "char_mei", label: "Mei" },
+    { id: "char_robot", label: null },
+  ];
+
+  function renderBindingPanel(tracks: TimelineTrackV1[]) {
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ tracks }));
+    return render(
+      <GlobalTimelinePanel
+        workflowId={WORKFLOW_ID}
+        availableCharacters={CHARACTERS}
+      />,
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: false },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(updateClip).mockImplementation(async (_workflowId, _clipId, patch) => ({
+      ...makeClip(),
+      ...patch,
+      clip_id: _clipId as string,
+    }));
+  });
+
+  afterEach(cleanup);
+
+  it("binds a voice clip to a canvas character and persists it", async () => {
+    renderBindingPanel([voiceTrack, bgmTrack]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    const select = within(inspector).getByLabelText(
+      "Bound speaking character",
+    ) as HTMLSelectElement;
+
+    const optionValues = Array.from(select.options).map((option) => option.value);
+    expect(optionValues).toEqual(["", "char_mei", "char_robot"]);
+
+    fireEvent.change(select, { target: { value: "char_mei" } });
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0][2].bound_character_id).toBe(
+      "char_mei",
+    );
+  });
+
+  it("clears a binding by choosing Unbound and shows a speaker badge", async () => {
+    const boundVoiceTrack: TimelineTrackV1 = {
+      ...voiceTrack,
+      clips: [
+        makeClip({
+          clip_id: "clip_voice_1",
+          track_id: "track_voice",
+          label: "Voice line 1",
+          bound_character_id: "char_mei",
+        }),
+      ],
+    };
+    renderBindingPanel([boundVoiceTrack, bgmTrack]);
+
+    const clip = (await screen.findAllByTestId("timeline-clip")).find(
+      (element) => element.getAttribute("data-clip-character") === "char_mei",
+    );
+    expect(clip).toBeTruthy();
+    expect(
+      within(clip as HTMLElement).getByTestId("timeline-clip-character-badge"),
+    ).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    const select = within(inspector).getByLabelText(
+      "Bound speaking character",
+    ) as HTMLSelectElement;
+    expect(select.value).toBe("char_mei");
+
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(within(inspector).getByTestId("timeline-inspector-save"));
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateClip).mock.calls[0][2].bound_character_id).toBeNull();
+  });
+
+  it("offers no speaker binding on bgm clips", async () => {
+    renderBindingPanel([voiceTrack, bgmTrack]);
+
+    const clips = await screen.findAllByTestId("timeline-clip");
+    const bgmClip = clips.find((element) =>
+      (element.getAttribute("aria-label") ?? "").includes("8.00 seconds long"),
+    );
+    expect(bgmClip).toBeTruthy();
+    fireEvent.click(bgmClip as HTMLElement);
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    expect(
+      within(inspector).queryByLabelText("Bound speaking character"),
+    ).toBeNull();
+  });
+});
+
+describe("GlobalTimelinePanel — beat detection", () => {
+  const beatBgmTrack = makeTrack({
+    track_id: "track_bgm",
+    type: "bgm",
+    name: "BGM",
+    display_order: 2,
+    clips: [
+      makeClip({
+        clip_id: "clip_bgm_1",
+        track_id: "track_bgm",
+        start_time: 0,
+        duration: 8,
+        source_start: 0,
+        asset_id: "asset_bgm_1",
+      }),
+    ],
+  });
+  const TRACK_RECTS: Record<string, { top: number; bottom: number }> = {
+    track_voice: { top: 72, bottom: 120 },
+    track_bgm: { top: 120, bottom: 168 },
+  };
+
+  let rectSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [voiceTrack, beatBgmTrack] }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: false },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(moveClip).mockResolvedValue(makeClip());
+    vi.mocked(getClipBeats).mockResolvedValue({
+      bpm: 120,
+      beats: [0, 0.5, 1],
+      confidence: 0.9,
+    });
+
+    rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function mockRect(this: HTMLElement) {
+        const trackId = this.getAttribute?.("data-track-id");
+        const bounds = trackId ? TRACK_RECTS[trackId] : undefined;
+        const rect = bounds ?? { top: 0, bottom: 0 };
+        return {
+          left: bounds ? 150 : 0,
+          right: bounds ? 1000 : 0,
+          top: rect.top,
+          bottom: rect.bottom,
+          width: bounds ? 850 : 0,
+          height: bounds ? rect.bottom - rect.top : 0,
+          x: bounds ? 150 : 0,
+          y: rect.top,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+  });
+
+  afterEach(() => {
+    rectSpy.mockRestore();
+    cleanup();
+  });
+
+  it("detects beats, shows the summary, and draws source-mapped markers", async () => {
+    renderPanel();
+
+    const clips = await screen.findAllByTestId("timeline-clip");
+    const bgmClip = clips.find((element) =>
+      (element.getAttribute("aria-label") ?? "").includes("8.00 seconds long"),
+    ) as HTMLElement;
+    fireEvent.click(bgmClip);
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    fireEvent.click(within(inspector).getByTestId("timeline-detect-beats"));
+
+    await waitFor(() => expect(getClipBeats).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(getClipBeats).mock.calls[0]).toEqual([
+      WORKFLOW_ID,
+      "clip_bgm_1",
+    ]);
+    expect(within(inspector).getByTestId("timeline-beat-summary").textContent).toBe(
+      "120.0 BPM · 3 beats",
+    );
+
+    const markers = within(bgmClip).getAllByTestId("timeline-beat-marker");
+    expect(markers).toHaveLength(3);
+    expect(markers.map((marker) => (marker as HTMLElement).style.left)).toEqual([
+      "0px",
+      "20px",
+      "40px",
+    ]);
+  });
+
+  it("surfaces a friendly error when the clip has no audio asset", async () => {
+    vi.mocked(getClipBeats).mockRejectedValue(
+      new Error("This clip has no linked audio asset to analyze."),
+    );
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+
+    fireEvent.click(within(inspector).getByTestId("timeline-detect-beats"));
+
+    expect(
+      await within(inspector).findByTestId("timeline-beat-error"),
+    ).toBeTruthy();
+    expect(within(inspector).getByTestId("timeline-beat-error").textContent).toBe(
+      "This clip has no linked audio asset to analyze.",
+    );
+  });
+
+  it("snaps a dragged clip to a detected beat and can be toggled off", async () => {
+    renderPanel();
+
+    const snapToggle = await screen.findByTestId("timeline-snap-beats");
+    expect(snapToggle.getAttribute("aria-pressed")).toBe("true");
+
+    // Analyze the BGM clip first so its beats become snap candidates.
+    const clips = screen.getAllByTestId("timeline-clip");
+    const bgmClip = clips.find((element) =>
+      (element.getAttribute("aria-label") ?? "").includes("8.00 seconds long"),
+    ) as HTMLElement;
+    fireEvent.click(bgmClip);
+    fireEvent.click(
+      within(await screen.findByTestId("timeline-clip-inspector")).getByTestId(
+        "timeline-detect-beats",
+      ),
+    );
+    await waitFor(() => expect(getClipBeats).toHaveBeenCalledTimes(1));
+
+    // Drag the voice clip +0.5s (20px): the 0.5s beat pulls the gold guide.
+    const voiceClip = screen.getByRole("button", { name: "Voice line 1" });
+    fireEvent.mouseDown(voiceClip, { clientX: 200, clientY: 96 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 220,
+      clientY: 96,
+    });
+    expect(screen.getByTestId("timeline-snap-guide")).toBeTruthy();
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 220,
+      clientY: 96,
+    });
+
+    fireEvent.click(snapToggle);
+    expect(snapToggle.getAttribute("aria-pressed")).toBe("false");
+  });
+});
+
+function SyncProbe() {
+  const { playhead, setFromPreview } = usePlayheadSync();
+  return (
+    <>
+      <span data-testid="sync-state">
+        {`${playhead.origin}:${playhead.time.toFixed(3)}:${playhead.playing}`}
+      </span>
+      <button
+        type="button"
+        onClick={() => setFromPreview({ time: 1.5, playing: false })}
+      >
+        probe-preview-seek
+      </button>
+      <button type="button" onClick={() => setFromPreview({ playing: true })}>
+        probe-preview-play
+      </button>
+    </>
+  );
+}
+
+function renderPanelWithSync() {
+  return render(
+    <PlayheadSyncProvider>
+      <GlobalTimelinePanel workflowId={WORKFLOW_ID} />
+      <SyncProbe />
+    </PlayheadSyncProvider>,
+  );
+}
+
+describe("GlobalTimelinePanel — 3D preview playhead sync", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline());
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: false },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+  });
+
+  afterEach(cleanup);
+
+  it("reports frame steps to the shared playhead as timeline-origin", async () => {
+    renderPanelWithSync();
+
+    const nextFrame = await screen.findByTitle("Next frame");
+    fireEvent.click(nextFrame);
+
+    expect(screen.getByText("0.03s")).toBeTruthy();
+    expect(screen.getByTestId("sync-state").textContent).toBe(
+      "timeline:0.033:false",
+    );
+  });
+
+  it("mirrors a preview-origin scrub onto its own playhead", async () => {
+    renderPanelWithSync();
+
+    await screen.findByTitle("Next frame");
+    fireEvent.click(screen.getByText("probe-preview-seek"));
+
+    expect(await screen.findByText("1.50s")).toBeTruthy();
+    expect(screen.getByTestId("sync-state").textContent).toBe(
+      "preview:1.500:false",
+    );
+  });
+
+  it("starts its transport when a linked preview starts playing", async () => {
+    renderPanelWithSync();
+
+    await screen.findByTitle("Next frame");
+    fireEvent.click(screen.getByText("probe-preview-play"));
+
+    // Transport ownership flips to the timeline as soon as its RAF ticks.
+    await waitFor(() =>
+      expect(screen.getByTestId("sync-state").textContent).toMatch(
+        /^timeline:.*:true$/,
+      ),
+    );
+    // Stop the loop so RAF does not outlive the test.
+    fireEvent.click(screen.getByTitle("Pause"));
+    expect(screen.getByTitle("Play")).toBeTruthy();
   });
 });

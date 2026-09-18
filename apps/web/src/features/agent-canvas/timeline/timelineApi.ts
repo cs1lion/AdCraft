@@ -5,6 +5,7 @@
 import type {
   MediaToolchainCapabilitiesV2,
   TimelineAudioDegradationEventV1,
+  TimelineBeatAnalysisV1,
   TimelineClipCreateV1,
   TimelineClipMoveV1,
   TimelineClipUpdateV1,
@@ -101,6 +102,74 @@ export function deleteClip(workflowId: string, clipId: string): Promise<void> {
   return request<void>(`/workflows/${workflowId}/timeline/clips/${clipId}`, {
     method: "DELETE",
   });
+}
+
+// --- Beat detection (Phase 4.4) ---
+
+/** Beat-analysis failure carrying the API error code for UI messaging. */
+export class BeatAnalysisRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "BeatAnalysisRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const BEAT_ERROR_MESSAGES: Record<string, string> = {
+  beat_analysis_no_asset:
+    "This clip has no linked audio asset to analyze.",
+  beat_analysis_too_short:
+    "Beat detection needs at least 2 seconds of audio.",
+  beat_analysis_indeterminate:
+    "Could not detect a steady beat in this audio.",
+  beat_analysis_unavailable:
+    "Beat analysis is unavailable (audio decoder failed).",
+  asset_not_ready:
+    "The audio asset is still processing; try again shortly.",
+  asset_not_found: "The audio asset for this clip was not found.",
+  timeline_clip_not_found: "Clip was not found.",
+};
+
+/**
+ * Detect BPM and asset-relative beat times for an audio clip.
+ * Throws {@link BeatAnalysisRequestError} with a UI-ready message on failure.
+ */
+export async function getClipBeats(
+  workflowId: string,
+  clipId: string,
+): Promise<TimelineBeatAnalysisV1> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/workflows/${workflowId}/timeline/clips/${clipId}/beats`,
+      { headers: { "Content-Type": "application/json" } },
+    );
+  } catch {
+    throw new BeatAnalysisRequestError(
+      0,
+      "beat_analysis_unavailable",
+      BEAT_ERROR_MESSAGES.beat_analysis_unavailable,
+    );
+  }
+  if (response.ok) {
+    return (await response.json()) as TimelineBeatAnalysisV1;
+  }
+  let code = "beat_analysis_unavailable";
+  try {
+    const body = (await response.json()) as { detail?: { code?: string } };
+    if (typeof body.detail?.code === "string") code = body.detail.code;
+  } catch {
+    // Non-JSON error body; fall back to the generic code.
+  }
+  throw new BeatAnalysisRequestError(
+    response.status,
+    code,
+    BEAT_ERROR_MESSAGES[code] ?? "Beat detection failed.",
+  );
 }
 
 // --- Subtitle sidecar export ---

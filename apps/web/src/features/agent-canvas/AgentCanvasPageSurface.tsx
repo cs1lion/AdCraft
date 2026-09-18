@@ -60,6 +60,7 @@ import {
   type AgentCanvasNodeCallbacks,
 } from "./canvas/AgentCanvasNode.tsx";
 import { AgentCanvasConnectedNodeMenu } from "./canvas/AgentCanvasConnectedNodeMenu.tsx";
+import { PlayheadSyncProvider } from "./PlayheadSyncContext.tsx";
 import { CreationFlowGuidance } from "./canvas/CreationFlowGuidance.tsx";
 import { AgentCanvasContextMenu } from "./canvas/AgentCanvasContextMenu.tsx";
 import { AgentCanvasLayoutConfirmation } from "./canvas/AgentCanvasLayoutConfirmation.tsx";
@@ -169,6 +170,38 @@ function reducedMotionPreference(): boolean {
 }
 
 type CanvasInteractionReason = "viewport" | "node-drag";
+
+/**
+ * Read character ids declared by a node's embedded scene script.
+ * The script may live in structured_content or metadata, as an object or a
+ * JSON string; this is a deliberately tolerant local read used to populate
+ * voice-clip speaker options. Returns [] when nothing usable is found.
+ */
+function readSceneCharacterIds(node: unknown): string[] {
+  const holder = (node ?? {}) as {
+    structured_content?: Record<string, unknown> | null;
+    metadata?: Record<string, unknown> | null;
+  };
+  const raw = holder.structured_content?.scene_script ?? holder.metadata?.scene_script;
+  if (!raw) return [];
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  const characters = (parsed as { characters?: unknown } | null)?.characters;
+  if (!Array.isArray(characters)) return [];
+  return characters
+    .map((entry) =>
+      typeof entry === "object" && entry !== null
+        ? (entry as { id?: unknown }).id
+        : undefined,
+    )
+    .filter((id): id is string => typeof id === "string");
+}
 
 export function AgentCanvasPage() {
   const { refreshProjects } = useApp();
@@ -468,6 +501,19 @@ export function AgentCanvasPage() {
     () => new Set((workflow?.nodes ?? []).map((node) => node.node_id)),
     [workflow?.nodes],
   );
+  // Characters declared across scene-3d nodes; offered as voice-clip speakers.
+  const availableTimelineCharacters = useMemo(() => {
+    const seen = new Set<string>();
+    const characters: { id: string; label?: string }[] = [];
+    for (const node of workflow?.nodes ?? []) {
+      for (const id of readSceneCharacterIds(node)) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        characters.push({ id });
+      }
+    }
+    return characters;
+  }, [workflow?.nodes]);
   useEffect(() => {
     let active = true;
     void agentCanvasApi.agentCanvasConnectionPolicy()
@@ -1343,6 +1389,7 @@ export function AgentCanvasPage() {
   const running = Boolean(live.state.runtime?.active_execution_id);
   return (
     <div className={`agent-canvas-page${chatCollapsed ? " is-chat-collapsed" : ""}`}>
+      <PlayheadSyncProvider>
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- React Flow owns canvas keyboard and pointer semantics; this listener only distinguishes pane double-clicks. */}
       <div
         ref={pointerSpotlight.hostRef}
@@ -1845,6 +1892,7 @@ export function AgentCanvasPage() {
               workflowId={workflow?.workflow_id}
               externalRefreshNonce={timelineRefreshSignal}
               workflowNodeIds={workflowNodeIdSet}
+              availableCharacters={availableTimelineCharacters}
               highlightedSourceNodeId={session.state.selectedNodeId}
               onClipClick={(clip) => {
                 if (
@@ -1859,6 +1907,7 @@ export function AgentCanvasPage() {
           </Suspense>
         </div>
       </div>
+      </PlayheadSyncProvider>
 
       <Suspense fallback={null}>
         <AgentCanvasChatPanel

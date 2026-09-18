@@ -270,3 +270,19 @@ class TimelineTrackUpdateV1(BaseModel):
     volume: float | None = Field(default=None, ge=0.0, le=1.0)
     locked: bool | None = None
     display_order: int | None = Field(default=None, ge=0)
+
+
+class TimelineBeatAnalysisV1(BaseModel):
+    """Result of BGM beat detection (Phase 4.4).
+
+    ``beats`` are asset-relative onset times in seconds (from the start of
+    the underlying media, not clip-relative); callers map them onto the
+    timeline via ``clip.start_time + (beat - clip.source_start)``.
+    ``confidence`` is a 0–1 salience score for the estimated tempo.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bpm: float = Field(gt=0.0)
+    beats: tuple[float, ...] = ()
+    confidence: float = Field(ge=0.0, le=1.0)

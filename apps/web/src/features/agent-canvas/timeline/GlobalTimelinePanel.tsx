@@ -15,8 +15,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useOptionalPlayheadSync } from "../PlayheadSyncContext";
+
 import type {
   TimelineAudioDegradationEventV1,
+  TimelineBeatAnalysisV1,
   TimelineClipV1,
   TimelineDuckingConfigV1,
   TimelineSubtitlePositionV1,
@@ -31,6 +34,7 @@ import {
   AUDIO_DUCKING_UNAVAILABLE,
   createClip,
   deleteClip,
+  getClipBeats,
   getMediaToolchainCapabilities,
   getTimeline,
   listLatestAudioDegradations,
@@ -143,6 +147,16 @@ interface GlobalTimelinePanelProps {
    * to it. Absent when the host surface cannot create nodes.
    */
   onCreateVideoNode?: (clip: TimelineClipV1) => Promise<string>;
+  /**
+   * Characters present in the canvas's scene-script nodes. Voice clips can be
+   * bound to one of them (speaker indicator / downstream lip-sync).
+   */
+  availableCharacters?: readonly TimelineBoundCharacterOption[];
+}
+
+export interface TimelineBoundCharacterOption {
+  id: string;
+  label?: string | null;
 }
 
 const PIXELS_PER_SECOND = 40;
@@ -205,6 +219,8 @@ interface ClipInspectorDraft {
   subtitle_italic: boolean;
   // Audio clips only; null = no keyframed envelope (constant clip gain).
   volume_keyframes: TimelineVolumeKeyframeV1[] | null;
+  // Voice clips only; null = unbound speaker.
+  bound_character_id: string | null;
 }
 
 function duckingToForm(config: TimelineDuckingConfigV1 | null | undefined): DuckingFormState {
@@ -513,6 +529,7 @@ export function GlobalTimelinePanel({
   workflowNodeIds,
   highlightedSourceNodeId = null,
   onCreateVideoNode,
+  availableCharacters,
 }: GlobalTimelinePanelProps) {
   const [timeline, setTimeline] = useState<TimelineV1 | null>(null);
   const [loading, setLoading] = useState(true);
@@ -526,8 +543,15 @@ export function GlobalTimelinePanel({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const playbackRef = useRef<number | null>(null);
+  // Latest values for the RAF loop (avoids re-subscribing each frame).
+  const currentTimeRef = useRef(0);
+  currentTimeRef.current = currentTime;
+  const totalDurationRef = useRef(10);
   const dragMovedRef = useRef(false);
   const trackContentRefs = useRef(new Map<string, HTMLDivElement>());
+
+  // Bridge to 3D scene-script previews (null when rendered standalone).
+  const playheadSync = useOptionalPlayheadSync();
 
   // Audio track control state
   const [savingTrackId, setSavingTrackId] = useState<string | null>(null);
@@ -554,6 +578,14 @@ export function GlobalTimelinePanel({
   const [addingSubtitleTrackId, setAddingSubtitleTrackId] = useState<string | null>(
     null,
   );
+
+  // Beat detection state (analyses are keyed by clip id; not persisted server-side).
+  const [beatAnalyses, setBeatAnalyses] = useState<
+    Record<string, TimelineBeatAnalysisV1>
+  >({});
+  const [beatLoadingClipId, setBeatLoadingClipId] = useState<string | null>(null);
+  const [beatErrorMessage, setBeatErrorMessage] = useState<string | null>(null);
+  const [snapToBeats, setSnapToBeats] = useState(true);
 
   // Renderer capability probe (single source of truth lives server-side).
   const [capability, setCapability] = useState<{
@@ -650,6 +682,7 @@ export function GlobalTimelinePanel({
     );
     return Math.max(timeline.duration_seconds, maxClipEnd, 10);
   }, [timeline]);
+  totalDurationRef.current = totalDuration;
 
   const sortedTracks = useMemo(() => {
     if (!timeline) return [];
@@ -672,6 +705,30 @@ export function GlobalTimelinePanel({
 
   const duckingAvailable = audioRoleClips.voice > 0 && audioRoleClips.bgm > 0;
 
+  // Timeline-time beat positions for every analyzed clip. Beat times are
+  // asset-relative; clips may trim the source, hence the source_start shift.
+  const beatSnapCandidates = useMemo(() => {
+    if (!snapToBeats || !timeline) return [] as number[];
+    const candidates: number[] = [];
+    for (const track of timeline.tracks) {
+      for (const clip of track.clips) {
+        const analysis = beatAnalyses[clip.clip_id];
+        if (!analysis) continue;
+        for (const beat of analysis.beats) {
+          const timelineTime =
+            clip.start_time + beat - (clip.source_start ?? 0);
+          if (
+            timelineTime >= clip.start_time - 1e-9
+            && timelineTime <= clip.start_time + clip.duration + 1e-9
+          ) {
+            candidates.push(timelineTime);
+          }
+        }
+      }
+    }
+    return candidates;
+  }, [snapToBeats, timeline, beatAnalyses]);
+
   // Playback loop
   useEffect(() => {
     if (!isPlaying) {
@@ -685,14 +742,23 @@ export function GlobalTimelinePanel({
     const tick = (now: number) => {
       const delta = (now - lastTime) / 1000;
       lastTime = now;
-      setCurrentTime((prev) => {
-        const next = prev + delta;
-        if (next >= totalDuration) {
-          setIsPlaying(false);
-          return totalDuration;
-        }
-        return next;
-      });
+      const duration = totalDurationRef.current;
+      let next = currentTimeRef.current + delta;
+      let ended = false;
+      if (next >= duration) {
+        next = duration;
+        ended = true;
+      }
+      currentTimeRef.current = next;
+      setCurrentTime(next);
+      // Drive linked 3D previews; release transport ownership at the end.
+      playheadSync?.setFromTimeline(
+        ended ? { time: next, playing: false } : { time: next },
+      );
+      if (ended) {
+        setIsPlaying(false);
+        return;
+      }
       playbackRef.current = requestAnimationFrame(tick);
     };
     playbackRef.current = requestAnimationFrame(tick);
@@ -701,17 +767,43 @@ export function GlobalTimelinePanel({
         cancelAnimationFrame(playbackRef.current);
       }
     };
-  }, [isPlaying, totalDuration]);
+  }, [isPlaying, playheadSync]);
+
+  // Mirror scrub/play events coming from a linked 3D preview.
+  const remotePlayhead = playheadSync?.playhead;
+  useEffect(() => {
+    if (!remotePlayhead || remotePlayhead.origin !== "preview") return;
+    const fps = timeline?.fps ?? 30;
+    const clamped = Math.max(
+      0,
+      Math.min(remotePlayhead.time, totalDurationRef.current),
+    );
+    currentTimeRef.current = clamped;
+    setCurrentTime((previous) =>
+      Math.abs(previous - clamped) > 1 / (fps * 2) ? clamped : previous,
+    );
+    setIsPlaying(remotePlayhead.playing);
+  }, [remotePlayhead, timeline?.fps]);
 
   const togglePlay = () => {
-    if (currentTime >= totalDuration) {
-      setCurrentTime(0);
+    const restartTime = currentTime >= totalDuration ? 0 : currentTime;
+    if (restartTime !== currentTime) {
+      currentTimeRef.current = restartTime;
+      setCurrentTime(restartTime);
     }
-    setIsPlaying((p) => !p);
+    const nextPlaying = !isPlaying;
+    setIsPlaying(nextPlaying);
+    playheadSync?.setFromTimeline({
+      time: restartTime,
+      playing: nextPlaying,
+    });
   };
 
   const seekTo = (time: number) => {
-    setCurrentTime(Math.max(0, Math.min(time, totalDuration)));
+    const clamped = Math.max(0, Math.min(time, totalDuration));
+    currentTimeRef.current = clamped;
+    setCurrentTime(clamped);
+    playheadSync?.setFromTimeline({ time: clamped });
   };
 
   const stepFrame = (direction: number) => {
@@ -922,10 +1014,11 @@ export function GlobalTimelinePanel({
       );
     }
 
-    // Edge snapping against every other clip (plus 0 and the playhead).
+    // Edge snapping against every other clip (plus 0, the playhead, beats).
     const candidates = collectSnapCandidates(timeline.tracks, interaction.clipId, [
       0,
       currentTime,
+      ...beatSnapCandidates,
     ]);
     const snapped = applyEdgeSnap({
       mode: interaction.mode,
@@ -1085,6 +1178,7 @@ export function GlobalTimelinePanel({
   useEffect(() => {
     setInspectorError(null);
     setNodeLinkError(null);
+    setBeatErrorMessage(null);
     if (!selectedClip) {
       setInspectorDraft(null);
       return;
@@ -1117,6 +1211,7 @@ export function GlobalTimelinePanel({
       volume_keyframes: clip.volume_keyframes && clip.volume_keyframes.length > 0
         ? clip.volume_keyframes.map((point) => ({ ...point }))
         : null,
+      bound_character_id: clip.bound_character_id ?? null,
     });
   }, [selectedClip]);
 
@@ -1164,6 +1259,7 @@ export function GlobalTimelinePanel({
     // Keyframed volume: clamp to clip duration, require at least two points
     // (a lone point is indistinguishable from constant gain and is dropped).
     const isAudioClip = AUDIO_ROLES.has(selectedClip.track.type);
+    const isVoiceClip = selectedClip.track.type === "voice";
     const envelopePoints = draft.volume_keyframes
       ? clampEnvelopePoints(draft.volume_keyframes, duration)
       : [];
@@ -1267,6 +1363,7 @@ export function GlobalTimelinePanel({
         fade_in: AUDIO_ROLES.has(selectedClip.track.type) ? fadeIn : undefined,
         fade_out: AUDIO_ROLES.has(selectedClip.track.type) ? fadeOut : undefined,
         volume_keyframes: volumeKeyframes,
+        bound_character_id: isVoiceClip ? draft.bound_character_id : undefined,
         transition_in_type: isVideoClip ? transitionIn?.type ?? null : undefined,
         transition_in_duration: isVideoClip
           ? transitionIn?.duration ?? null
@@ -1303,6 +1400,26 @@ export function GlobalTimelinePanel({
       await resyncTimeline();
     } finally {
       setInspectorSaving(false);
+    }
+  };
+
+  const detectSelectedClipBeats = async () => {
+    if (!selectedClip) return;
+    const { clip } = selectedClip;
+    setBeatLoadingClipId(clip.clip_id);
+    setBeatErrorMessage(null);
+    try {
+      const analysis = await getClipBeats(workflowId, clip.clip_id);
+      setBeatAnalyses((previous) => ({
+        ...previous,
+        [clip.clip_id]: analysis,
+      }));
+    } catch (err) {
+      setBeatErrorMessage(
+        err instanceof Error ? err.message : "Beat detection failed.",
+      );
+    } finally {
+      setBeatLoadingClipId(null);
     }
   };
 
@@ -1597,6 +1714,21 @@ export function GlobalTimelinePanel({
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            title="Snap clip drags to detected beat markers"
+            aria-pressed={snapToBeats}
+            data-testid="timeline-snap-beats"
+            onClick={() => setSnapToBeats((enabled) => !enabled)}
+            style={{
+              ...smallBtnStyle,
+              border: "1px solid #444",
+              background: snapToBeats ? "#1a5fb4" : "#2a2a2a",
+              color: snapToBeats ? "#fff" : "#999",
+            }}
+          >
+            ♪ Snap
+          </button>
           <button
             onClick={openDucking}
             title="Auto-ducking settings (lower BGM while voice plays)"
@@ -2307,6 +2439,7 @@ export function GlobalTimelinePanel({
                             clip.transition_out_type ?? undefined
                           }
                           data-clip-subtitle={clip.subtitle_text ?? undefined}
+                          data-clip-character={clip.bound_character_id ?? undefined}
                           data-clip-canvas-linked={
                             isCanvasLinked ? "true" : undefined
                           }
@@ -2409,6 +2542,53 @@ export function GlobalTimelinePanel({
                               ? clip.subtitle_text
                               : clip.label || `${clip.duration.toFixed(2)}s`}
                           </span>
+                          {clip.bound_character_id && (
+                            <span
+                              aria-label={`Bound to character ${clip.bound_character_id}`}
+                              data-testid="timeline-clip-character-badge"
+                              title={`Speaker: ${
+                                availableCharacters?.find(
+                                  (character) =>
+                                    character.id === clip.bound_character_id,
+                                )?.label || clip.bound_character_id
+                              }`}
+                              style={{
+                                position: "absolute",
+                                right: 3,
+                                top: 2,
+                                fontSize: 9,
+                                lineHeight: 1,
+                                color: "#fff",
+                                background: "rgba(0,0,0,0.45)",
+                                borderRadius: 2,
+                                padding: "1px 2px",
+                                pointerEvents: "none",
+                              }}
+                            >
+                              👤
+                            </span>
+                          )}
+                          {beatAnalyses[clip.clip_id]?.beats.map((beat) => {
+                            const offset = beat - (clip.source_start ?? 0);
+                            if (offset < 0 || offset > clip.duration) return null;
+                            return (
+                              <span
+                                key={`beat-${beat.toFixed(3)}`}
+                                aria-hidden="true"
+                                data-testid="timeline-beat-marker"
+                                title={`Beat @ ${beat.toFixed(2)}s · ${beatAnalyses[clip.clip_id]?.bpm.toFixed(1)} BPM`}
+                                style={{
+                                  position: "absolute",
+                                  left: offset * PIXELS_PER_SECOND,
+                                  top: 0,
+                                  bottom: 0,
+                                  borderLeft: "1px solid rgba(255,255,255,0.55)",
+                                  pointerEvents: "none",
+                                  zIndex: 2,
+                                }}
+                              />
+                            );
+                          })}
                           {transitionInLabel && (
                             <span
                               aria-hidden="true"
@@ -2499,6 +2679,11 @@ export function GlobalTimelinePanel({
           }
           creatingVideoNode={creatingNodeForClipId === selectedClip.clip.clip_id}
           videoNodeErrorMessage={nodeLinkError}
+          availableCharacters={availableCharacters ?? []}
+          beatAnalysis={beatAnalyses[selectedClip.clip.clip_id] ?? null}
+          beatLoading={beatLoadingClipId === selectedClip.clip.clip_id}
+          beatErrorMessage={beatErrorMessage}
+          onDetectBeats={() => void detectSelectedClipBeats()}
           onCreateVideoNode={() => void promoteClipToVideoNode(selectedClip.clip)}
           onChange={patchInspector}
           onSave={() => void saveInspector()}
@@ -2561,6 +2746,11 @@ interface SelectedClipInspectorProps {
   videoNodePromotable: boolean;
   creatingVideoNode: boolean;
   videoNodeErrorMessage: string | null;
+  availableCharacters: readonly TimelineBoundCharacterOption[];
+  beatAnalysis: TimelineBeatAnalysisV1 | null;
+  beatLoading: boolean;
+  beatErrorMessage: string | null;
+  onDetectBeats: () => void;
   onCreateVideoNode: () => void;
 }
 
@@ -2577,9 +2767,15 @@ function SelectedClipInspector({
   videoNodePromotable,
   creatingVideoNode,
   videoNodeErrorMessage,
+  availableCharacters,
+  beatAnalysis,
+  beatLoading,
+  beatErrorMessage,
+  onDetectBeats,
   onCreateVideoNode,
 }: SelectedClipInspectorProps) {
   const isAudio = AUDIO_ROLES.has(track.type);
+  const isVoice = track.type === "voice";
   const isVideo = track.type === "video";
   const isSubtitle = track.type === "subtitle";
   const disabled = track.locked || saving || creatingVideoNode;
@@ -2683,6 +2879,30 @@ function SelectedClipInspector({
         </label>
         {isAudio && (
           <>
+            {isVoice && (
+              <label style={labelStyle}>
+                Speaker
+                <select
+                  value={draft.bound_character_id ?? ""}
+                  disabled={disabled}
+                  aria-label="Bound speaking character"
+                  data-testid="timeline-clip-bound-character"
+                  onChange={(event) =>
+                    onChange({
+                      bound_character_id: event.currentTarget.value || null,
+                    })
+                  }
+                  style={selectInputStyle}
+                >
+                  <option value="">Unbound</option>
+                  {availableCharacters.map((character) => (
+                    <option key={character.id} value={character.id}>
+                      {character.label || character.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label style={labelStyle}>
               Fade in (s)
               <input
@@ -2729,6 +2949,56 @@ function SelectedClipInspector({
                 disabled={disabled}
                 onChange={(points) => onChange({ volume_keyframes: points })}
               />
+            </div>
+            <div
+              style={{
+                flexBasis: "100%",
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button
+                  type="button"
+                  disabled={disabled || beatLoading}
+                  aria-busy={beatLoading}
+                  data-testid="timeline-detect-beats"
+                  onClick={onDetectBeats}
+                  style={{
+                    fontSize: 10,
+                    background: "#2a2a2a",
+                    color: "#eee",
+                    border: "1px solid #555",
+                    borderRadius: 3,
+                    padding: "2px 8px",
+                    cursor: disabled || beatLoading ? "default" : "pointer",
+                  }}
+                >
+                  {beatLoading
+                    ? "Detecting…"
+                    : beatAnalysis
+                      ? "Re-detect beats"
+                      : "Detect beats"}
+                </button>
+                {beatAnalysis && (
+                  <span
+                    data-testid="timeline-beat-summary"
+                    style={{ fontSize: 10, color: "#9ad08f" }}
+                  >
+                    {`${beatAnalysis.bpm.toFixed(1)} BPM · ${beatAnalysis.beats.length} beats`}
+                  </span>
+                )}
+              </div>
+              {beatErrorMessage && (
+                <span
+                  role="alert"
+                  data-testid="timeline-beat-error"
+                  style={{ fontSize: 10, color: "#e8838a" }}
+                >
+                  {beatErrorMessage}
+                </span>
+              )}
             </div>
           </>
         )}

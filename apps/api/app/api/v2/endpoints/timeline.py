@@ -7,6 +7,8 @@ time-axis, and how clips are trimmed / transitioned / mixed.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path as FilePath
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -21,10 +23,12 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.persistence.asset_library_repository import V2AssetLibraryRepository
 from app.persistence.database import create_v2_database
 from app.persistence.errors import V2PersistenceError
 from app.persistence.timeline_repository import TimelineRepository
 from app.schemas.timeline import (
+    TimelineBeatAnalysisV1,
     TimelineClipCreateV1,
     TimelineClipMoveV1,
     TimelineClipUpdateV1,
@@ -34,7 +38,9 @@ from app.schemas.timeline import (
     TimelineUpdateV1,
     TimelineV1,
 )
+from app.services.timeline_beat_analysis import BeatAnalysisError, BeatAnalyzer
 from app.services.timeline_subtitle_writer import clips_to_ass, clips_to_srt
+from app.services.v2_storage_adapter import StorageAdapter
 
 
 router = APIRouter(prefix="/workflows", tags=["v2-timeline"])
@@ -295,4 +301,119 @@ def export_timeline_subtitles(
         content=content,
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# --- Beat analysis (Phase 4.4) ---
+
+
+@dataclass
+class BeatAnalysisTools:
+    """Resolves a clip's asset to a local file and runs DSP analysis on it."""
+
+    assets: V2AssetLibraryRepository
+    storage: StorageAdapter
+    analyzer: BeatAnalyzer
+
+    def resolve_asset_path(self, asset_id: str) -> FilePath:
+        version = self.assets.find_version(asset_id=asset_id)
+        if version is None:
+            raise V2PersistenceError(
+                "asset_not_found",
+                "Asset was not found.",
+                stage="timeline_beat_analysis",
+            )
+        path = self.storage.resolve_local_path(version.storage_key)
+        if not path.is_file():
+            raise V2PersistenceError(
+                "asset_not_ready",
+                "Asset content is unavailable.",
+                stage="timeline_beat_analysis",
+            )
+        return path
+
+
+def get_beat_analysis_tools(
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    """Dependency: asset lookup + storage + the numpy/ffmpeg beat analyzer."""
+    database = create_v2_database(settings.media_data_dir)
+    yield BeatAnalysisTools(
+        assets=V2AssetLibraryRepository(database),
+        storage=StorageAdapter(settings.media_data_dir),
+        analyzer=BeatAnalyzer(settings.ffmpeg_path),
+    )
+
+
+@router.get(
+    "/{workflow_id}/timeline/clips/{clip_id}/beats",
+    response_model=TimelineBeatAnalysisV1,
+    status_code=status.HTTP_200_OK,
+    summary="Detect BPM and asset-relative beat times for an audio clip",
+)
+def analyze_clip_beats(
+    workflow_id: Annotated[str, Path(min_length=1)],
+    clip_id: Annotated[str, Path(min_length=1)],
+    repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
+    tools: Annotated[BeatAnalysisTools, Depends(get_beat_analysis_tools)],
+) -> TimelineBeatAnalysisV1:
+    try:
+        timeline = repo.get_by_workflow_id(workflow_id)
+    except V2PersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "message": "Timeline persistence unavailable."},
+        ) from exc
+
+    clip = next(
+        (
+            candidate
+            for track in timeline.tracks
+            for candidate in track.clips
+            if candidate.clip_id == clip_id
+        ),
+        None,
+    )
+    if clip is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "timeline_clip_not_found", "message": "Clip was not found."},
+        )
+    if not clip.asset_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "beat_analysis_no_asset",
+                "message": "Clip has no linked audio asset.",
+            },
+        )
+
+    try:
+        media_path = tools.resolve_asset_path(clip.asset_id)
+        analysis = tools.analyzer.analyze(str(media_path))
+    except V2PersistenceError as exc:
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == "asset_not_found"
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except BeatAnalysisError as exc:
+        status_code = (
+            status.HTTP_422_UNPROCESSABLE_ENTITY
+            if exc.code in {"beat_analysis_too_short", "beat_analysis_indeterminate"}
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+    return TimelineBeatAnalysisV1(
+        bpm=analysis.bpm,
+        beats=analysis.beats,
+        confidence=analysis.confidence,
     )

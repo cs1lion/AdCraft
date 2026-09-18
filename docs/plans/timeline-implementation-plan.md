@@ -1,8 +1,8 @@
 # Timeline-Driven Production Workflow — Implementation Plan
 
 **ADR**: [0007-timeline-driven-production.md](./0007-timeline-driven-production.md)
-**Status**: Phase 1–3 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI; clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill; keyframed volume curves/fades; edge-drag trimming with source-window linkage); Phase 4 next (preview sync, character binding, beat markers)
-**Last Updated**: 2026-09-18
+**Status**: Phase 1–3 complete (timeline-driven export, ffmpeg mixing/ducking, cross-dissolve/wipe/slide rendering, editing UI; clip transition authoring UI, full subtitle track — cue authoring, styles, SRT/ASS export, ASS burn-in and text/script node multi-cue backfill; keyframed volume curves/fades; edge-drag trimming with source-window linkage); Phase 4 partial — 4.1 playhead sync, 4.2 voice→character binding, and 4.4 beat detection/markers/snapping complete; 4.3 camera track and lip-sync / auto edit points remain
+**Last Updated**: 2026-09-19
 
 ## Overview
 
@@ -220,18 +220,18 @@ layer. Nodes generate assets; the timeline arranges them in time.
 
 ---
 
-## Phase 4: 3D & Timeline Bi-Directional Sync 📋 PLANNED
+## Phase 4: 3D & Timeline Bi-Directional Sync 🚧 IN PROGRESS
 
 **Goal**: Deep integration between 3D previs and timeline.
 
 ### 4.1 Playhead Sync
-- [ ] Timeline playhead controls 3D preview frame
-- [ ] 3D preview scrubbing updates timeline playhead
-- [ ] Frame-accurate sync (timeline fps = 3D scene fps)
+- [x] Timeline playhead controls 3D preview frame
+- [x] 3D preview scrubbing updates timeline playhead
+- [x] Frame-accurate sync (shared time in seconds; each side quantizes to its own fps)
 
 ### 4.2 Voice → Character Binding
-- [ ] `bound_character_id` field on voice clips (already in schema)
-- [ ] Visual indicator showing which character speaks
+- [x] `bound_character_id` field on voice clips (already in schema)
+- [x] Visual indicator showing which character speaks
 - [ ] Auto-generate lip-sync keyframes from voice audio
 - [ ] Rhubarb/Oculus LipSync integration for phoneme-level sync
 
@@ -242,9 +242,9 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [ ] Push camera changes back to 3D scene
 
 ### 4.4 Beat Detection
-- [ ] BPM detection from BGM track
-- [ ] Visual beat markers on timeline
-- [ ] Snap clips to beats
+- [x] BPM detection from BGM track (numpy onset-flux + autocorrelation; ffmpeg decode)
+- [x] Visual beat markers on timeline
+- [x] Snap clips to beats
 - [ ] Auto-generate edit points on beats
 
 ---
@@ -365,9 +365,9 @@ layer. Nodes generate assets; the timeline arranges them in time.
 - [x] Volume curves apply correctly during export
 
 ### Phase 4
-- [ ] Timeline playhead controls 3D preview frame
-- [ ] Voice clips can be bound to characters
-- [ ] Beat detection works on BGM tracks
+- [x] Timeline playhead controls 3D preview frame
+- [x] Voice clips can be bound to characters
+- [x] Beat detection works on BGM tracks
 
 ### Phase 5
 - [ ] Keyframe animation works on video clips

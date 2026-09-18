@@ -133,6 +133,18 @@ export interface TimelineV1 {
   updated_at: string;
 }
 
+/**
+ * Beat detection result for an audio clip. `beats` are asset-relative times
+ * in seconds from the start of the source media; map onto timeline time via
+ * `clip.start_time + beat - clip.source_start`.
+ */
+export interface TimelineBeatAnalysisV1 {
+  bpm: number;
+  beats: number[];
+  /** 0..1 salience of the detected tempo; 0 = indeterminate. */
+  confidence: number;
+}
+
 export interface TimelineClipCreateV1 {
   track_id: string;
   start_time: number;
