@@ -8,7 +8,12 @@ import {
 } from "./nodeDefaults.ts";
 
 describe("Agent Canvas node defaults", () => {
-  it("exposes all six canonical authoring node types", () => {
+  it("exposes all eight canonical authoring node types", () => {
+    // This list is what decides which nodes can carry a binding edge at all:
+    // ``toAgentCanvasFlowEdges`` filters on it, so a type missing here is a type
+    // whose edges silently stop rendering -- which is what happened to the
+    // 3D previs, the one node whose only possible edge is the previs -> video
+    // link that grounds the film.
     expect(AGENT_CANVAS_VISIBLE_NODE_TYPES).toEqual([
       "text",
       "script",
@@ -16,6 +21,8 @@ describe("Agent Canvas node defaults", () => {
       "video",
       "audio",
       "editing",
+      "scene-3d",
+      "voice-cast",
     ]);
   });
 
@@ -26,6 +33,8 @@ describe("Agent Canvas node defaults", () => {
     ["video", "general_video"],
     ["audio", "bgm"],
     ["editing", "editing"],
+    ["scene-3d", "scene_3d_previs"],
+    ["voice-cast", "voice_cast"],
   ] as const)("uses the frozen creative role for %s nodes", (nodeType, creativeRole) => {
     expect(createDefaultCanvasNodeRequest(nodeType, { x: 10, y: 20 })).toMatchObject({
       node_type: nodeType,

@@ -4,7 +4,66 @@ import json
 from typing import Any
 from urllib import error as urllib_error
 
+from app.services.v2_provider_error_classification import provider_error_type_from_body
 from app.tools.media_provider_protocol import MediaApiError
+
+# The image endpoint is configurable and this deployment points it at StepFun's
+# ``step_plan`` gateway (``IMAGE_GENERATION_ENDPOINT``), which proxies the same
+# upstream engine.  Hardcoding "volcengine" therefore made a correctly-routed
+# StepFun request look like it had gone to the wrong provider: during the
+# 2026-09-20 run the node error read ``provider=volcengine`` while the payload
+# model was ``step-image-edit-2`` on ``api.stepfun.com``, which reads as "the
+# StepFun migration did not take effect" and sends the reader hunting a routing
+# bug that does not exist.
+_ENDPOINT_PROVIDER_LABELS: tuple[tuple[str, str], ...] = (
+    ("agnes-ai.cn", "agnes"),
+    ("stepfun", "stepfun"),
+    ("volces.com", "volcengine"),
+    ("volcengine", "volcengine"),
+)
+
+#: The step_plan gateway states its own retry verdict in a header.  On
+#: 2026-09-21 every image request answered ``X-Should-Retry: false`` while a
+#: successful TTS request on the same key carried no such header at all
+#: (``e2e_output/rose/probe_retry_semantics.py``), so the gateway was saying the
+#: refusal would not clear by itself -- the opposite of what the 503 body
+#: ("please try again later") implies.  Reading it keeps the hint honest instead
+#: of promising a retry that cannot help, and the trace id gives the operator
+#: something to quote when reporting the outage.
+_SHOULD_RETRY_HEADER = "X-Should-Retry"
+_TRACE_ID_HEADER = "X-Trace-Id"
+
+
+def _header_value(exc: urllib_error.HTTPError, name: str) -> str | None:
+    """Read a response header, tolerating an HTTPError built without any."""
+
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get(name)
+    except Exception:  # noqa: BLE001 - a malformed header bag must not mask the error
+        return None
+    return value if value is None else str(value)
+
+
+def _gateway_retry_directive(exc: urllib_error.HTTPError) -> bool | None:
+    """The gateway's own retry verdict, or None when it does not state one."""
+
+    value = _header_value(exc, _SHOULD_RETRY_HEADER)
+    if value is None or not value.strip():
+        return None
+    return value.strip().lower() not in {"false", "0", "no"}
+
+
+def _provider_label_for_endpoint(endpoint: str) -> str:
+    """Name the gateway the request actually went to, not the one it used to."""
+
+    lowered = (endpoint or "").casefold()
+    for needle, label in _ENDPOINT_PROVIDER_LABELS:
+        if needle in lowered:
+            return label
+    return "volcengine" if not lowered.strip() else "unknown"
 
 
 def _media_api_error(
@@ -15,25 +74,46 @@ def _media_api_error(
 ) -> MediaApiError:
     response_body = exc.read().decode("utf-8", errors="replace")
     sanitized_payload = _sanitize_secret_values(payload)
-    metadata = {
-        "provider": "volcengine",
+    provider_error_type = provider_error_type_from_body(response_body)
+    provider_label = _provider_label_for_endpoint(endpoint)
+    should_retry = _gateway_retry_directive(exc)
+    trace_id = _header_value(exc, _TRACE_ID_HEADER)
+    metadata: dict[str, Any] = {
+        "provider": provider_label,
         "endpoint": endpoint,
         "status": exc.code,
         "response_body": response_body,
         "payload": sanitized_payload,
     }
+    if provider_error_type is not None:
+        # Preserve the provider's own machine-readable reason (e.g.
+        # "engine_overloaded") so callers can classify the failure instead of
+        # collapsing every status into one opaque code.
+        metadata["provider_error_code"] = provider_error_type
+    if should_retry is not None:
+        # Kept separate from ``retryable``: that flag is *our* classification of
+        # the status, this one is the gateway's own instruction, and when the two
+        # disagree the operator needs to see both.
+        metadata["provider_should_retry"] = should_retry
+    if trace_id:
+        metadata["provider_trace_id"] = trace_id
     payload_json = json.dumps(sanitized_payload, ensure_ascii=False, indent=2, sort_keys=True)
     message = "\n".join(
         [
             "media_api_failed:",
             *(
                 [f"user_action={hint}"]
-                if (hint := _provider_user_action_hint(response_body, exc.code)) is not None
+                if (hint := _provider_user_action_hint(
+                    response_body, exc.code, should_retry=should_retry
+                ))
+                is not None
                 else []
             ),
-            "provider=volcengine",
+            f"provider={provider_label}",
             f"endpoint={endpoint}",
             f"status={exc.code}",
+            *([f"provider_should_retry={should_retry}"] if should_retry is not None else []),
+            *([f"provider_trace_id={trace_id}"] if trace_id else []),
             f"response_body={response_body}",
             f"payload={payload_json}",
         ]
@@ -41,7 +121,32 @@ def _media_api_error(
     return MediaApiError(message=message, metadata=metadata)
 
 
-def _provider_user_action_hint(response_body: str, status: int) -> str | None:
+def _overload_hint(should_retry: bool | None) -> str:
+    """What to tell the operator about an overload refusal.
+
+    The body says "try again later"; the gateway's header may say the opposite.
+    When it does, promising a retry would send the operator in circles, so the
+    hint names the header and points at the trace id instead.
+    """
+
+    if should_retry is False:
+        return (
+            "The provider gateway refused this request and marked it "
+            "X-Should-Retry: false, so retrying will not clear it. "
+            "Report the provider_trace_id from this error to the provider."
+        )
+    return (
+        "The provider engine is temporarily overloaded. "
+        "This is transient - the request is safe to retry as-is."
+    )
+
+
+def _provider_user_action_hint(
+    response_body: str,
+    status: int,
+    *,
+    should_retry: bool | None = None,
+) -> str | None:
     """Return a short English fix-it hint for well-known provider rejections."""
 
     lowered = response_body.lower()
@@ -66,6 +171,15 @@ def _provider_user_action_hint(response_body: str, status: int) -> str | None:
             "The provider rate limit or quota was hit. "
             "Wait a moment and retry, or check your plan quota."
         )
+    if status == 503:
+        return _overload_hint(should_retry)
+    if status in {500, 502, 504}:
+        return (
+            "The provider reported a temporary server error. "
+            "This is transient - the request is safe to retry as-is."
+        )
+    if "engine_overloaded" in lowered or "try again later" in lowered:
+        return _overload_hint(should_retry)
     return None
 
 

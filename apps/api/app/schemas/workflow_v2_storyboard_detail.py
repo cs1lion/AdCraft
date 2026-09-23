@@ -5,6 +5,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.v2_video_duration import (
+    V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+)
+
 
 StoryboardDetailMaterializerMode = Literal["real", "mock", "fallback"]
 StoryboardCellRole = Literal["establishing", "action", "detail", "payoff"]
@@ -19,7 +24,10 @@ class V2StoryboardDetailInput(BaseModel):
     script_shot: dict[str, Any] = Field(default_factory=dict)
     workflow_aspect_ratio: str
     desired_duration_seconds: int = Field(ge=1)
-    provider_duration_seconds: Literal[5, 10]
+    provider_duration_seconds: int = Field(
+        ge=V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+        le=V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    )
     product_brief_summaries: list[dict[str, Any]] = Field(default_factory=list)
     character_brief_summaries: list[dict[str, Any]] = Field(default_factory=list)
     scene_brief_summaries: list[dict[str, Any]] = Field(default_factory=list)
@@ -109,7 +117,10 @@ class V2StoryboardVideoDetailPlan(BaseModel):
     video_negative_constraints: str
     time_segments: list[V2StoryboardVideoTimeSegment] = Field(min_length=1)
     desired_duration_seconds: int = Field(ge=1)
-    provider_duration_seconds: Literal[5, 10]
+    provider_duration_seconds: int = Field(
+        ge=V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+        le=V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    )
     required_shot_cell_slot_ids: list[str] = Field(default_factory=list)
     required_shot_cell_asset_ids: list[str] = Field(default_factory=list)
 
@@ -139,7 +150,10 @@ class V2StoryboardDetailPlan(BaseModel):
     shot_id: str
     shot_index: int = Field(ge=1)
     shot_summary_prompt: str
-    provider_duration_seconds: Literal[5, 10]
+    provider_duration_seconds: int = Field(
+        ge=V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+        le=V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    )
     desired_duration_seconds: int = Field(ge=1)
     cell_prompts: list[V2StoryboardCellPromptPlan] = Field(min_length=4, max_length=4)
     video_detail: V2StoryboardVideoDetailPlan

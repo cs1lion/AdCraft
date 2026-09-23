@@ -307,6 +307,11 @@ class ProviderReferenceDeliveryContextV1(_RuntimeModel):
     accepted_input_types: tuple[ProviderReferenceMediaTypeV1, ...]
     reference_limits: dict[str, int] = Field(default_factory=dict)
     reference_instruction_transport: ProviderReferenceInstructionTransportV1 = "provider_only"
+    #: The provider's own ``(minimum, maximum)`` image aspect-ratio window,
+    #: ``width / height``, when the frozen manifest declares one.  ``None`` means
+    #: "this model never told us" -- it does not mean "unbounded", which is why
+    #: an undeclared window is not treated as a permission.
+    reference_image_aspect_ratio_range: tuple[float, float] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -325,6 +330,18 @@ class ProviderReferenceDeliveryContextV1(_RuntimeModel):
         ):
             raise ValueError("Reference limits must be non-negative integers.")
         return value
+
+    @model_validator(mode="after")
+    def validate_image_aspect_ratio_range(self) -> "ProviderReferenceDeliveryContextV1":
+        window = self.reference_image_aspect_ratio_range
+        if window is None:
+            return self
+        low, high = window
+        if low <= 0 or high < low:
+            raise ValueError(
+                "Reference image aspect ratio range must be positive and ordered."
+            )
+        return self
 
 
 class CanvasRunCancelRequestV2(_RuntimeModel):

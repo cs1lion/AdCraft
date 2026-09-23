@@ -499,6 +499,36 @@ class AgentCanvasRuntimeRepository:
             ) from error
         return _execution(row) if row is not None else None
 
+    def get_latest_execution(self, workflow_id: str) -> CanvasExecutionRecordV2 | None:
+        """Return the workflow's most recent execution, terminal included.
+
+        ``get_active_execution`` only sees non-terminal rows, so a poller that
+        reads a workflow between runs sees an empty snapshot and cannot tell
+        "never ran" from "ran and finished". This lookup answers the second
+        question without scanning every execution in the database.
+        """
+
+        try:
+            with self._database.engine.connect() as connection:
+                row = (
+                    connection.execute(
+                        select(AgentCanvasExecutionRow)
+                        .where(AgentCanvasExecutionRow.workflow_id == workflow_id)
+                        .order_by(
+                            AgentCanvasExecutionRow.created_at.desc(),
+                            AgentCanvasExecutionRow.execution_id.desc(),
+                        )
+                        .limit(1)
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+        except SQLAlchemyError as error:
+            raise _error(
+                "execution_persistence_failed", "Execution storage is unavailable."
+            ) from error
+        return _execution(row) if row is not None else None
+
     def list_latest_members_for_workflow(
         self,
         workflow_id: str,

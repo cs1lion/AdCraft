@@ -12,17 +12,19 @@ from app.schemas.agent_operation_contexts import (
     SceneExpertAgentContext,
 )
 from app.schemas.workflow_v2 import (
+    V2GenerationTarget,
     WorkflowV2ChatActionTarget,
     WorkflowV2FreeNodeCreateRequest,
     WorkflowV2FreeNodeGenerateRequest,
 )
+from app.services.v2_agent_router import V2AgentRouter
 from app.services.v2_agent_target_resolver import V2AgentTargetResolver
-from app.services.v2_pi_planning_session import V2PiPlanningSession
 from app.services.v2_pi_agent_context import (
     V2AgentContextBuilder,
-    agent_for_semantic_family,
     isolate_agent_input_payload,
 )
+from app.services.v2_pi_planning_session import V2PiPlanningSession
+from app.services.v2_specialist_ownership import ownership_scope_for
 from app.services.workflow_v2 import WorkflowV2Service
 from tests.helpers.asset_factories import (
     make_v2_asset_relation,
@@ -163,14 +165,37 @@ def test_parallel_pi_expert_invocations_keep_distinct_identity_and_context() -> 
 
 
 def test_pi_agent_owner_map_has_one_owner_for_each_generation_family() -> None:
-    assert agent_for_semantic_family("product_main_image") == "product_designer"
-    assert agent_for_semantic_family("character_three_view") == "character_designer"
-    assert agent_for_semantic_family("scene_multi_view_grid") == "scene_designer"
-    assert agent_for_semantic_family("shot_cell_1") == "storyboard_artist"
-    assert agent_for_semantic_family("shot_cell_4") == "storyboard_artist"
-    assert agent_for_semantic_family("shot_video_segment") == "video_director"
-    assert agent_for_semantic_family("bgm_audio") == "bgm_director"
-    assert agent_for_semantic_family("free_video") == "quick_media_agent"
+    router = V2AgentRouter()
+
+    def route(**target_fields: object) -> str:
+        target = V2GenerationTarget(
+            workflow_id="adwf_v2_owner_map",
+            **target_fields,
+        )
+        return router.route(target).specialist
+
+    assert route(node_id="product-generation", slot_type="product_main_image") == (
+        "product_designer"
+    )
+    assert route(node_id="character-generation", slot_type="character_three_view") == (
+        "character_designer"
+    )
+    assert route(node_id="scene-generation", slot_type="scene_multi_view_grid") == (
+        "scene_designer"
+    )
+    assert route(node_id="storyboard", slot_type="shot_cell_1") == "storyboard_artist"
+    assert route(node_id="storyboard", slot_type="shot_cell_4") == "storyboard_artist"
+    assert route(node_id="storyboard", slot_type="shot_video_segment") == "video_director"
+    assert route(node_id="bgm", slot_type="bgm_audio") == "sound_director"
+    assert (
+        route(
+            node_id="free-generation",
+            slot_type="free_output",
+            media_type="video",
+            is_free_generation=True,
+        )
+        == "quick_video_generator"
+    )
 
 
 def test_pi_agent_context_excludes_unowned_and_unsafe_payloads() -> None:
@@ -208,16 +233,24 @@ def test_pi_agent_context_excludes_unowned_and_unsafe_payloads() -> None:
     assert "secret" not in serialized
 
 
-def test_final_composition_has_no_pi_agent_owner() -> None:
-    try:
-        agent_for_semantic_family("final_video")
-    except ValueError as exc:
-        assert str(exc) == "agent_semantic_family_not_allowed"
-    else:
-        raise AssertionError("Final Composition must remain Python-owned.")
+def test_final_composition_remains_python_owned() -> None:
+    # Final composition is routed to a dedicated owner, but that owner must
+    # stay a Python tool, never an LLM specialist (replaces the old
+    # agent_for_semantic_family("final_video") ValueError contract).
+    route = V2AgentRouter().route(
+        V2GenerationTarget(
+            workflow_id="adwf_v2_owner_map",
+            node_id="final-composition",
+            slot_type="final_video",
+        )
+    )
+    assert route.specialist == "composition_tool"
+    scope = ownership_scope_for("composition_tool")
+    assert scope is not None
+    assert scope.is_llm_specialist is False
 
 
-def test_targeted_context_contains_only_bounded_target_owned_state(
+def test_asset_revision_context_contains_only_bounded_target_owned_state(
     v2_media_data_dir,
 ) -> None:
     workflow = make_v2_completed_asset_workflow(
@@ -267,14 +300,14 @@ def test_targeted_context_contains_only_bounded_target_owned_state(
         conversation_context_source=FakeConversationContextSource(),
         recent_message_limit=12,
         recent_message_bytes=4_096,
-    ).build_targeted_revision(
+    ).build_asset_revision(
         workflow_id=workflow.workflow_id,
         conversation_id="conv-context",
         target=target,
         user_instruction="Keep the identity and change the jacket to navy.",
     )
 
-    assert context.context_kind == "targeted_revision"
+    assert context.context_kind == "asset_revision"
     assert context.target.node_id == "character-generation"
     assert context.target.item_id == "character-1"
     assert context.target.slot_id == "character-1:character_main_image"

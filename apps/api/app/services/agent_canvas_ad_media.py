@@ -39,9 +39,17 @@ class AdMediaRoleRegistry:
     def validate_node_type(self, node_type: str, semantic_role: str) -> None:
         contract = self.get(semantic_role)
         if contract.node_type != node_type:
+            # Name both node types: the role registry already declares the
+            # only node type a role may live on, so telling the caller what it
+            # sent turns "incompatible" into a one-field correction.
             raise _error(
                 "semantic_role_node_type_mismatch",
                 "Semantic role is incompatible with the node type.",
+                details={
+                    "semantic_role": semantic_role,
+                    "expected_node_type": contract.node_type,
+                    "received_node_type": node_type,
+                },
             )
 
     def validate_structured_content(
@@ -61,7 +69,19 @@ class AdMediaRoleRegistry:
                 "scene": "scene_design_board_contract_invalid",
                 "storyboard_sequence": "storyboard_grid_contract_invalid",
             }.get(semantic_role, "invalid_role_content")
-            raise _error(code, "Structured role content is invalid.") from error
+            # Flatten Pydantic's error list into field paths. Without these
+            # every role that is not scene/storyboard collapses to the same
+            # opaque code, so the caller cannot tell what the model expects;
+            # ``content_schema_ref`` names the model to read next.
+            raise _error(
+                code,
+                "Structured role content is invalid.",
+                details={
+                    "semantic_role": semantic_role,
+                    "content_schema_ref": registered.contract.content_schema_ref,
+                    "validation_paths": _flatten_validation_paths(error),
+                },
+            ) from error
 
 
 class AdMediaDraftValidationService:
@@ -128,5 +148,32 @@ def _role_registry() -> dict[str, _RegisteredRole]:
     return roles
 
 
-def _error(code: str, message: str) -> V2PersistenceError:
-    return V2PersistenceError(code, message, stage="ad_media_role_registry")
+def _flatten_validation_paths(error: ValidationError, *, limit: int = 32) -> list[str]:
+    """Flatten Pydantic's error list into dotted field paths.
+
+    Capped so a deeply invalid payload cannot blow the response body up on a
+    client that is only going to read the first few entries anyway.
+    """
+    paths: list[str] = []
+    for entry in error.errors():
+        location = entry.get("loc") or ()
+        path = ".".join(str(part) for part in location)
+        if path and path not in paths:
+            paths.append(path)
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def _error(
+    code: str,
+    message: str,
+    *,
+    details: dict[str, object] | None = None,
+) -> V2PersistenceError:
+    return V2PersistenceError(
+        code,
+        message,
+        stage="ad_media_role_registry",
+        details=details,
+    )

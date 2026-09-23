@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DEFAULT_DIST_DIRECTORY = new URL("../../dist/", import.meta.url).pathname;
+const DEFAULT_DIST_DIRECTORY = fileURLToPath(new URL("../../dist/", import.meta.url));
 const MAX_MAIN_JS_BYTES = 650 * 1024;
 const MAX_INITIAL_JS_BYTES = 475 * 1024;
 // The core total includes lazy route chunks such as the Project cover preview UI.
@@ -11,6 +12,7 @@ const MAX_AGENT_CANVAS_ROUTE_CSS_BYTES = 48 * 1024;
 const MAX_VENDOR_REACT_FLOW_JS_BYTES = 220 * 1024;
 const MAX_VENDOR_REACT_FLOW_CSS_BYTES = 20 * 1024;
 const MAX_ASSET_VIEWER_JS_BYTES = 8 * 1024;
+const MAX_AGENT_CANVAS_CHAT_JS_BYTES = 424 * 1024;
 const MAX_CSS_BYTES = 16 * 1024;
 const MAX_HOME_ROUTE_CSS_BYTES = 16 * 1024;
 
@@ -109,10 +111,13 @@ const agentCanvasRouteCss = cssAssets.find((asset) => asset.name.startsWith("Wor
 const vendorReactFlowJs = jsAssets.find((asset) => asset.name.startsWith("vendor-react-flow-"));
 const vendorReactFlowCss = cssAssets.find((asset) => asset.name.startsWith("vendor-react-flow-"));
 const assetViewerJs = jsAssets.find((asset) => asset.name.startsWith("CanonicalAssetViewer-"));
-// The asset viewer is loaded only after a user opens an asset card.
+const agentCanvasChatJs = jsAssets.find((asset) => asset.name.startsWith("AgentCanvasChatPanel-"));
+// The asset viewer is loaded only after a user opens an asset card; the
+// chat panel is lazy-loaded inside the Agent Canvas route.
 const featureJsAssets = [
   agentCanvasRouteJs,
   vendorReactFlowJs,
+  agentCanvasChatJs,
   assetViewerJs,
 ].filter(Boolean);
 const featureJsNames = new Set(featureJsAssets.map((asset) => asset.name));
@@ -186,6 +191,11 @@ if (
   && !agentCanvasStaticFiles.has(vendorReactFlowJs.name)
 ) {
   failures.push("Agent Canvas Workflow route does not own the React Flow vendor chunk");
+}
+if (!agentCanvasChatJs) {
+  failures.push("Agent Canvas chat panel lazy chunk is missing");
+} else if (agentCanvasChatJs.size > MAX_AGENT_CANVAS_CHAT_JS_BYTES) {
+  failures.push(`Agent Canvas chat panel JS ${agentCanvasChatJs.name} is ${bytes(agentCanvasChatJs.size)}, expected <= ${bytes(MAX_AGENT_CANVAS_CHAT_JS_BYTES)}`);
 }
 if (!assetViewerJs) {
   failures.push("asset viewer lazy chunk is missing");

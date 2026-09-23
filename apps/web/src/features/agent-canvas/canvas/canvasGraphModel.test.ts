@@ -564,6 +564,30 @@ describe("canvasGraphModel", () => {
     expect(toAgentCanvasFlowEdges([{ ...binding, enabled: false }], nodes)).toEqual([]);
   });
 
+  it("draws the 3D previs edge that grounds a video node", () => {
+    // A scene-3d node is visible, so the previs -> video binding the connection
+    // policy calls canonical (``("scene-3d", "video"): ("video_reference",)``)
+    // becomes a real edge.  It is the only edge a previs can ever have: the
+    // scene board and turnaround that ground it are assets, and an asset has no
+    // node to anchor an edge on, so those show up in the node workbench instead.
+    const previs = {
+      ...node("scene-3d-1", "scene-3d"),
+      creative_role: "scene_3d_previs" as const,
+    };
+    const nodes = [previs, workflow.nodes[1]!];
+    const previsBinding = {
+      ...workflow.bindings[0]!,
+      source: { kind: "node_output" as const, source_node_id: "scene-3d-1" },
+    };
+
+    expect(toAgentCanvasFlowEdges([previsBinding], nodes)).toEqual([expect.objectContaining({
+      id: "binding-1",
+      source: "scene-3d-1",
+      target: "video-1",
+    })]);
+    expect(toAgentCanvasFlowEdges([previsBinding], [workflow.nodes[1]!])).toEqual([]);
+  });
+
   it("selects explicit input roles from canonical source node media types", () => {
     expect(inputRoleForSourceNode(node("brief", "text"))).toBe("text_context");
     expect(inputRoleForSourceNode(node("script", "script"))).toBe("text_context");
@@ -571,6 +595,9 @@ describe("canvasGraphModel", () => {
     expect(inputRoleForSourceNode(node("video", "video"))).toBe("video_reference");
     expect(inputRoleForSourceNode(node("audio", "audio"))).toBe("audio_reference");
     expect(inputRoleForSourceNode(node("editing", "editing"))).toBe("video_reference");
+    expect(
+      inputRoleForSourceNode({ ...node("scene-3d-1", "scene-3d"), creative_role: "scene_3d_previs" })
+    ).toBe("video_reference");
   });
 
   it("places a new node near the preferred point without overlapping existing cards", () => {

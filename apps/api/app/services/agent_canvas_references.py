@@ -30,6 +30,16 @@ from app.services.agent_canvas_role_reference_policy import (
 )
 
 
+#: Omission reasons that come from composing a provider reference set, whether
+#: the provider refused the slot or we chose not to fill it with an over-share
+#: design reference.  Both identify an asset-backed binding exactly, so both are
+#: authoritative for a frozen run; only ``omitted_no_output`` means the asset was
+#: never there.
+_ASSET_OMISSION_REASON_CODES = frozenset(
+    {"omitted_provider_reference_limit", "omitted_reference_share"}
+)
+
+
 class AdReferenceBundleResolver:
     """Resolve only persisted bindings attached to the target node."""
 
@@ -105,7 +115,8 @@ class AdReferenceBundleResolver:
                     matches = source is not None and omission.source_node_id == source.node_id
                     if binding.source.kind == "image_asset":
                         matches = (
-                            omission.reason_code == "omitted_provider_reference_limit"
+                            omission.reason_code
+                            in _ASSET_OMISSION_REASON_CODES
                             and omission.source_node_id is None
                             and omission.asset_id == binding.source.source_asset_id
                             and (

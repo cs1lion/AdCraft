@@ -2646,5 +2646,7 @@ class TimelineClipRow(Base):
     subtitle_text: Mapped[str | None] = mapped_column(Text)
     # JSON-encoded TimelineSubtitleStyleV1; NULL = renderer/default SRT styling
     subtitle_style_json: Mapped[str | None] = mapped_column(Text)
+    # JSON-encoded list of {time_seconds, value} volume envelope points
+    volume_keyframes_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)

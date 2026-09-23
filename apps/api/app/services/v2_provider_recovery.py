@@ -56,6 +56,10 @@ class V2ProviderRecoveryDecision(BaseModel):
     provider_error_code: str | None
     provider_error_message: str | None
     max_attempts: int
+    # How long to actually wait before the next attempt.  Rate-limit retries
+    # must clear the provider's request-per-minute window, so this is computed
+    # from the configured RPM rather than from a generic exponential curve.
+    retry_delay_seconds: float = 0.0
 
 
 class V2ProviderRetryMetadata(BaseModel):
@@ -92,6 +96,13 @@ class V2ProviderRecoveryPolicy:
             provider_error_code=result.error_code,
             provider_error_message=result.error_message,
             max_attempts=max_attempts,
+            retry_delay_seconds=_provider_retry_delay_seconds(
+                reason_code,
+                retry_attempts_used,
+                self._rpm_window_seconds(),
+                self._base_delay_seconds(),
+                self._max_delay_seconds(),
+            ),
         )
 
     def _max_attempts(self, media_type: str) -> int:
@@ -100,6 +111,32 @@ class V2ProviderRecoveryPolicy:
         if media_type == "audio":
             return max(1, int(self._settings.provider_max_attempts_audio))
         return max(1, int(self._settings.provider_max_attempts_image))
+
+    def _rpm_window_seconds(self) -> float:
+        """Seconds one request-per-minute window covers at the configured RPM.
+
+        The video provider caps at 10 requests per minute, i.e. one slot every
+        6 seconds.  A rate-limited retry that waits less than that is
+        guaranteed to be rejected again -- which is exactly what used to happen
+        (0.5s -> 2.0s against a 6s window, then ``provider_retry_exhausted``).
+        """
+
+        rpm = getattr(self._settings, "provider_requests_per_minute", 0) or 0
+        if rpm <= 0:
+            return 0.0
+        return max(1.0, 60.0 / float(rpm))
+
+    def _base_delay_seconds(self) -> float:
+        return max(
+            0.0,
+            float(getattr(self._settings, "provider_transient_retry_base_delay_seconds", 0.5)),
+        )
+
+    def _max_delay_seconds(self) -> float:
+        configured = getattr(self._settings, "provider_transient_retry_max_delay_seconds", None)
+        if configured:
+            return float(configured)
+        return max(_TRANSIENT_RETRY_MAX_DELAY_SECONDS, self._rpm_window_seconds())
 
     def _recoverable_reason(self, result: V2ProviderResult) -> str | None:
         code = str(result.error_code or "").strip()
@@ -225,7 +262,7 @@ class V2ProviderRecoveryRunner:
                 append_event=append_event,
             )
             retry_plan = _retry_plan(current_plan, slot, decision)
-            retry_delay = _provider_retry_delay_seconds(decision, retry_attempts_used)
+            retry_delay = decision.retry_delay_seconds
             if retry_delay > 0:
                 self._sleep(retry_delay)
             self._append_retry_event(
@@ -370,20 +407,25 @@ def _is_terminal_provider_error(normalized_code: str, haystack: str) -> bool:
 
 
 def _provider_retry_delay_seconds(
-    decision: V2ProviderRecoveryDecision,
+    reason_code: str | None,
     retry_attempts_used: int,
+    rpm_window_seconds: float = 0.0,
+    base_delay_seconds: float = _TRANSIENT_RETRY_BASE_DELAY_SECONDS,
+    max_delay_seconds: float = _TRANSIENT_RETRY_MAX_DELAY_SECONDS,
 ) -> float:
-    if decision.reason_code not in {
+    if reason_code not in {
         PROVIDER_RECOVERABLE_TIMEOUT,
         PROVIDER_RECOVERABLE_RATE_LIMIT,
         PROVIDER_RECOVERABLE_TEMPORARY_FAILURE,
     }:
         return 0.0
+    # A rate limit is not an outage: the window simply has not rolled over yet.
+    # Waiting one full RPM window is the only delay that can succeed, and
+    # retrying sooner actively burns the remaining attempt budget.
+    if reason_code == PROVIDER_RECOVERABLE_RATE_LIMIT and rpm_window_seconds > 0:
+        return max(rpm_window_seconds, base_delay_seconds * (2 ** max(0, retry_attempts_used - 1)))
     exponent = max(0, retry_attempts_used - 1)
-    return min(
-        _TRANSIENT_RETRY_MAX_DELAY_SECONDS,
-        _TRANSIENT_RETRY_BASE_DELAY_SECONDS * (2**exponent),
-    )
+    return min(max_delay_seconds, base_delay_seconds * (2**exponent))
 
 
 def _retry_metadata(

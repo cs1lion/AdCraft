@@ -1530,10 +1530,10 @@ function normalizeProjectV2Summary(value: unknown): import("../types-v2.ts").Pro
     is_favorite: record.is_favorite,
     cover_asset_id: stringOrNull(record.cover_asset_id) ?? null,
     cover_version_id: stringOrNull(record.cover_version_id) ?? null,
-    cover_state: coverState,
+    cover_state: coverState ?? "unresolved",
     cover_source: coverSource ?? null,
     cover_updated_at: coverUpdatedAt ?? null,
-    cover: normalizeProjectCoverV2(record.cover),
+    cover: normalizeProjectCoverV2(record.cover) ?? null,
     project_version: requiredPositiveInteger(record, "project_version"),
     updated_at: requiredProjectString(record, "updated_at"),
   };

@@ -53,6 +53,7 @@ export const agentCanvasApi = {
   runAgentCanvas: v2Api.runAgentCanvas,
   cancelAgentCanvasRun: v2Api.cancelAgentCanvasRun,
   getWorkflowProgress: v2Api.getWorkflowProgress,
+  getCreationFlowAssessment: v2Api.getCreationFlowAssessment,
   agentCanvasRuntime: v2Api.agentCanvasRuntime,
   agentCanvasEvents: v2Api.agentCanvasEvents,
   openAgentCanvasEventStream: v2Api.openAgentCanvasEventStream,

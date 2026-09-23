@@ -14,9 +14,47 @@ from app.schemas.agent_canvas import (
 
 
 class AgentCanvasConnectionPolicyService:
-    """Own the versioned, deterministic Canvas connection policy."""
+    """Own the versioned, deterministic Canvas connection policy.
+
+    The rules are immutable by construction: a caller who mints an
+    ``agent_canvas_v1`` payload for another policy version has that payload
+    dropped, and the rules stay.
+
+    Two tables, not one, because they answer different questions.  ``_roles``
+    answers "what may a node of this type contribute to a node of that type";
+    ``image_asset_targets`` answers the narrower question "what may an uploaded
+    asset contribute", which is only ever a *reference* -- an asset carries no
+    text a text or script node could use, which is why those targets are absent.
+
+    ``decide`` narrows ``_roles`` through ``image_asset_targets`` whenever the
+    source is an asset, so an asset target missing here silently retires the
+    ``_roles`` rule above it.  That is what happened to scene-3d: the rule
+    ``("image", "scene-3d"): ("image_reference",)`` has been in place since the
+    3D previs shipped, yet binding a scene design board or a character
+    turnaround to a previs node failed with ``canvas_connection_incompatible``,
+    because the one source type that can carry those artifacts -- an asset --
+    was the one type this table did not list.  The previs nodes therefore ran
+    with no scene reference at all while the video node next to them accepted
+    the same assets happily.
+
+    Adding scene-3d here restores the declared rule instead of weakening the
+    table: the asset still only ever contributes a reference, never a text
+    context, and the number of asset types any target accepts stays unchanged
+    for every other node type.
+    """
 
     policy_version = "agent_canvas_connection_policy_v1"
+
+    #: Uploaded image assets may contribute a reference to these target node
+    #: types.  scene-3d takes the same ``image_reference`` the ``_roles`` entry
+    #: below grants a generated image node; the previs is the node that most
+    #: needs the scene board and the turnaround, so omitting it here made the
+    #: declared rule unreachable for exactly the sources that carry them.
+    image_asset_targets = {
+        "image": ("image_reference",),
+        "video": ("image_reference",),
+        "scene-3d": ("image_reference",),
+    }
 
     _target_node_types: dict[CanvasNodeTypeV2, tuple[CanvasNodeTypeV2, ...]] = {
         "text": ("text", "script"),
@@ -91,10 +129,7 @@ class AgentCanvasConnectionPolicyService:
                 )
                 for (source, target), roles in self._roles.items()
             ),
-            image_asset_targets={
-                "image": ("image_reference",),
-                "video": ("image_reference",),
-            },
+            image_asset_targets=dict(self.image_asset_targets),
             binding_kind_by_source_type=self._binding_kinds,
             model_validation={"explicit_model": "authoring_and_run", "automatic_model": "run"},
         )

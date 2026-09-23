@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.core.config import Settings, get_settings
 from app.schemas.health import HealthResponse
@@ -7,10 +7,14 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health", response_model=HealthResponse)
-def get_health(settings: Settings = Depends(get_settings)) -> HealthResponse:
+def get_health(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> HealthResponse:
     return HealthResponse(
         status="ok",
         service=settings.app_name,
         version=settings.app_version,
         mode="mock" if settings.agent_runtime_mode == "fake" else "real",
+        agent_runtime=getattr(request.app.state, "agent_runtime_status", None) or "unknown",
     )

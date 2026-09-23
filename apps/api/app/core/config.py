@@ -123,8 +123,18 @@ class Settings:
     api_access_token: str | None = None
     image_generation_api_key: str | None = None
     image_generation_endpoint: str | None = None
-    image_generation_model: str = "doubao-seedream-5-0-lite-260128"
-    image_generation_size: str = "2048x2048"
+    #: The image endpoint this deployment is configured against is StepFun's
+    #: step_plan gateway, so the executable model is a StepFun one.  The old
+    #: ``doubao-seedream-5-0-lite-260128`` default is retired: it is an Ark model
+    #: and the gateway answers 404 for it.
+    image_generation_model: str = "step-image-edit-2"
+    #: Must be a size ``step-image-edit-2`` accepts -- see
+    #: ``stepfun_image_contract``.  ``2048x2048`` was the default while this
+    #: pointed at Volcengine Ark, and it is not one of the five sizes StepFun
+    #: documents.  The serializer normalizes an unlisted size onto the nearest
+    #: supported one, so a stale value degrades instead of failing, but the
+    #: default should not need that.
+    image_generation_size: str = "1024x1024"
     video_generation_api_key: str | None = None
     video_generation_endpoint: str | None = None
     video_generation_model: str = "doubao-seedance-2-0-fast-260128"
@@ -137,7 +147,24 @@ class Settings:
     tts_endpoint: str | None = None
     tts_model: str = "volcengine-tts"
     stepfun_api_key: str | None = None
-    stepfun_tts_endpoint: str = "https://api.stepfun.com/step_plan/v1/audio/speech"
+    #: Documented at ``工具模型.txt:254`` ("非流式语音合成" -> ``POST
+    #: /v1/audio/speech``), served through the ``/step_plan/`` gateway.
+    #:
+    #: Measured 2026-09-21 with the live key (``e2e_output/capability_matrix.log``,
+    #: ``e2e_output/stepplan_artifacts.log``): the direct ``/v1/`` base answers
+    #: 402 ``quota_exceeded`` on *every* capability, while the same request to
+    #: ``/step_plan/v1/`` answers 200 with a real 78 KB MP3.  An earlier note
+    #: here claimed the opposite -- that ``/step_plan/`` answers 401 for audio
+    #: -- but that was measured while the key was revoked, so the gateway
+    #: rejected the credential before it ever routed.  Re-measure before
+    #: trusting either prefix; do not carry this comment forward as fact.
+    #:
+    #: ``STEPFUN_TTS_ENDPOINT`` in ``.env`` overrides this default
+    #: (``os.getenv(..., cls.stepfun_tts_endpoint)``), so a deployment that
+    #: still needs the direct base can set it there without a code change.
+    stepfun_tts_endpoint: str = (
+        "https://api.stepfun.com/step_plan/v1/audio/speech"
+    )
     stepfun_tts_model: str = "stepaudio-2.5-tts"
     stepfun_tts_voice: str = "cixingnansheng"
     fish_audio_api_key: str | None = None
@@ -180,6 +207,28 @@ class Settings:
     provider_max_attempts_image: int = 2
     provider_max_attempts_video: int = 2
     provider_max_attempts_audio: int = 2
+    provider_transient_retry_attempts: int = 3
+    provider_transient_retry_base_delay_seconds: float = 1.0
+    provider_transient_retry_max_delay_seconds: float = 12.0
+    # The video provider (volcengine ARK / Seedance) enforces a hard
+    # requests-per-minute cap.  When set, a rate-limited retry waits one full
+    # window instead of the generic 0.5s->2s curve, which against a 10 RPM cap
+    # was guaranteed to 429 again and burn the retry budget for nothing.
+    provider_requests_per_minute: int = 10
+    scene3d_render_timeout_seconds: int = 1800
+    scene3d_max_concurrent_renders: int = 1
+    scene3d_render_keyframes_only: bool = True
+    # Timeout budget derived from the frame count instead of a flat guess:
+    #   timeout = startup + per_frame * frames_rendered
+    # The flat ``scene3d_render_timeout_seconds`` above stays as the ceiling, so
+    # an operator who wants more headroom raises that rather than the slope.
+    scene3d_render_startup_seconds: int = 90
+    scene3d_render_seconds_per_frame: float = 6.0
+    # The MP4 is the optional half of a previs.  The camera trajectory and the
+    # keyframe schedule are always published as structured content, because
+    # that is what a downstream video node binds; the encoded video is for
+    # reviewers who want to press play.  Set false to skip the encoder.
+    scene3d_emit_video: bool = True
     provider_failure_cooldown_threshold: int = 3
     provider_cooldown_seconds: int = 300
     v2_stale_running_timeout_seconds: int = 900
@@ -197,11 +246,70 @@ class Settings:
     v2_provider_rate_limit_reduced_video_jobs: int = 1
     v2_provider_reference_max_data_url_bytes: int = 4 * 1024 * 1024
     v2_provider_reference_total_data_url_bytes: int = 8 * 1024 * 1024
+    #: Where the app's own ``/media/...`` paths are reachable from the internet.
+    #: See ``v2_provider_reference_input_delivery.py`` -- the library records
+    #: public URLs as *paths*, so every one of them is refused by the public-URL
+    #: gate until this names the host that serves them.
+    provider_reference_public_base_url: str | None = None
     v2_recommended_catalog_root: Path = Path("assets/catalogs/recommended")
     upload_image_max_bytes: int = 20 * 1024 * 1024
     upload_audio_max_bytes: int = 100 * 1024 * 1024
     upload_video_max_bytes: int = 500 * 1024 * 1024
     media_data_dir: Path = Path("data")
+
+    @property
+    def image_generation_credential(self) -> str | None:
+        """The API key that authenticates the *configured* image endpoint.
+
+        A credential is per-vendor, not per-capability, and this deployment
+        reaches two different image vendors through the one
+        ``IMAGE_GENERATION_ENDPOINT`` setting:
+
+        * ``api.stepfun.com`` -- the step_plan gateway, authenticated by
+          ``IMAGE_GENERATION_API_KEY``.
+        * ``api.agnes-ai.cn`` -- authenticated by ``VIDEO_GENERATION_API_KEY``,
+          which is already the Agnes credential for the video endpoint.  Probing
+          this is what makes the Agnes fallback possible at all: the StepFun key
+          gets **401** from ``api.agnes-ai.cn`` while the video key gets **200**
+          and generates (``e2e_output/rose/probe_agnes_image.py``).
+
+        Resolving it here rather than at the call site means the preflight
+        checks in ``v2_provider_executor`` and the connection status written by
+        ``provider_model_bootstrap`` read the same key the request actually
+        sends -- otherwise "credentials missing" is reported for a request that
+        authenticates fine, or a request is sent with a key that 401s.
+
+        Returns the configured image key whenever the endpoint is not
+        recognized, so an unlisted vendor keeps working exactly as before.
+        """
+
+        endpoint = (self.image_generation_endpoint or "").casefold()
+        if "agnes-ai.cn" in endpoint:
+            # Agnes shares one key across image and video, and it is not the
+            # StepFun one.  Fall back to the image key if the video key is
+            # absent, so a partially-configured deployment still has something
+            # to send rather than an empty header.
+            return (self.video_generation_api_key or "").strip() or self.image_generation_api_key
+        return self.image_generation_api_key
+
+    @property
+    def image_generation_provider_label(self) -> str:
+        """``"agnes"`` / ``"stepfun"`` / ``"volcengine"`` for the configured endpoint.
+
+        Used for operator-facing messages and for the provider label on a
+        failure, so the name shown is the gateway the request actually reached.
+        """
+
+        endpoint = (self.image_generation_endpoint or "").casefold()
+        for needle, label in (
+            ("agnes-ai.cn", "agnes"),
+            ("stepfun", "stepfun"),
+            ("volces.com", "volcengine"),
+            ("volcengine", "volcengine"),
+        ):
+            if needle in endpoint:
+                return label
+        return "unknown"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -427,6 +535,73 @@ class Settings:
                     str(cls.provider_max_attempts_audio),
                 )
             ),
+            provider_transient_retry_attempts=max(
+                1,
+                _read_int(
+                    "PROVIDER_TRANSIENT_RETRY_ATTEMPTS",
+                    cls.provider_transient_retry_attempts,
+                ),
+            ),
+            provider_transient_retry_base_delay_seconds=max(
+                0.0,
+                _read_float(
+                    "PROVIDER_TRANSIENT_RETRY_BASE_DELAY_SECONDS",
+                    cls.provider_transient_retry_base_delay_seconds,
+                ),
+            ),
+            provider_transient_retry_max_delay_seconds=max(
+                0.0,
+                _read_float(
+                    "PROVIDER_TRANSIENT_RETRY_MAX_DELAY_SECONDS",
+                    cls.provider_transient_retry_max_delay_seconds,
+                ),
+            ),
+            provider_requests_per_minute=max(
+                0,
+                _read_int(
+                    "PROVIDER_REQUESTS_PER_MINUTE",
+                    cls.provider_requests_per_minute,
+                ),
+            ),
+            scene3d_render_timeout_seconds=min(
+                3600,
+                max(
+                    30,
+                    _read_int(
+                        "SCENE3D_RENDER_TIMEOUT_SECONDS",
+                        cls.scene3d_render_timeout_seconds,
+                    ),
+                ),
+            ),
+            scene3d_max_concurrent_renders=max(
+                1,
+                _read_int(
+                    "SCENE3D_MAX_CONCURRENT_RENDERS",
+                    cls.scene3d_max_concurrent_renders,
+                ),
+            ),
+            scene3d_render_keyframes_only=_read_bool(
+                "SCENE3D_RENDER_KEYFRAMES_ONLY",
+                cls.scene3d_render_keyframes_only,
+            ),
+            scene3d_render_startup_seconds=max(
+                0,
+                _read_int(
+                    "SCENE3D_RENDER_STARTUP_SECONDS",
+                    cls.scene3d_render_startup_seconds,
+                ),
+            ),
+            scene3d_render_seconds_per_frame=max(
+                0.0,
+                _read_float(
+                    "SCENE3D_RENDER_SECONDS_PER_FRAME",
+                    cls.scene3d_render_seconds_per_frame,
+                ),
+            ),
+            scene3d_emit_video=_read_bool(
+                "SCENE3D_EMIT_VIDEO",
+                cls.scene3d_emit_video,
+            ),
             provider_failure_cooldown_threshold=int(
                 os.getenv(
                     "PROVIDER_FAILURE_COOLDOWN_THRESHOLD",
@@ -498,6 +673,9 @@ class Settings:
             v2_provider_reference_total_data_url_bytes=_read_int(
                 "V2_PROVIDER_REFERENCE_TOTAL_DATA_URL_BYTES",
                 cls.v2_provider_reference_total_data_url_bytes,
+            ),
+            provider_reference_public_base_url=(
+                os.getenv("PROVIDER_REFERENCE_PUBLIC_BASE_URL") or None
             ),
             v2_recommended_catalog_root=_read_recommended_catalog_root(),
             upload_image_max_bytes=int(

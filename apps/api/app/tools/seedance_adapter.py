@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote, urlparse
 
 from app.core.config import Settings
 from app.schemas.ad_workflow import SUPPORTED_VIDEO_ASPECT_RATIOS, SUPPORTED_VIDEO_RESOLUTIONS
 from app.schemas.seedance_inputs import SeedanceInputManifestV1, SeedanceMediaInputV1
+from app.services.agnes_image_contract import is_agnes_image_model
+from app.services.stepfun_image_contract import is_stepfun_image_model
 
 from app.tools.media_provider_protocol import (
     ARK_SEEDANCE_RESOLUTION,
     DEFAULT_VIDEO_RATIO,
     SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS,
+    SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS,
+    SEEDANCE_PREFERRED_SEGMENT_SECONDS,
     SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS,
     SEEDREAM_MIN_IMAGE_PIXELS,
     MediaConfigurationError,
@@ -108,24 +113,7 @@ class VolcengineSeedanceAdapter:
         """Serialize the canonical Agent Canvas manifest without rediscovery."""
 
         if self._is_agnes_model(manifest.model_id):
-            # Agnes video API uses prompt field directly
-            agnes_payload: dict[str, Any] = {
-                "model": manifest.model_id,
-                "prompt": manifest.prompt,
-                "mode": "text",
-                "seconds": str(int(manifest.effective_duration_seconds)),
-                "size": "720P",
-                "aspect_ratio": _normalize_video_ratio(manifest.aspect_ratio),
-            }
-            # Add reference images if present
-            image_urls = []
-            for item in manifest.media_inputs:
-                if item.media_type == "image" and item.provider_input_type in {"image_url", "provider_uploaded_url", "data_url"}:
-                    image_urls.append(item.provider_input_value)
-            if image_urls:
-                agnes_payload["mode"] = "reference"
-                agnes_payload["images"] = image_urls
-            return agnes_payload
+            return _agnes_manifest_payload(manifest)
 
         content: list[dict[str, Any]] = [{"type": "text", "text": manifest.prompt}]
         content.extend(_seedance_manifest_content_item(item) for item in manifest.media_inputs)
@@ -147,6 +135,129 @@ class VolcengineSeedanceAdapter:
             self._settings.video_generation_endpoint or "",
             task_id,
         )
+
+
+def _agnes_manifest_payload(manifest: SeedanceInputManifestV1) -> dict[str, Any]:
+    """Build the Agnes request body for a typed Agent Canvas manifest.
+
+    Agnes reads reference media out of three separate arrays -- ``images`` and
+    ``audios`` as plain URL strings, ``videos`` as one object per clip -- so a
+    video reference rides its own channel and takes no image slot.  That is the
+    point of the channel: the finished character and scene pictures a shot is
+    bound to are no longer traded away for the clip that carries its camera.
+
+    ``mode`` is a *separate* decision from which arrays are populated, and it
+    used to be flipped by the image list alone.  A shot bound only to a previs
+    clip therefore shipped as ``"mode": "text"`` with ``videos`` attached to a
+    mode that ignores it -- the media left the building and the provider never
+    saw any of it.  Any of the three arrays now selects reference mode.
+
+    Nothing is trimmed here.  How many of each kind the provider accepts is
+    already enforced per media type by ``apply_provider_reference_limits`` over
+    the same catalog ``reference_limits``, which also records what it withheld
+    as an omission; a second copy of that budget in the adapter could only
+    disagree with it, and the manifest is frozen and carries no omission field
+    to record the disagreement in.  So this layer serializes what it is given
+    and fails loudly on anything it cannot express.
+    """
+
+    payload: dict[str, Any] = {
+        "model": manifest.model_id,
+        "prompt": manifest.prompt,
+        "mode": "text",
+        "seconds": str(int(manifest.effective_duration_seconds)),
+        "size": "720P",
+        "aspect_ratio": _normalize_video_ratio(manifest.aspect_ratio),
+    }
+    images: list[str] = []
+    videos: list[dict[str, Any]] = []
+    audios: list[str] = []
+    #: (array name, position in that array, replacement) per reference, in the
+    #: order the arrays are built -- which is the manifest's own order.
+    described: list[tuple[str, int, str]] = []
+    for item in manifest.media_inputs:
+        url = _agnes_reference_url(item)
+        description = _agnes_reference_description(item)
+        if item.media_type == "image":
+            images.append(url)
+            described.append(("Picture", len(images), description))
+        elif item.media_type == "video":
+            # ``start_seconds`` and ``require_audio`` describe one clip's own
+            # trim and soundtrack; nothing in the manifest records either, and a
+            # guessed default is a decision made on the provider's behalf.  They
+            # belong here once a binding can carry them, not invented now.
+            videos.append({"url": url})
+            described.append(("Video", len(videos), description))
+        else:
+            audios.append(url)
+            described.append(("Audio", len(audios), description))
+    if images:
+        payload["images"] = images
+    if videos:
+        payload["videos"] = videos
+    if audios:
+        payload["audios"] = audios
+    if described:
+        payload["mode"] = "reference"
+        payload["prompt"] = _agnes_reference_directives(manifest.prompt, described)
+    return payload
+
+
+def _agnes_reference_url(item: SeedanceMediaInputV1) -> str:
+    """The one thing Agnes accepts in a reference array: a URL it can fetch.
+
+    ``images`` and ``audios`` are bare strings, ``videos`` is ``{"url": ...}``
+    per clip.  ``data_url`` counts because the bytes are inline and already
+    ours; ``provider_uploaded_url`` and ``{media_type}_url`` are URLs.  A
+    ``provider_file_id`` has no URL form on this endpoint, and skipping it is
+    exactly how this branch used to lose whole media types without a word -- so
+    it raises instead, and the run says which reference it could not express.
+    """
+
+    if item.provider_input_type == f"{item.media_type}_url":
+        return item.provider_input_value
+    if item.provider_input_type == "provider_uploaded_url":
+        return item.provider_input_value
+    if item.provider_input_type == "data_url" and item.media_type == "image":
+        return item.provider_input_value
+    raise ValueError("provider_reference_delivery_unavailable")
+
+
+def _agnes_reference_description(item: SeedanceMediaInputV1) -> str:
+    """What this reference is for, in the operator's own validated wording.
+
+    ``reference_instruction`` was compiled from the binding's
+    reference kind and purpose by ``compile_provider_reference_instruction``,
+    which is why it is preferred over the label: the label names the asset, the
+    instruction says what to do with it.  Only single-line text can go into the
+    prompt block.
+    """
+
+    text = item.reference_instruction or item.label
+    return " ".join(str(text).split())
+
+
+def _agnes_reference_directives(
+    prompt: str,
+    described: Sequence[tuple[str, int, str]],
+) -> str:
+    """Tell the model what each numbered reference is for.
+
+    Agnes resolves ``<Picture N>`` / ``<Video N>`` / ``<Audio N>`` against the
+    corresponding array *by position*, each numbered from 1 on its own, so the
+    numbering in the text and the order of the array are the same claim stated
+    twice -- which is why both are built from one walk.  The provider's own
+    guidance is that unattributed material is harder to steer than none, and a
+    video reference especially so: "follow this camera" has to be said.
+    """
+
+    lines = [f"<{name} {position}>: {description}" for name, position, description in described]
+    if not lines:
+        return prompt
+    body = "\n".join(lines)
+    if not prompt.strip():
+        return body
+    return f"{prompt.rstrip()}\n\nReference materials:\n{body}"
 
 
 def _seedance_image_content_items(input_assets: Any) -> list[dict[str, Any]]:
@@ -365,7 +476,21 @@ def _normalize_video_ratio(value: Any) -> str:
     return normalized
 
 
-def _normalize_image_generation_size(value: Any) -> str:
+def _normalize_image_generation_size(value: Any, *, model: str = "") -> str:
+    """Normalize a configured image size for the model that will receive it.
+
+    The 3,686,400-pixel floor is a Volcengine Ark seedream requirement -- it is
+    exactly 1920x1920, which is why ``IMAGE_GENERATION_SIZE`` was pinned there.
+    StepFun's image models have no such floor: they accept a closed set of five
+    or six specific sizes, the smallest documented one being 256x256.  Applying
+    the Ark floor to a StepFun request is what made every StepFun size below
+    1920x1920 a local configuration error, which in turn forced the config to
+    carry a resolution the gateway does not accept at all.
+
+    ``model`` is the model the request will actually name.  It defaults to empty,
+    which keeps the Ark floor for every caller that does not say otherwise.
+    """
+
     raw = str(value or "").strip()
     normalized = raw.replace("X", "x").replace(" ", "").lower()
     parts = normalized.split("x")
@@ -376,13 +501,26 @@ def _normalize_image_generation_size(value: Any) -> str:
         )
 
     width, height = (int(part) for part in parts)
+    if width <= 0 or height <= 0:
+        raise MediaConfigurationError(
+            "IMAGE_GENERATION_SIZE must be WxH with at least "
+            f"{SEEDREAM_MIN_IMAGE_PIXELS} pixels; got {raw!r}."
+        )
+    if is_stepfun_image_model(model) or is_agnes_image_model(model):
+        # StepFun's constraint is a closed set of sizes, not a pixel floor, and
+        # ``serialize_volcengine_image_generation_request`` maps anything outside
+        # the set onto the nearest supported value.  Rejecting here would only
+        # re-impose the Ark floor under a different name.  Agnes documents a
+        # ``width x height`` table whose smallest entry is 864x1152 (995,328
+        # pixels, well under the floor), so the same exemption applies to it.
+        return normalized
     pixels = width * height
-    if width <= 0 or height <= 0 or pixels < SEEDREAM_MIN_IMAGE_PIXELS:
+    if pixels < SEEDREAM_MIN_IMAGE_PIXELS:
         raise MediaConfigurationError(
             "IMAGE_GENERATION_SIZE must be WxH with at least "
             f"{SEEDREAM_MIN_IMAGE_PIXELS} pixels; got {raw!r} ({pixels} pixels)."
         )
-    return f"{width}x{height}"
+    return normalized
 
 
 def _ark_seedance_video_task_payload(
@@ -655,15 +793,38 @@ def _scene_prompt_group(
 
 
 def _normalized_segment_durations(total_duration: int) -> list[int]:
-    if total_duration % 5 != 0:
+    """Split a total duration into per-task segments the model actually accepts.
+
+    The old implementation required ``total_duration % 5 == 0`` and emitted a
+    list of 10s (plus one 5s), which made any shot whose length was not a
+    multiple of five -- every 3D previs shot in the rose workflow -- impossible
+    to segment at all.  Segments now target the model's 7-8s quality band and
+    fall back to whole seconds that still sum exactly to ``total_duration``.
+    """
+
+    total = int(total_duration)
+    if total < SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS:
         raise ValueError(
-            "Cannot normalize final video duration into Seedance 5 or 10 second "
-            f"segments: got {total_duration} seconds."
+            "Final video duration must be at least "
+            f"{SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS} second; got {total} seconds."
         )
-    ten_second_count, remainder = divmod(total_duration, 10)
-    durations = [10] * ten_second_count
-    if remainder:
-        durations.append(5)
+
+    target = min(SEEDANCE_PREFERRED_SEGMENT_SECONDS, SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS)
+    count = max(1, -(-total // target))  # ceil(total / target)
+    count = max(count, -(-total // SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS))
+
+    base, remainder = divmod(total, count)
+    # Spread the remainder over the leading segments (never the trailing one) so
+    # the shot's closing beat is not the shortest -- that reads as an edit.
+    durations = [base + (1 if index < remainder else 0) for index in range(count)]
+
+    for duration in durations:
+        if duration not in SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS:
+            raise ValueError(
+                "Cannot split the final video duration into Seedance segments "
+                f"of {SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS}-"
+                f"{SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS} seconds: got {total} seconds."
+            )
     return durations
 
 
@@ -687,10 +848,15 @@ def _seedance_task_duration(duration_seconds: Any) -> int:
         return duration
     if duration > SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS:
         raise ValueError(
-            "Seedance single video generation supports 5 or 10 seconds per task; "
+            "Seedance single video generation supports "
+            f"{SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS} to "
+            f"{SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS} seconds per task; "
             f"got {duration} seconds. Split the workflow into multiple short video "
             "segments and compose them for longer ads."
         )
     raise ValueError(
-        f"Seedance video generation duration must be 5 or 10 seconds; got {duration} seconds."
+        "Seedance video generation duration must be between "
+        f"{SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS} and "
+        f"{SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS} seconds; "
+        f"got {duration} seconds."
     )

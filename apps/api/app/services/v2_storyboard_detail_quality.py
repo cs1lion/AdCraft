@@ -4,6 +4,12 @@ import hashlib
 import re
 from typing import Any
 
+from app.schemas.v2_video_duration import (
+    V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+    V2_VIDEO_RELIABLE_MAX_DURATION_SECONDS,
+    provider_duration_is_reliable,
+)
 from app.schemas.workflow_v2_storyboard_detail import (
     V2StoryboardDetailInput,
     V2StoryboardDetailPlan,
@@ -124,6 +130,7 @@ class V2StoryboardDetailQualityService:
         input_data: V2StoryboardDetailInput,
     ) -> V2StoryboardDetailQualityResult:
         failures: list[str] = []
+        warnings: list[dict[str, Any]] = []
         namespace_failures, _violations = _shot_namespace_failures(plan, input_data)
         failures.extend(namespace_failures)
         failures.extend(_four_cell_failures(plan))
@@ -135,6 +142,7 @@ class V2StoryboardDetailQualityService:
         failures.extend(_video_field_failures(plan))
         failures.extend(_time_segment_failures(plan))
         failures.extend(_duration_failures(plan))
+        warnings.extend(_duration_warnings(plan))
         failures.extend(_dialogue_failures(plan, input_data))
         failures.extend(_audio_policy_failures(plan))
         failures.extend(_negative_constraint_failures(plan))
@@ -144,6 +152,7 @@ class V2StoryboardDetailQualityService:
         return V2StoryboardDetailQualityResult(
             status="failed" if failures else "passed",
             failure_codes=list(dict.fromkeys(failures)),
+            warnings=warnings,
         )
 
 
@@ -558,11 +567,40 @@ def _time_segment_failures(plan: V2StoryboardDetailPlan) -> list[str]:
 
 
 def _duration_failures(plan: V2StoryboardDetailPlan) -> list[str]:
-    if plan.provider_duration_seconds not in {5, 10}:
+    """Is the clip length one the provider will accept?
+
+    Only the provider's advertised range can fail a plan.  A duration inside the
+    range but past the reliable ceiling is *not* a failure: the endpoint takes
+    it, and "this beat wants to run long" is a scripting decision rather than a
+    contract violation.  Making it fail would only buy LLM repair rounds against
+    an answer the provider never refused.  It is reported as a warning instead,
+    because quota spent on a clip the model renders badly is worth warning about
+    before it is spent.
+    """
+
+    duration = plan.provider_duration_seconds
+    if (
+        duration < V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS
+        or duration > V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS
+    ):
         return ["video_uses_supported_duration"]
-    if plan.video_detail.provider_duration_seconds != plan.provider_duration_seconds:
+    if plan.video_detail.provider_duration_seconds != duration:
         return ["video_uses_supported_duration"]
     return []
+
+
+def _duration_warnings(plan: V2StoryboardDetailPlan) -> list[dict[str, Any]]:
+    if provider_duration_is_reliable(plan.provider_duration_seconds):
+        return []
+    return [{
+        "code": "video_duration_beyond_reliable_range",
+        "message": (
+            f"provider_duration_seconds is {plan.provider_duration_seconds}; the provider "
+            f"accepts up to {V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS} but output quality "
+            f"degrades past {V2_VIDEO_RELIABLE_MAX_DURATION_SECONDS}. Consider cutting this "
+            "shot into more beats."
+        ),
+    }]
 
 
 def _dialogue_failures(

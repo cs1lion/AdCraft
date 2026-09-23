@@ -1163,8 +1163,31 @@ def _duration_from_context(context: dict[str, Any]) -> int:
 
 
 def _video_item_duration(value: Any) -> int:
-    duration = _int_value(value, 5)
-    return 10 if duration > 5 else 5
+    """Clamp a shot duration into the range the video provider declares.
+
+    This used to be a local ``return 10 if duration > 5 else 5`` -- a second,
+    independent copy of the {5, 10} fiction that also lived in
+    workflow_node_media_generators.  Both copies had to be repaired: this one is
+    the one that actually runs for a storyboard_video node, because
+    build_storyboard_video_binding_plan() is what feeds the scene prompts the
+    provider executor validates.  Leaving it in place would have silently
+    rewritten every 7s still into a 10s task, which is the band the model is
+    weakest in, so the segment cut would have been correct on disk and wrong on
+    the wire.
+    """
+    from app.tools.media_provider_protocol import (
+        SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS,
+        SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS,
+    )
+
+    try:
+        duration = int(float(value))
+    except (TypeError, ValueError):
+        return 5
+    return max(
+        SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS,
+        min(SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS, duration),
+    )
 
 
 def _error(rule: str, shot_id: str, **extra: Any) -> dict[str, Any]:

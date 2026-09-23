@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { EditingWorkbench } from "./EditingWorkbench.tsx";
+import { LocalEngineWorkbench } from "./LocalEngineWorkbench.tsx";
 import { MediaPromptWorkbench } from "./MediaPromptWorkbench.tsx";
 import { NodeReferenceStrip } from "./NodeReferenceStrip.tsx";
 import { NodePromptPreparationState } from "./NodePromptPreparationState.tsx";
@@ -124,6 +125,14 @@ function VisibleAgentCanvasInlineWorkbench(props: AgentCanvasInlineWorkbenchProp
           onUploadReferences={onUploadReferences}
           promptEditorRef={promptEditorRef}
           preparingPrompt={preparingVideoPrompt}
+        />
+      ) : null}
+      {["voice-cast", "scene-3d"].includes(node.node_type) ? (
+        <LocalEngineWorkbench
+          node={node}
+          runtime={runtime}
+          draft={draft}
+          promptEditorRef={promptEditorRef}
         />
       ) : null}
       {node.node_type === "editing" ? (

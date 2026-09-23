@@ -1,4 +1,4 @@
-﻿"""Public V2 Agent Canvas authoring and project-media endpoints."""
+"""Public V2 Agent Canvas authoring and project-media endpoints."""
 
 from __future__ import annotations
 
@@ -271,7 +271,9 @@ from app.services.agent_canvas_nodes import AgentCanvasNodeService
 from app.services.agent_canvas_node_execution import (
     GeneratedMediaPayload,
     build_default_node_dispatcher,
-    generated_asset_publication_metadata,
+)
+from app.services.agent_canvas_publication_metadata import (
+    asset_publication_metadata,
 )
 from app.services.agent_canvas_provider_recovery import (
     ProviderPollResult,
@@ -317,7 +319,6 @@ from app.services.agent_canvas_provider_prompts import (
 from app.services.agent_canvas_references import AdReferenceBundleResolver
 from app.services.agent_canvas_projects import AgentCanvasProjectService
 from app.services.agent_canvas_requirements import AgentCanvasRequirementService
-from app.persistence.database import create_v2_database
 from app.persistence.timeline_repository import TimelineRepository
 from app.services.timeline_clip_auto_creator import TimelineClipAutoCreator
 from app.services.timeline_editing_integration import TimelineEditingIntegrationService
@@ -1173,10 +1174,7 @@ def create_agent_canvas_runtime(
                 content=payload.content,
                 fingerprint=fingerprint,
                 source_semantic_role=context.node.semantic_role,
-                publication_metadata={
-                    **generated_asset_publication_metadata(context),
-                    **dict(payload.metadata),
-                },
+                publication_metadata=asset_publication_metadata(context, payload.metadata),
             ).asset_id
         ),
         media_context_preparer=prepare_media_context,
@@ -1316,10 +1314,7 @@ def create_agent_canvas_runtime(
                 content=payload.content,
                 fingerprint=fingerprint,
                 source_semantic_role=context.node.semantic_role,
-                publication_metadata={
-                    **generated_asset_publication_metadata(context),
-                    **dict(payload.metadata),
-                },
+                publication_metadata=asset_publication_metadata(context, payload.metadata),
             ).asset_id
         ),
         on_batch_reconciled=lambda execution_ids: [
@@ -1541,10 +1536,6 @@ def create_agent_canvas_runtime(
             workflow_repository,
             model_selection=model_selection,
             candidate_validator=editing_responses.validate_workflow,
-            authoring_context_provider=lambda workflow_id, node: (
-                prompt_context_rebuilder.build(workflow_id, node)
-            ),
-
         ),
         gateway=video_agent_gateway,
         video_skills=video_skills,
@@ -1887,9 +1878,6 @@ def create_agent_canvas_runtime(
         nodes=AgentCanvasNodeService(
             workflow_repository,
             model_selection=model_selection,
-            authoring_context_provider=lambda workflow_id, node: (
-                prompt_context_rebuilder.build(workflow_id, node)
-            ),
         ),
         bindings=binding_service,
         connected_authoring=AgentCanvasConnectedAuthoringService(
@@ -4412,6 +4400,9 @@ def get_creation_flow_assessment(
                 "ready_nodes": s.ready_nodes,
                 "total_nodes": s.total_nodes,
                 "blockers": list(s.blockers),
+                # What this stage actually bound, when the binding lives in a
+                # scene script rather than in nodes of the stage's own roles.
+                "binding_summary": s.binding_summary,
             }
             for s in assessment.stage_statuses
         ],

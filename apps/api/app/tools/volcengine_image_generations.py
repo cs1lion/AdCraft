@@ -2,12 +2,42 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.agnes_image_contract import (
+    AGNES_IMAGE_MODEL_IDS,
+    AGNES_IMAGE_UNSUPPORTED_FIELDS,
+    is_agnes_image_model,
+    normalize_agnes_image_size,
+)
+from app.services.stepfun_image_contract import (
+    clamp_stepfun_image_prompt,
+    normalize_stepfun_image_size,
+)
 from app.services.v2_provider_reference_input_delivery import (
     V2ProviderReferenceWireAudit,
     is_provider_compatible_model_input,
 )
 
+# The image endpoint this deployment is configured against
+# (``IMAGE_GENERATION_ENDPOINT``) is StepFun's step_plan gateway, not
+# Volcengine Ark -- so the models that actually execute are StepFun's
+# ``step-image-edit-2`` / ``step-2x-large``.  Both take the
+# ``sequential_image_generation="disabled"`` branch below, which is why this
+# module keeps its historical Volcengine name while serializing for StepFun.
+# The Volcengine name is historical, but the *body* is not: size and prompt are
+# reconciled against StepFun's documented contract by
+# ``stepfun_image_contract`` before validation, because the two providers do not
+# accept the same values and this one is the gateway that actually answers.
 _SEEDREAM_PRO_MODEL_ID = "doubao-seedream-5-0-pro-260628"
+_STEPFUN_IMAGE_MODEL_IDS = frozenset({"step-image-edit-2", "step-2x-large"})
+# The image endpoint this deployment is configured against is StepFun's
+# step_plan gateway, not Volcengine Ark -- so these are the models that
+# actually execute.  They DO take the ``sequential_image_generation="disabled"``
+# branch (the gateway answers 400 without it, 503 with it), which is the same
+# branch every non-Pro model has always taken.  Named here only so the set is
+# assertable in tests, not to change the branch.
+_EXECUTABLE_IMAGE_MODEL_IDS = frozenset(_STEPFUN_IMAGE_MODEL_IDS) | frozenset(
+    AGNES_IMAGE_MODEL_IDS
+)
 
 
 class V2ProviderRequestContractError(RuntimeError):
@@ -40,15 +70,41 @@ def serialize_volcengine_image_generation_request(
         requested_reference_asset_ids=required_asset_ids,
         request_schema="volcengine-image-generations",
     )
+    # Reconcile the request with the provider's contract *before* the body is
+    # built, so the anti-tamper checks below compare against what is actually
+    # sent.  StepFun accepts five sizes and a 512-character prompt, while the
+    # configured default was ``2048x2048``, this deployment's ``.env`` says
+    # ``1920x1920``, and the guided-parameter table advertised Volcengine Ark
+    # sizes.  Every one of those is a refusal waiting to happen the moment the
+    # gateway stops answering 503 for reasons of its own.  Agnes is a different
+    # contract again -- see ``agnes_image_contract`` -- so the two are branched
+    # rather than merged.
+    canonical_prompt, prompt_normalization = clamp_stepfun_image_prompt(model, canonical_prompt)
+    if is_agnes_image_model(model):
+        size, size_normalization = normalize_agnes_image_size(model, size)
+    else:
+        size, size_normalization = normalize_stepfun_image_size(model, size)
+    for normalization in (size_normalization, prompt_normalization):
+        if normalization is not None:
+            audit.warnings.append(normalization)
     body: dict[str, Any] = {
         "model": model,
         "prompt": canonical_prompt,
         "response_format": response_format,
         "size": size,
-        "watermark": watermark,
     }
-    if model != _SEEDREAM_PRO_MODEL_ID:
-        body["sequential_image_generation"] = "disabled"
+    if is_agnes_image_model(model):
+        # Agnes answers HTTP 400 ``invalid_request`` to both of these, and it
+        # reports ``watermark`` first -- so a body carrying both surfaces only
+        # the watermark and hides the second failure.  Dropping them here is the
+        # only way to keep an Agnes request deliverable; the StepFun models need
+        # ``sequential_image_generation="disabled"`` (the gateway answers 400
+        # without it), which is why the two bodies cannot be merged.
+        body = {key: value for key, value in body.items() if key not in AGNES_IMAGE_UNSUPPORTED_FIELDS}
+    else:
+        body["watermark"] = watermark
+        if model != _SEEDREAM_PRO_MODEL_ID:
+            body["sequential_image_generation"] = "disabled"
     _validate_base_body(body, canonical_prompt=canonical_prompt, audit=audit)
 
     serialized_values: list[str] = []
@@ -114,14 +170,26 @@ def _validate_base_body(
         raise _contract_error(
             "Volcengine image request prompt must match the canonical prompt.", audit
         )
+    # Seedream Pro is retired from the catalog (2026-09-20) but its
+    # "no group generation" rule is kept so the contract does not silently
+    # change for any caller still pinning it.  Every StepFun step_plan model
+    # takes the ``"disabled"`` branch below.  Agnes models are exempt from the
+    # rule entirely: they take neither branch, because Agnes rejects the field
+    # outright -- so "must be disabled" and "must be absent" are both correct
+    # answers for different providers, and naming the provider is the only way
+    # to tell them apart.
     if body.get("model") == _SEEDREAM_PRO_MODEL_ID:
         if "sequential_image_generation" in body:
             raise _contract_error(
                 "Seedream Pro does not accept group generation parameters.", audit
             )
+    elif is_agnes_image_model(str(body.get("model") or "")):
+        if "sequential_image_generation" in body:
+            raise _contract_error(
+                "Agnes image models do not accept sequential_image_generation.", audit
+            )
     elif body.get("sequential_image_generation") != "disabled":
         raise _contract_error("V2 image slots must disable sequential image generation.", audit)
-
 
 def _validate_final_body(
     body: dict[str, Any],

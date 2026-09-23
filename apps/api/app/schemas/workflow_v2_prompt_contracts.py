@@ -4,6 +4,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 
+from app.schemas.v2_video_duration import (
+    V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+)
 from app.schemas.workflow_v2_style import V2VisualStyleAudit, V2VisualStyleContract
 
 PromptContractMaterializerMode = Literal["real", "fallback", "mock"]
@@ -173,7 +177,10 @@ class V2ShotVideoPromptPlan(_PromptContractBase):
     video_negative_constraints: str
     time_segments: list[V2ShotVideoTimeSegment] = Field(min_length=1)
     desired_duration_seconds: int = Field(ge=1)
-    provider_duration_seconds: Literal[5, 10]
+    provider_duration_seconds: int = Field(
+        ge=V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+        le=V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    )
     shot_cell_asset_ids: list[str] = Field(default_factory=list)
 
     @field_validator(

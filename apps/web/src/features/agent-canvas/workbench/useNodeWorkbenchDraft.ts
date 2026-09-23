@@ -109,7 +109,7 @@ export function useNodeWorkbenchDraft({
     || (node.node_type === "text" && !isRunnableText);
   const editsGenerationPrompt = isRunnableScript
     || isRunnableText
-    || ["image", "video", "audio"].includes(node.node_type);
+    || ["image", "video", "audio", "voice-cast", "scene-3d"].includes(node.node_type);
   const canAutosavePrompt = editsGenerationPrompt
     && ["draft", "failed", "ready", "working"].includes(effectiveStatus);
   const usesProvider = !isWorldSetting && ["text", "script", "image", "video", "audio"].includes(node.node_type);

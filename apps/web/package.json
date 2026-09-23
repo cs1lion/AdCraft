@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.json && vite build --manifest",
     "typecheck": "tsc -p tsconfig.json",
-    "lint": "eslint $(git ls-files -- 'src/**/*.ts' 'src/**/*.tsx' 'scripts/**/*.js' 'scripts/**/*.mjs' 'scripts/**/*.cjs' 'scripts/**/*.ts' '*.config.js' '*.config.mjs' '*.config.cjs' '*.config.ts' 'mediaCachePolicy.ts')",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"scripts/**/*.{js,mjs,cjs,ts}\" \"**/*.config.{js,mjs,cjs,ts}\" \"mediaCachePolicy.ts\"",
     "lint:react": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "check:quality": "npm run typecheck && npm run lint && npm test",

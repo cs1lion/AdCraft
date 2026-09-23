@@ -1,32 +1,70 @@
+import type { RefObject } from "react";
+
 import { SendIcon } from "../../../icons.tsx";
 import type { ProviderModelSummaryV1 } from "../../../api/providerRegistry.ts";
-import type { CanvasNodeV2, CanvasRuntimeModelResolutionV2 } from "../../../types-v2.ts";
+import type {
+  CanvasNodeV2,
+  CanvasRuntimeModelResolutionV2,
+  NodeRuntimeV2,
+} from "../../../types-v2.ts";
 import { CanvasModelPicker } from "./CanvasModelPicker.tsx";
 import { FourLinePromptEditor } from "./FourLinePromptEditor.tsx";
 import { NodeWorkbenchError } from "./NodeWorkbenchError.tsx";
 import { NodeAssetActions } from "./NodeAssetActions.tsx";
 import type { NodeWorkbenchDraft } from "./useNodeWorkbenchDraft.ts";
+import {
+  canRetryNodeExecution,
+  failureUserAction,
+  nodeActionableFailure,
+} from "../chat/actionableFailure.ts";
 
 export function MediaPromptWorkbench({
   node,
+  runtime = null,
   draft,
   models,
+  defaultModelRef,
   modelsLoading,
   modelsError,
   modelResolution,
   onOpenAssets,
   onUploadReferences,
+  promptEditorRef,
+  preparingPrompt = false,
 }: {
   node: CanvasNodeV2;
+  runtime?: NodeRuntimeV2 | null;
   draft: NodeWorkbenchDraft;
   models: ProviderModelSummaryV1[];
+  defaultModelRef: string | null;
   modelsLoading: boolean;
   modelsError: string | null;
   modelResolution: CanvasRuntimeModelResolutionV2 | null;
   onOpenAssets: () => void;
   onUploadReferences: () => void;
+  promptEditorRef?: RefObject<HTMLTextAreaElement | null>;
+  preparingPrompt?: boolean;
 }) {
   const canConfigureProvider = node.status === "draft" || draft.isReadyMedia;
+  const regenerating = node.status === "failed"
+    && failureUserAction(nodeActionableFailure(node)) === "regenerate";
+  const retryingExecution = node.status === "failed" && canRetryNodeExecution(node);
+  const runAction = node.status === "ready" || regenerating
+    ? "regenerate"
+    : retryingExecution || node.status === "failed"
+      ? "retry"
+      : "run";
+  const runLabel = `${runAction === "run" ? "Run" : runAction === "retry" ? "Retry" : "Regenerate"} ${node.node_type} node`;
+  const runTitle = runAction === "run"
+    ? "Run node"
+    : runAction === "retry"
+      ? "Retry node"
+      : "Regenerate node";
+  const publishing = runtime?.phase === "publishing";
+  const runDisabled = draft.pending
+    || !draft.prompt.trim()
+    || node.status === "working"
+    || (node.status === "ready" && publishing);
 
   return (
     <div className="agent-node-workbench__body">
@@ -37,8 +75,12 @@ export function MediaPromptWorkbench({
           disabled={draft.pending}
           placeholder={`Describe the ${node.node_type} you want to create.`}
           onChange={(event) => draft.setPrompt(event.currentTarget.value)}
+          editorRef={promptEditorRef}
         />
       </label>
+      {preparingPrompt && !draft.prompt.trim() ? (
+        <span className="agent-node-workbench__preparing-prompt">提示词正在准备...</span>
+      ) : null}
 
       <NodeWorkbenchError draft={draft} />
 
@@ -79,6 +121,7 @@ export function MediaPromptWorkbench({
             <div className="agent-node-workbench__options agent-node-workbench__options--inline" aria-label="Generation options">
               <CanvasModelPicker
                 models={models}
+                defaultModelRef={defaultModelRef}
                 loading={modelsLoading}
                 error={modelsError}
                 selectionMode={draft.modelSelectionMode}
@@ -121,29 +164,16 @@ export function MediaPromptWorkbench({
               ) : null}
             </div>
           ) : null}
-          {draft.isReadyMedia ? (
-            <button
-              type="button"
-              className="agent-node-workbench__run"
-              aria-label={`Generate ${node.node_type} variation`}
-              title="Generate variation"
-              disabled={draft.pending || !draft.prompt.trim()}
-              onClick={() => void draft.materializeVariation("generate")}
-            >
-              <SendIcon />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="agent-node-workbench__run"
-              aria-label={node.status === "failed" ? `Retry ${node.node_type} node` : `Run ${node.node_type} node`}
-              title={node.status === "failed" ? "Retry node" : "Run node"}
-              disabled={draft.pending || !draft.prompt.trim() || node.status === "working"}
-              onClick={() => void draft.run()}
-            >
-              <SendIcon />
-            </button>
-          )}
+          <button
+            type="button"
+            className="agent-node-workbench__run"
+            aria-label={runLabel}
+            title={runTitle}
+            disabled={runDisabled}
+            onClick={() => void draft.run()}
+          >
+            <SendIcon />
+          </button>
         </div>
       </footer>
     </div>

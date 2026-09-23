@@ -84,3 +84,35 @@ openspec/
 docs/superpowers/
 .codegraph/
 apps/*/.codegraph/
+
+# Local scratch artifacts: one-off experiment scripts and rendered media.
+# These live untracked; delete or promote them intentionally, never commit.
+/.quota-design.html
+/stepfun_docs_llm.txt
+/工具模型.txt
+/e2e_output/
+/e2e_production_pipeline.py
+/build_corridor_scene.py
+/call_agnes_corridor.py
+/call_agnes_single.py
+/generate_final_video.py
+/generate_wuxia_final.py
+/render_corridor_full.py
+/render_wuxia.py
+/render_wuxia_async.py
+/stylize_keyframes.py
+/verify_corridor_stills.py
+/*.mp4
+/*.jpg
+/*.jpeg
+/*.png
+apps/api/debug_*.py
+apps/api/fix_*.py
+apps/api/remove_*.py
+apps/api/test_*.py
+apps/api/start_backend.py
+apps/api/agent/test_request.json
+apps/api/agent/validate_request.cjs
+apps/api/scripts/replicate_*.py
+.zcode/
+/玫瑰与白桦-微电影剧本.html

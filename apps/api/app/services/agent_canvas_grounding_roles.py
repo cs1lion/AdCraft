@@ -44,3 +44,21 @@ def canonical_storyboard_reference_role(
     if len(unique_roles) != 1:
         raise ValueError("v2_storyboard_reference_role_mismatch")
     return canonical_roles[0]  # type: ignore[return-value]
+
+
+def canonical_reference_role_or_none(value: object) -> str | None:
+    """Normalize one role name, or return None when it names no known role.
+
+    ``canonical_storyboard_reference_role`` refuses to guess: it raises when two
+    roles disagree or when neither is known, because the storyboard grounding
+    plan is version-pinned and a wrong role would mis-describe the shot.  Budget
+    composition is the opposite situation -- it has to classify every bound
+    reference, including ones whose role vocabulary comes from the automatic
+    reference planner rather than a grounding rule, and it must not raise on a
+    role it has simply never seen.  Falling back to "supporting" there only costs
+    a slot ordering; raising would fail the whole run.
+    """
+
+    if not isinstance(value, str):
+        return None
+    return _ROLE_ALIASES.get(value.strip())

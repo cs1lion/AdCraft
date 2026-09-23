@@ -10,10 +10,17 @@ from app.persistence.agent_canvas_runtime_repository import AgentCanvasRuntimeRe
 from app.schemas.agent_canvas import CanvasNodeErrorV2
 from app.schemas.agent_canvas_errors import ActionableFailureV1
 from app.schemas.agent_canvas_runtime import CanvasExecutionMembershipV2
+from app.services.v2_provider_error_classification import (
+    CLASSIFIED_RETRYABLE_PROVIDER_ERROR_CODES,
+)
 
 
 CLOSED_MEMBER_STATES = frozenset({"succeeded", "failed", "skipped_dependency", "cancelled"})
 CLOSED_EXECUTION_STATES = frozenset({"completed", "partial_completed", "failed", "cancelled"})
+# A node error is only projected as retryable when BOTH the exception carried
+# ``details["retryable"]`` and the code is approved here.  The provider codes
+# come from the shared classifier so a 503 the classifier already called
+# transient cannot be downgraded to permanent by a stale local list.
 APPROVED_TRANSIENT_ERROR_CODES = frozenset(
     {
         "provider_poll_temporary_failure",
@@ -22,7 +29,32 @@ APPROVED_TRANSIENT_ERROR_CODES = frozenset(
         "provider_service_unavailable",
         "provider_transport_interrupted",
     }
+    | CLASSIFIED_RETRYABLE_PROVIDER_ERROR_CODES
 )
+
+#: Ceiling on a persisted node error message.  Provider failures embed the
+#: entire request payload, so a real message runs to several kilobytes and the
+#: cap is hit routinely rather than exceptionally.
+MAX_NODE_ERROR_MESSAGE_CHARS = 1024
+
+_TRUNCATION_MARKER = "... [truncated, {total} chars total]"
+
+
+def bounded_error_message(error: object, *, fallback: str) -> str:
+    """The error text, capped -- but never capped silently.
+
+    Truncating at exactly 1024 characters left the message ending mid-JSON
+    (``"watermark": fa``) with nothing to say so, which reads as a complete
+    thought and sends the operator hunting for a tail that was never stored.
+    The marker states how much was dropped, and the result is always within the
+    ceiling regardless of how many digits the total needs.
+    """
+
+    message = str(error) or fallback
+    if len(message) <= MAX_NODE_ERROR_MESSAGE_CHARS:
+        return message
+    marker = _TRUNCATION_MARKER.format(total=len(message))
+    return f"{message[: MAX_NODE_ERROR_MESSAGE_CHARS - len(marker)]}{marker}"
 
 
 def safe_execution_error(error: Exception, *, default_code: str) -> CanvasNodeErrorV2:
@@ -62,7 +94,7 @@ def safe_execution_error(error: Exception, *, default_code: str) -> CanvasNodeEr
     )
     return CanvasNodeErrorV2(
         code=code,
-        message=(str(error) or "Execution failed.")[:1024],
+        message=bounded_error_message(error, fallback="Execution failed."),
         retryable=retryable,
         actionable_failure=actionable_failure,
         role_variant=_safe_error_text(safe_details, "role_variant", 80) if role_error else None,

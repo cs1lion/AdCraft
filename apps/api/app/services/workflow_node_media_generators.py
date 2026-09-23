@@ -8,6 +8,9 @@ import re
 from typing import Any
 
 from app.services.script_beats import build_default_script_beats, ensure_script_beat_aliases
+from app.tools.media_provider_protocol import (
+    SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS,
+)
 from app.services.workflow_node_media_items import (
     character_media_items as _character_media_items,
     product_media_items as _product_media_items,
@@ -621,6 +624,14 @@ def _video_scene_prompt(
 
 
 def _video_item_duration(value: Any) -> int:
+    """Coerce a storyboard panel duration into a legal single-task length.
+
+    This used to snap anything above 5 seconds to 10, which made the model's
+    actual quality band (7-8s) unreachable: a 7s panel arrived at the provider
+    as 10s and a 12s panel as 10s too.  The value now only gets clamped to the
+    range the provider's own descriptor declares.
+    """
+
     raw = value
     if raw is None:
         return 5
@@ -628,9 +639,7 @@ def _video_item_duration(value: Any) -> int:
         duration = int(float(raw))
     except (TypeError, ValueError):
         return 5
-    if duration <= 5:
-        return 5
-    return 10
+    return max(1, min(SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS, duration))
 
 
 def _storyboard_order(scene: dict[str, Any], fallback: int) -> int:

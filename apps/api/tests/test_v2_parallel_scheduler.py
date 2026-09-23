@@ -647,7 +647,13 @@ def test_v2_global_run_reports_four_image_slots_running_concurrently(
 
     response = service.run_workflow(workflow.workflow_id, wait=False)
     assert response.status == "queued"
-    assert four_started.wait(timeout=2), f"started image slots: {started}"
+    # Dispatch window only. The concurrency claim is proven by `release` being
+    # unset until all four providers are simultaneously blocked, plus the
+    # running-slot assertion below; a tight window here measured how fast the
+    # scheduler *plans* the fourth slot, not whether the four run together.
+    # Planning alone takes ~1s and crossed 2s under pytest overhead, which made
+    # this test red on a working scheduler.
+    assert four_started.wait(timeout=15), f"started image slots: {started}"
 
     runtime = service.runtime_snapshot(workflow.workflow_id)
     running_image_slots = [

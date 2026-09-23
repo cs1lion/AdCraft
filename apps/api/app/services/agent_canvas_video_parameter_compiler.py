@@ -1,4 +1,4 @@
-﻿"""Bounded Pi extraction and deterministic Video parameter compilation."""
+"""Bounded Pi extraction and deterministic Video parameter compilation."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ class PiVideoParameterIntentGateway:
                     agent_context=context,
                 )
             )
-        except StructuredGenerationRuntimeError as error:
+        except StructuredGenerationRuntimeError:
             # Fallback to no-explicit-controls when agent extraction fails,
             # so video generation can still proceed with default parameters.
             fallback_intent = VideoParameterIntentV3(status="no_explicit_controls")

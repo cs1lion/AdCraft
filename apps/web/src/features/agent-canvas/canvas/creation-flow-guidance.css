@@ -1,0 +1,386 @@
+/* Creation Flow Guidance - P4 frontend integration */
+
+.creation-flow-guidance {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 12px;
+  padding: 16px;
+  font-family: inherit;
+  color: var(--text-primary, #111827);
+}
+
+/* Loading state */
+.creation-flow-guidance.creation-flow-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.creation-flow-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-subtle, #e5e7eb);
+  border-top-color: var(--accent-primary, #3b82f6);
+  border-radius: 50%;
+  animation: creation-flow-spin 0.8s linear infinite;
+}
+
+@keyframes creation-flow-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error state */
+.creation-flow-guidance.creation-flow-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-error, #dc2626);
+  background: var(--bg-error-subtle, #fef2f2);
+  border-color: var(--border-error, #fecaca);
+}
+
+.creation-flow-error-icon {
+  font-size: 16px;
+}
+
+.creation-flow-retry-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--border-error, #fecaca);
+  border-radius: 6px;
+  background: var(--bg-surface, #ffffff);
+  color: var(--text-error, #dc2626);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.creation-flow-retry-btn:hover {
+  background: var(--bg-error-subtle, #fef2f2);
+}
+
+/* Header */
+.creation-flow-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.creation-flow-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.creation-flow-title-icon {
+  font-size: 16px;
+}
+
+.creation-flow-complete-badge {
+  padding: 2px 8px;
+  background: var(--bg-success-subtle, #dcfce7);
+  color: var(--text-success, #16a34a);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.creation-flow-progress-text {
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--accent-primary, #3b82f6);
+}
+
+/* Progress bar */
+.creation-flow-progress-bar {
+  position: relative;
+  height: 8px;
+  background: var(--bg-subtle, #f3f4f6);
+  border-radius: 4px;
+  margin-bottom: 16px;
+  overflow: visible;
+}
+
+.creation-flow-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-primary, #3b82f6), var(--accent-secondary, #8b5cf6));
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.creation-flow-stage-markers {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.creation-flow-stage-marker {
+  position: absolute;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  border: 2px solid var(--bg-surface, #ffffff);
+  transition: all 0.2s ease;
+}
+
+.creation-flow-stage-marker.completed {
+  background: var(--accent-success, #16a34a);
+  color: white;
+}
+
+.creation-flow-stage-marker.current {
+  background: var(--accent-primary, #3b82f6);
+  color: white;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+}
+
+.creation-flow-stage-marker.pending {
+  background: var(--bg-subtle, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+}
+
+/* Current stage + next action */
+.creation-flow-current {
+  background: var(--bg-subtle, #f9fafb);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.creation-flow-current-stage,
+.creation-flow-next-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.creation-flow-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #6b7280);
+  min-width: 50px;
+}
+
+.creation-flow-stage-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--accent-primary, #3b82f6);
+}
+
+.creation-flow-action-text {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--text-primary, #111827);
+}
+
+.creation-flow-action-detail {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+  margin-top: 4px;
+  padding-left: 58px;
+}
+
+/* Blockers */
+.creation-flow-blockers {
+  background: var(--bg-error-subtle, #fef2f2);
+  border: 1px solid var(--border-error, #fecaca);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.creation-flow-blockers-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-error, #dc2626);
+  margin-bottom: 6px;
+}
+
+.creation-flow-blocker-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.creation-flow-blocker-item {
+  font-size: 12px;
+  color: var(--text-error, #b91c1c);
+  margin-bottom: 2px;
+}
+
+.creation-flow-blocker-more {
+  font-size: 11px;
+  color: var(--text-error, #991b1b);
+  font-style: italic;
+}
+
+/* Warnings */
+.creation-flow-warnings {
+  margin-bottom: 12px;
+}
+
+.creation-flow-warning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-warning, #92400e);
+  background: var(--bg-warning-subtle, #fffbeb);
+  border: 1px solid var(--border-warning, #fde68a);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+}
+
+/* Stage list */
+.creation-flow-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.creation-flow-stage-card {
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.creation-flow-stage-card.completed {
+  border-color: var(--border-success, #bbf7d0);
+}
+
+.creation-flow-stage-card.current {
+  border-color: var(--accent-primary, #3b82f6);
+  box-shadow: 0 0 0 1px var(--accent-primary, #3b82f6);
+}
+
+.creation-flow-stage-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.creation-flow-stage-header:hover {
+  background: var(--bg-subtle, #f9fafb);
+}
+
+.creation-flow-stage-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.creation-flow-stage-icon.completed {
+  background: var(--bg-success-subtle, #dcfce7);
+  color: var(--text-success, #16a34a);
+}
+
+.creation-flow-stage-icon.current {
+  background: var(--accent-primary, #3b82f6);
+  color: white;
+}
+
+.creation-flow-stage-icon.pending {
+  background: var(--bg-subtle, #f3f4f6);
+  color: var(--text-secondary, #9ca3af);
+}
+
+.creation-flow-stage-card .creation-flow-stage-name {
+  flex: 1;
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-primary, #111827);
+}
+
+.creation-flow-stage-card.completed .creation-flow-stage-name {
+  color: var(--text-success, #16a34a);
+}
+
+.creation-flow-stage-card.current .creation-flow-stage-name {
+  color: var(--accent-primary, #3b82f6);
+  font-weight: 600;
+}
+
+.creation-flow-stage-count {
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+  background: var(--bg-subtle, #f3f4f6);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.creation-flow-stage-chevron {
+  font-size: 10px;
+  color: var(--text-secondary, #9ca3af);
+}
+
+/* Stage detail */
+.creation-flow-stage-detail {
+  padding: 0 12px 12px 42px;
+  border-top: 1px solid var(--border-subtle, #f3f4f6);
+}
+
+.creation-flow-stage-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+  margin: 8px 0;
+}
+
+.creation-flow-stage-blockers {
+  margin-top: 8px;
+}
+
+.creation-flow-stage-blockers-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-error, #dc2626);
+}
+
+.creation-flow-stage-blockers ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+
+.creation-flow-stage-blockers li {
+  font-size: 11px;
+  color: var(--text-error, #b91c1c);
+  margin-bottom: 2px;
+}
+
+.creation-flow-stage-complete-msg {
+  font-size: 12px;
+  color: var(--text-success, #16a34a);
+  font-weight: 500;
+  margin-top: 8px;
+}

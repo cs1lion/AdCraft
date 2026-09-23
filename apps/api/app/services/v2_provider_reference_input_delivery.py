@@ -34,6 +34,7 @@ from app.services.v2_library_reference_preview import (
     LibraryReferencePreviewError,
     ResolvedLibraryPreview,
     V2LibraryReferencePreviewResolver,
+    image_metadata,
 )
 
 PROVIDER_REFERENCE_ERROR_DELIVERY_FAILED = "v2_provider_reference_delivery_failed"
@@ -136,11 +137,38 @@ def reference_delivery_context_from_model_resolution(
             reference_instruction_transport=str(
                 metadata.get("reference_instruction_transport", "provider_only")
             ),
+            reference_image_aspect_ratio_range=_declared_image_aspect_ratio_range(metadata),
         )
     except ValidationError as error:
         raise _canvas_context_error(
             "Frozen model capability metadata is invalid for reference delivery."
         ) from error
+
+
+def _declared_image_aspect_ratio_range(
+    metadata: Mapping[str, Any],
+) -> tuple[float, float] | None:
+    """Read the provider's own image aspect-ratio window, if it declared one.
+
+    Absent means unknown.  Unknown must not be read as "anything goes" -- a
+    declared window can only ever narrow what we are allowed to send.
+    """
+
+    declared = metadata.get("reference_image_aspect_ratio_range")
+    if declared is None:
+        return None
+    if (
+        isinstance(declared, (list, tuple))
+        and len(declared) == 2
+        and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool) for item in declared
+        )
+    ):
+        return (float(declared[0]), float(declared[1]))
+    raise _canvas_context_error(
+        "Frozen model reference image aspect ratio range must be a "
+        "[minimum, maximum] pair of numbers."
+    )
 
 
 class V2DeliveredProviderReference(BaseModel):
@@ -318,9 +346,24 @@ class V2DeliveredReferenceSet(BaseModel):
     def raise_for_canvas_failures(self) -> None:
         if not self.failures:
             return
+        # This message is the one part of the refusal that reaches the operator's
+        # node error, so it has to name the binding and the reason rather than say
+        # "a required bound asset" -- the same refusal cost three reruns while
+        # ``details`` sat on the floor.
+        summary = "; ".join(
+            dict.fromkeys(
+                f"{failure.reason}: {failure.message}" for failure in self.failures
+            )
+        )
+        if len(summary) > 1200:
+            summary = summary[:1197] + "..."
         raise V2ProviderReferenceDeliveryError(
             code=CANVAS_PROVIDER_REFERENCE_DELIVERY_UNAVAILABLE,
-            message="A required bound asset cannot be delivered to the provider.",
+            message=(
+                f"A required bound asset cannot be delivered to the provider "
+                f"({len(self.failures)} of {len(self.requested_reference_asset_ids)}): "
+                f"{summary}"
+            ),
             failures=list(self.failures),
             audit=self.audit,
         )
@@ -533,6 +576,20 @@ class V2ProviderReferenceInputDeliveryService:
                     failures.append(failure)
                     continue
                 total_data_url_bytes = next_total
+            out_of_range = _out_of_range_image_aspect_ratio(
+                input_snapshot,
+                delivered,
+                context.reference_image_aspect_ratio_range,
+            )
+            if out_of_range is not None:
+                failures.append(
+                    _canvas_delivery_failure(
+                        input_snapshot,
+                        "media_reference_aspect_ratio_out_of_range",
+                        detail=out_of_range,
+                    )
+                )
+                continue
             references.append(delivered)
         return V2DeliveredReferenceSet(
             requested_reference_asset_ids=[item.asset_id for item in inputs],
@@ -624,9 +681,10 @@ class V2ProviderReferenceInputDeliveryService:
                 input_value=provider_url,
                 source="provider_upload",
             )
-        public_url = (
-            _first_mapping_string(metadata, "public_url")
-            or input_snapshot.access_descriptor.media_url
+        public_url = _canvas_public_url(
+            metadata,
+            input_snapshot,
+            base_url=self._settings.provider_reference_public_base_url,
         )
         url_input_type = f"{input_snapshot.media_type}_url"
         if (
@@ -896,6 +954,44 @@ class V2ProviderReferenceInputDeliveryService:
         )
 
 
+def _canvas_public_url(
+    metadata: dict[str, object],
+    input_snapshot: ResolvedMediaInputSnapshotV2,
+    *,
+    base_url: str | None,
+) -> str | None:
+    """The URL a provider can fetch this asset version at, if there is one.
+
+    The library records an asset's public URL as a **path** --
+    ``media_paths.public_url_for_path`` builds ``/media/<relative path>`` and
+    nothing more, because the app has never known its own internet address.
+    ``is_provider_compatible_public_url`` then refuses it for having no scheme,
+    which is why every asset in the library is undeliverable as a URL today:
+    ``media_requires_remote_transport`` for anything that is not an image.
+
+    When ``PROVIDER_REFERENCE_PUBLIC_BASE_URL`` names the host that serves those
+    paths, a path-shaped public URL becomes an absolute one and the existing gate
+    can judge it on its merits.  Two things are deliberately left alone:
+
+    * an already-absolute ``public_url`` is a deployment's own answer and is
+      returned unchanged, so pointing the setting at a CDN does not rewrite a
+      URL someone recorded deliberately;
+    * a path that is *not* shaped like a media path -- the authenticated
+      ``/api/v2/assets/.../content`` route that ``access_descriptor.media_url``
+      falls back to -- is not made absolute.  It would only convert a clear local
+      refusal into an opaque one at the provider, which fetches it and gets a
+      401.
+    """
+
+    recorded = _first_mapping_string(metadata, "public_url")
+    value = recorded or input_snapshot.access_descriptor.media_url
+    if not value or not base_url:
+        return value
+    if not value.startswith("/") or value.startswith("/api/"):
+        return value
+    return f"{base_url.rstrip('/')}{value}"
+
+
 def is_provider_compatible_public_url(value: str) -> bool:
     parsed = urlparse(value.strip())
     if parsed.scheme != "https" or not parsed.netloc:
@@ -1039,17 +1135,75 @@ def _canvas_delivered(
 def _canvas_delivery_failure(
     input_snapshot: ResolvedMediaInputSnapshotV2,
     reason: str,
+    *,
+    detail: str | None = None,
 ) -> V2ReferenceInputDeliveryFailure:
+    message = "Bound media cannot be delivered to the configured provider."
+    if detail:
+        message = f"{message} {detail}"
     return V2ReferenceInputDeliveryFailure(
         asset_id=input_snapshot.asset_id,
         slot_id=input_snapshot.source_node_id or input_snapshot.asset_id,
         binding_id=input_snapshot.binding_id,
         code=CANVAS_PROVIDER_REFERENCE_DELIVERY_UNAVAILABLE,
-        message="Bound media cannot be delivered to the configured provider.",
+        message=message,
         reason=reason,
         workflow_id=None,
         node_id=input_snapshot.source_node_id,
         version_id=input_snapshot.asset_version_id,
+    )
+
+
+def _inline_image_aspect_ratio(
+    delivered: V2DeliveredProviderReference,
+) -> float | None:
+    """Measure ``width / height`` of an image we are sending as inline bytes.
+
+    ``None`` for anything we do not hold the bytes of: a ``provider_file_id`` or a
+    public URL is a reference the provider has already ingested, so we have no
+    pixels to re-measure and no business guessing.
+    """
+
+    if delivered.provider_input_type != "data_url" or delivered.source != "local_file":
+        return None
+    if not delivered.provider_input_value.startswith("data:"):
+        return None
+    _, _, payload = delivered.provider_input_value.partition(",")
+    try:
+        content = base64.b64decode(payload, validate=False)
+        _, width, height = image_metadata(content)
+    except (LibraryReferencePreviewError, ValueError, IndexError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def _out_of_range_image_aspect_ratio(
+    input_snapshot: ResolvedMediaInputSnapshotV2,
+    delivered: V2DeliveredProviderReference,
+    window: tuple[float, float] | None,
+) -> str | None:
+    """A per-binding explanation when a bound image breaks the model's window.
+
+    An undeclared window is unknown, not unlimited, so only a declared window can
+    fail here.  The message names the binding and the measured ratio because the
+    provider's own refusal names neither -- it answers ``param: images`` for the
+    whole request, so every other reference attached to that request dies with it.
+    """
+
+    if window is None or input_snapshot.media_type != "image":
+        return None
+    ratio = _inline_image_aspect_ratio(delivered)
+    if ratio is None:
+        return None
+    low, high = window
+    if low <= ratio <= high:
+        return None
+    return (
+        f"bound image {input_snapshot.asset_id} binding {input_snapshot.binding_id} "
+        f"is {ratio:.2f}:1, outside this model's accepted "
+        f"{low:g}-{high:g}:1; rebind an image within that range."
     )
 
 

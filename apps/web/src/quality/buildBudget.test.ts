@@ -38,6 +38,7 @@ describe("build budget", () => {
       "WorkflowPage-fixture.css",
       "vendor-react-flow-fixture.js",
       "vendor-react-flow-fixture.css",
+      "AgentCanvasChatPanel-fixture.js",
       "CanonicalAssetViewer-fixture.js",
       "global-fixture.css",
       "home-fixture.js",

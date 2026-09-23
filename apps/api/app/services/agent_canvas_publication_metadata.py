@@ -180,6 +180,23 @@ class _ProviderFacts(_Parameters):
     submitted_media_facts: _Parameters | None = None
 
 
+class _MediaOutputGate(_Closed):
+    """The byte-gate verdict for the bytes that were actually published."""
+
+    status: Literal["passed", "failed"]
+    media_type: Literal["image", "video", "audio"]
+    size_bytes: int = Field(ge=0)
+    detected_media_format: Identity | None = None
+    mime_type: Identity | None = None
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    error_code: Identity | None = None
+    # ``None`` means nothing warned.  An empty tuple would be restated on every
+    # warning-free asset row by the envelope's own dump, which re-serialises
+    # this nested model and cannot be made to exclude its defaults.
+    warning_codes: tuple[Identity, ...] | None = None
+
+
 class _GroundingAudit(StoryboardGridGroundingAuditV1):
     prompt_reference_labels: tuple[
         Annotated[str, Field(max_length=32, pattern=r"^Image [1-9][0-9]*$")], ...
@@ -221,6 +238,7 @@ class _CanvasPublicationMetadataV1(_ProviderFacts):
     occurrence_id: Identity | None = None
     character_pair_id: Identity | None = None
     character_phase: Identity | None = None
+    media_output_gate: _MediaOutputGate | None = None
     storyboard_grid_grounding: _GroundingAudit | None = None
 
 
@@ -258,6 +276,34 @@ def _provider_facts(value: object) -> dict[str, Any]:
     return selected
 
 
+def _media_output_gate(value: object) -> dict[str, Any]:
+    """Project the byte-gate verdict onto the asset, without its prose.
+
+    ``checks`` and ``error_message`` are sentences.  The operator reads those in
+    the node error, where a refusal keeps the explanation; here they would be
+    rejected anyway, because this envelope is content-free by construction
+    (``_safe_identifier`` forbids natural language).  What has to outlive the
+    run is the verdict: that *these* bytes passed, how many of them there were,
+    which container they turned out to be, and any check that only warned.
+
+    A verdict is never dropped silently: if the payload's shape is not what the
+    gate writes, publication fails with ``node_result_publication_metadata_invalid``
+    rather than publishing a media asset with no record of the check it passed.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError("Media output gate verdict must be a mapping.")
+    warnings = value.get("warnings") or ()
+    if isinstance(warnings, (str, bytes)) or not isinstance(warnings, (list, tuple)):
+        raise ValueError("Media output gate warnings must be a sequence.")
+    codes: list[str] = []
+    for item in warnings:
+        if not isinstance(item, Mapping) or not isinstance(item.get("code"), str):
+            raise ValueError("Media output gate warning is malformed.")
+        codes.append(item["code"])
+    selected = _select(_MediaOutputGate, {**value, "warning_codes": tuple(codes) or None})
+    return _MediaOutputGate.model_validate(selected).model_dump(mode="json", exclude_none=True)
+
+
 def _prompt_audit(value: object) -> dict[str, Any]:
     selected = _select(_PromptAudit, value)
     assert isinstance(value, Mapping)
@@ -285,16 +331,84 @@ def _prompt_audit(value: object) -> dict[str, Any]:
     return audit.model_dump(mode="json", exclude_none=True)
 
 
+def asset_publication_metadata(
+    context: NodeExecutionContext,
+    payload_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Merge executor payload metadata over the frozen execution provenance.
+
+    The payload is applied **second** on purpose.
+    ``generated_asset_publication_metadata`` projects the catalog model the node
+    resolved; ``NodeExecutionContext.provider_id`` / ``model_id`` are ``None``
+    for node types that resolve none (voice-cast, scene-3d), and the projection
+    drops ``None`` values, so those keys are simply absent.  An executor that
+    knows which vendor actually produced the bytes states it in its payload, and
+    that statement has to reach the asset row -- otherwise a real StepFun render
+    publishes as "no provider, no model", because ``publish_generated_bytes``
+    copies ``provenance["provider"]`` / ``provenance["model_id"]`` onto
+    first-class asset columns.
+
+    Both publication call sites (the scheduler and provider-task recovery) come
+    through here, so the precedence is stated once rather than duplicated as a
+    dict-unpacking order in two places.
+
+    One exception to "the payload wins as written": ``media_output_gate`` is
+    projected to its summary before it merges, so the key means the same thing on
+    an asset row whichever call site published it.  This path had no projection
+    step of its own, and the raw report's per-check sentences would otherwise
+    reach ``metadata_json`` here while the other call site stored only the
+    verdict.
+    """
+
+    merged = {
+        **generated_asset_publication_metadata(context),
+        **dict(payload_metadata or {}),
+    }
+    gate = merged.get("media_output_gate")
+    if gate is not None:
+        merged["media_output_gate"] = _media_output_gate(gate)
+    return merged
+
+
 def project_canvas_publication_metadata(
     context: NodeExecutionContext,
     publication: ResultPublicationContext | None,
     provider_metadata: Mapping[str, object],
 ) -> dict[str, Any]:
-    """Project declared facts only; provider metadata cannot assign source authority."""
+    """Project declared facts only; provider metadata cannot assign source authority.
+
+    ``model_resolution``, the prompt digests and the parameter snapshots stay the
+    frozen execution's, because those record *what the node asked for*.  The two
+    vendor keys are the deliberate exception: an executor may route a node away
+    from the model it resolved -- a ``bgm`` node resolves the catalog ``audio``
+    default and then builds the configured BGM adapter (``_generate_bgm_audio``)
+    -- so the payload is the only component that knows which vendor produced the
+    bytes.  That is the same precedence ``asset_publication_metadata`` states for
+    the other publication call site; the two must not disagree about it, or an
+    asset row names a provider that never produced the file.
+    """
     try:
         frozen = generated_asset_publication_metadata(context)
         values = _provider_facts(provider_metadata)
+        declared_vendor = {
+            key: values.pop(key) for key in ("provider", "model_id") if key in values
+        }
         values.update(_select(_CanvasPublicationMetadataV1, frozen))
+        values.update(declared_vendor)
+        for key in ("provider_task_id",):
+            # Also a declared fact the projection would otherwise drop: the
+            # provider task that produced these bytes is only known to the caller.
+            value = provider_metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                values.setdefault(key, value)
+        if "media_output_gate" in provider_metadata:
+            # The byte gate's verdict is the other such fact: the check runs in
+            # the executor, where the payload is still bytes, so its outcome is
+            # only known to the caller.  Without it an asset row says nothing
+            # about whether the file is a whole media file at all.
+            values["media_output_gate"] = _media_output_gate(
+                provider_metadata["media_output_gate"]
+            )
         values.update(
             workflow_id=context.node.workflow_id,
             node_id=context.node.node_id,

@@ -7,6 +7,10 @@ import json
 from typing import Any
 
 from app.core.config import Settings
+from app.schemas.v2_video_duration import (
+    V2_VIDEO_TARGET_DURATION_SECONDS,
+    clamp_provider_duration_seconds,
+)
 from app.schemas.workflow_v2_storyboard_detail import (
     V2StoryboardDetailInput,
     V2StoryboardDetailMaterializationRecord,
@@ -34,8 +38,6 @@ from app.services.v2_storyboard_cell_prompts import (
 )
 from app.services.v2_versioning import V2_STORYBOARD_DETAIL_MATERIALIZER_VERSION
 from app.services.v2_workflow_planner import build_slot
-
-SUPPORTED_SHOT_VIDEO_DURATIONS = (5, 10)
 
 
 class V2StoryboardDirector:
@@ -181,7 +183,9 @@ def synchronize_storyboard_structure(
     start_seconds = 0
     for fallback_index, script_shot in enumerate(script_shots, start=1):
         shot_id = str(script_shot.get("shot_id") or f"shot-{fallback_index}")
-        desired_duration = int(script_shot.get("duration_seconds") or 5)
+        desired_duration = int(
+            script_shot.get("duration_seconds") or V2_VIDEO_TARGET_DURATION_SECONDS
+        )
         end_seconds = start_seconds + desired_duration
         time_range = {"start_seconds": start_seconds, "end_seconds": end_seconds}
         existing = active_by_id.get(shot_id)
@@ -1052,7 +1056,9 @@ def apply_shot_video_prompts(
     slot.metadata["cell_prompts"] = cell_records
     slot.metadata["storyboard_detail_materializer_mode"] = details.get("materializer_mode")
     slot.metadata["storyboard_detail_materializer_version"] = details.get("materializer_version")
-    slot.provider_params["duration_seconds"] = int(details.get("provider_duration_seconds") or 5)
+    slot.provider_params["duration_seconds"] = int(
+            details.get("provider_duration_seconds") or V2_VIDEO_TARGET_DURATION_SECONDS
+        )
 
 
 def _cell_prompt_record_for_shot(shot: WorkflowItemV2, slot_type: str) -> dict[str, Any]:
@@ -1131,8 +1137,17 @@ def _video_cell_prompt_lines(details: dict[str, Any]) -> list[str]:
 
 
 def normalize_provider_duration(desired_duration_seconds: int) -> int:
-    desired = max(1, int(desired_duration_seconds))
-    return min(SUPPORTED_SHOT_VIDEO_DURATIONS, key=lambda value: abs(value - desired))
+    """Clamp a requested clip length into what the provider accepts.
+
+    Not a snap to one of two stock lengths.  A shot whose script says 7 seconds
+    asks for 7 seconds; the old ``min((5, 10), ...)`` rounded it to 10 and
+    advertised 5 and 10 as the only legal values, which is what made a 6.6-8.0s
+    cut -- the length every accepted generation actually comes back at --
+    impossible to request through this path.  Per-model narrowing happens
+    against the model's own declared range later.
+    """
+
+    return clamp_provider_duration_seconds(desired_duration_seconds)
 
 
 def _script_plan_shots(workflow: WorkflowV2) -> list[dict[str, Any]]:

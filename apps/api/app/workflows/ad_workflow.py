@@ -116,16 +116,16 @@ def _aspect_ratio_for_request(request: AdWorkflowGenerateRequest) -> str:
 
 
 def _storyboard_segment_durations(duration_seconds: int) -> list[int]:
-    if duration_seconds % 5 != 0:
-        raise ValueError(
-            "Cannot normalize storyboard video duration into Seedance 5 or 10 second "
-            f"segments: got {duration_seconds} seconds."
-        )
-    ten_second_count, remainder = divmod(duration_seconds, 10)
-    durations = [10] * ten_second_count
-    if remainder:
-        durations.append(5)
-    return durations
+    """Split a requested duration into per-segment lengths the model accepts.
+
+    Delegates to the adapter's splitter so the v1 and v2 paths share one
+    segment policy.  This used to require a multiple of five and emit 10s+5s,
+    which rejected any ad length that was not divisible by five outright.
+    """
+
+    from app.tools.seedance_adapter import _normalized_segment_durations
+
+    return _normalized_segment_durations(duration_seconds)
 
 
 def _default_storyboard_scene(

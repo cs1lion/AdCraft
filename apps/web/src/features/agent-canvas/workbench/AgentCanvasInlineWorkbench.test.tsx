@@ -21,7 +21,7 @@ function makeNode(type: CanvasNodeTypeV2, status: CanvasNodeV2["status"] = "draf
     node_id: `${type}-node`,
     workflow_id: "workflow-1",
     node_type: type,
-    creative_role: type === "text" ? "general_text" : type === "script" ? "script" : type === "image" ? "general_image" : type === "video" ? "general_video" : type === "audio" ? "general_audio" : "editing",
+    creative_role: type === "text" ? "general_text" : type === "script" ? "script" : type === "image" ? "general_image" : type === "video" ? "general_video" : type === "audio" ? "general_audio" : type === "voice-cast" ? "voice_cast" : type === "scene-3d" ? "scene_3d_previs" : "editing",
     role_contract_version: "ad-media-role-v1",
     title: `${type} node`,
     status,
@@ -124,6 +124,62 @@ function makeReferenceWorkflow(target: CanvasNodeV2): AgentCanvasWorkflowV2 {
       quality_metadata: {},
       created_at: "2026-07-31T00:00:00Z",
     }],
+  } as AgentCanvasWorkflowV2;
+}
+
+function makeScenePrevisWorkflow(target: CanvasNodeV2): AgentCanvasWorkflowV2 {
+  const board = {
+    asset_id: "asset-scene-board",
+    project_id: "project-1",
+    workflow_id: "workflow-1",
+    media_type: "image",
+    source_type: "upload",
+    display_name: "shot1 scene board",
+    mime_type: "image/jpeg",
+    status: "ready",
+    size_bytes: 0,
+    storage_key: null,
+    preview_url: "/assets/scene-board.jpg",
+    media_url: "/assets/scene-board.jpg",
+    width: 1024,
+    height: 1024,
+    duration_seconds: null,
+    checksum: "scene-board-checksum",
+    source_semantic_role: null,
+    source_node_id: null,
+    source_execution_id: null,
+    provider: null,
+    model_id: null,
+    prompt_provenance: {},
+    quality_metadata: {},
+    created_at: "2026-07-31T00:00:00Z",
+  };
+  const turnaround = { ...board, asset_id: "asset-her-turnaround", display_name: "her turnaround" };
+  const assetBinding = (
+    bindingId: string,
+    assetId: string,
+    label: string,
+    order: number,
+  ) => ({
+    binding_id: bindingId,
+    workflow_id: "workflow-1",
+    source: { kind: "image_asset" as const, source_asset_id: assetId, source_asset_version_id: null },
+    target_node_id: target.node_id,
+    input_role: "image_reference" as const,
+    enabled: true,
+    order,
+    label,
+    metadata: {},
+    created_at: "2026-07-31T00:00:00Z",
+    updated_at: "2026-07-31T00:00:00Z",
+  });
+  return {
+    ...makeWorkflow(target),
+    bindings: [
+      assetBinding("scene-board-binding", board.asset_id, board.display_name, 0),
+      assetBinding("character-turnaround-binding", turnaround.asset_id, turnaround.display_name, 1),
+    ],
+    assets: [board, turnaround],
   } as AgentCanvasWorkflowV2;
 }
 
@@ -1350,6 +1406,25 @@ describe("AgentCanvasInlineWorkbench", () => {
     expect(props.deleteBinding).toHaveBeenCalledWith("source-binding");
   });
 
+  it("shows the scene board and turnaround bound to a 3D previs node", () => {
+    // A scene design board and a character turnaround are uploaded assets, not
+    // canvas nodes, so ``toAgentCanvasFlowEdges`` cannot draw them -- there is no
+    // node to anchor either end of the edge.  The previs workbench is therefore
+    // the only surface where that binding is visible at all: an asset source
+    // reaching a scene-3d target would otherwise be invisible exactly where the
+    // author attached it.
+    const node = makeNode("scene-3d");
+    const props = renderWorkbench(node, { workflow: makeScenePrevisWorkflow(node) });
+
+    expect(screen.getByRole("img", { name: "shot1 scene board reference" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove shot1 scene board reference" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "her turnaround reference" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove her turnaround reference" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove her turnaround reference" }));
+    expect(props.deleteBinding).toHaveBeenCalledWith("character-turnaround-binding");
+  });
+
   it("uses the asset library as the only visible reference entry point", () => {
     renderWorkbench(makeNode("image"));
 
@@ -1405,5 +1480,46 @@ describe("AgentCanvasInlineWorkbench", () => {
     expect(container.querySelector(
       ".agent-node-workbench__footer .agent-node-workbench__model-picker",
     )).toBeTruthy();
+  });
+
+  describe("local engine nodes", () => {
+    it.each([
+      ["voice-cast", "Run voice-cast node"],
+      ["scene-3d", "Run scene-3d node"],
+    ] as const)(
+      "renders a prompt composer and Run button without a model picker for %s",
+      async (type, runLabel) => {
+        const props = renderWorkbench(makeNode(type));
+
+        expect(screen.getByLabelText("Generation prompt")).toBeTruthy();
+        expect(
+          document.body.querySelector(".agent-node-workbench__model-picker"),
+        ).toBeNull();
+
+        const runButton = screen.getByRole("button", { name: runLabel });
+        fireEvent.click(runButton);
+
+        await waitFor(() => expect(props.onRun).toHaveBeenCalledTimes(1));
+        const argument = props.onRun.mock.calls[0][0] as CanvasNodeV2;
+        expect(argument.generation_prompt).toBe(`Prepare the ${type} node.`);
+      },
+    );
+
+    it("disables Run when the voice-cast prompt is empty", () => {
+      const node = { ...makeNode("voice-cast"), generation_prompt: null };
+      renderWorkbench(node);
+
+      expect(
+        screen.getByRole("button", { name: "Run voice-cast node" }).hasAttribute("disabled"),
+      ).toBe(true);
+    });
+
+    it("disables Run while a scene-3d node is working", () => {
+      renderWorkbench(makeNode("scene-3d", "working"));
+
+      expect(
+        screen.getByRole("button", { name: "Run scene-3d node" }).hasAttribute("disabled"),
+      ).toBe(true);
+    });
   });
 });

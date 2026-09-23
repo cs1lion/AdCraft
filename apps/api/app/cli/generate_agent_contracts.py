@@ -205,6 +205,8 @@ CONTRACT_MODELS = (
     agent_canvas_editing.EditingOutputSettingsV2,
     agent_canvas_editing.EditingVideoEntryV2,
     agent_canvas_editing.EditingBgmEntryV2,
+    agent_canvas_editing.EditingAudioEntryV2,
+    agent_canvas_editing.EditingDuckingConfigV2,
     agent_canvas_editing.EditingManifestV2,
     agent_canvas_ad_media.VisualStyleContractV2,
     agent_canvas_ad_media.DesignAssetContentV2,

@@ -18,6 +18,6 @@ export function resolveV2ProjectCoverSummary(summary: ProjectCoverV2 | null | un
     versionId: summary.version_id,
     mediaType: summary.media_type,
     mediaPath,
-    posterPath: summary.media_type === "video" ? summary.poster_url : null,
+    posterPath: summary.media_type === "video" ? summary.poster_url ?? null : null,
   };
 }

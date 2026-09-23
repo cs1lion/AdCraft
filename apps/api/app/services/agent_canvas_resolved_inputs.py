@@ -20,6 +20,7 @@ from app.schemas.agent_canvas import (
 from app.schemas.agent_canvas_runtime import NodeRunBindingSnapshotV2, ResolvedModelExecutionV1
 from app.persistence.errors import V2PersistenceError
 from app.services.agent_canvas_bindings import AgentCanvasBindingService
+from app.services.agent_canvas_reference_composition import compose_reference_budget
 
 if TYPE_CHECKING:
     from app.services.agent_canvas_world_setting_context import (
@@ -239,7 +240,19 @@ def apply_provider_reference_limits(
     manifest: ResolvedNodeInputManifestV2,
     model_resolution: ResolvedModelExecutionV1,
 ) -> ResolvedNodeInputManifestV2:
-    """Freeze a deterministic reference subset for one resolved provider model."""
+    """Freeze a deterministic reference subset for one resolved provider model.
+
+    Which references survive is not a race in persisted binding order.  The
+    character and scene *design* references are admitted first, up to roughly two
+    fifths of the image budget, then the rough-model *camera-motion* references,
+    then everything else (see ``agent_canvas_reference_composition``).  A design
+    reference past that share is withheld and recorded rather than let back in
+    through the common pool, because two fifths that can be exceeded is not a
+    ratio.  Walking in that order is what keeps a finished look and a motion
+    authority in the same request: a first-come walk delivers whichever the
+    operator happened to bind first, and a shot can only ever be as finished as
+    the references it was actually sent.
+    """
 
     metadata = model_resolution.capability_metadata
     raw_limits = metadata.get("reference_limits")
@@ -261,14 +274,38 @@ def apply_provider_reference_limits(
     if total_limit is None and not typed_limits:
         return manifest
 
+    image_limit = typed_limits.get("image")
+    composition = compose_reference_budget(manifest.media_inputs, image_limit=image_limit)
+    admission = {binding_id: rank for rank, binding_id in enumerate(composition.admission)}
     selected: list[ResolvedMediaBindingInputV2] = []
     omitted = list(manifest.omitted_optional_inputs)
     selected_counts = {"image": 0, "video": 0, "audio": 0}
     already_omitted = {item.binding_id for item in omitted}
     for item in sorted(
         manifest.media_inputs,
-        key=lambda candidate: (candidate.display_order, candidate.binding_id),
+        key=lambda candidate: (
+            admission.get(candidate.binding_id, len(admission)),
+            candidate.display_order,
+            candidate.binding_id,
+        ),
     ):
+        if item.binding_id in composition.withheld:
+            # Our own share policy, not the provider's limit: recording it as a
+            # provider limit would tell the operator to ask the provider for more
+            # slots when the answer is to bind fewer design references.
+            if item.binding_id not in already_omitted:
+                omitted.append(
+                    OmittedOptionalInputV2(
+                        binding_id=item.binding_id,
+                        source_node_id=item.source_node_id,
+                        reason_code="omitted_reference_share",
+                        asset_id=item.asset_id,
+                        asset_version_id=item.asset_version_id,
+                        media_type=item.media_type,
+                        checksum=item.checksum,
+                    )
+                )
+            continue
         media_limit = typed_limits.get(item.media_type)
         over_media_limit = (
             media_limit is not None and selected_counts[item.media_type] >= media_limit

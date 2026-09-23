@@ -81,6 +81,9 @@ from app.tools.mock_media_fixtures import (
 )
 from app.tools.media_provider_protocol import (
     DEFAULT_VIDEO_RATIO,
+    SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS,
+    SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS,
+    SEEDANCE_PREFERRED_SEGMENT_SECONDS,
     SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS,
     MediaApiError,
     MediaConfigurationError,
@@ -92,8 +95,13 @@ from app.tools.bgm_provider_factory import (
     bgm_provider_configuration_error,
     build_bgm_provider_adapter,
     is_supported_bgm_provider,
+    normalized_bgm_provider_id,
 )
 from app.tools.volcengine_image_generations import V2ProviderRequestContractError
+from app.services.v2_provider_error_classification import (
+    classify_provider_error,
+    provider_error_type_from_body,
+)
 
 
 ProviderFactory = Callable[[Settings], MediaProvider]
@@ -800,6 +808,22 @@ class V2ProviderExecutor:
             )
         except MediaApiError as exc:
             diagnostics, provider_message = _provider_submit_diagnostics(payload, exc.metadata)
+            status_code = exc.metadata.get("status")
+            transient_code, retryable = classify_provider_error(
+                status_code=status_code if isinstance(status_code, int) else None,
+                response_body=(
+                    exc.metadata.get("response_body")
+                    if isinstance(exc.metadata.get("response_body"), str)
+                    else None
+                ),
+            )
+            if retryable and transient_code is not None:
+                # Preserve the transient reason so RETRYABLE_PROVIDER_ERROR_CODES
+                # (workflow_v2) and the canvas-side backoff both retry it.
+                diagnostics["retryable"] = True
+                error_code = transient_code
+            else:
+                error_code = "provider_request_failed"
             return self._with_reference_adaptation(
                 V2ProviderResult(
                     status="failed",
@@ -807,7 +831,7 @@ class V2ProviderExecutor:
                     provider=provider_id,
                     provider_payload_snapshot={"request_summary": diagnostics["request_summary"]},
                     reference_asset_ids=list(adaptation.submitted_reference_asset_ids),
-                    error_code="provider_request_failed",
+                    error_code=error_code,
                     error_message=provider_message or "Provider request failed.",
                     metadata=diagnostics,
                 ),
@@ -825,7 +849,14 @@ class V2ProviderExecutor:
                     }
                 )
             else:
-                error_code = "provider_generation_failed"
+                transient_code, retryable = classify_provider_error(
+                    response_body=str(exc),
+                )
+                if retryable and transient_code is not None:
+                    diagnostics["retryable"] = True
+                    error_code = transient_code
+                else:
+                    error_code = "provider_generation_failed"
             return self._with_reference_adaptation(
                 V2ProviderResult(
                     status="failed",
@@ -994,16 +1025,51 @@ class V2ProviderExecutor:
                     reference_asset_ids=reference_asset_ids,
                 )
             except Exception as exc:  # noqa: BLE001 - provider errors become result state.
+                # Classify before flattening. A Volcengine 503 engine_overloaded
+                # reaches here as a MediaApiError carrying the real status and
+                # response body, and collapsing it into the non-retryable
+                # provider_generation_failed is what left an image node red
+                # until the provider recovered on its own. The canvas media
+                # executor retries whatever is flagged ``retryable`` here and
+                # the V2 poller retries whatever code is in
+                # RETRYABLE_PROVIDER_ERROR_CODES, so both read this one call.
+                status_code: int | None = None
+                response_body: str | None = None
+                if isinstance(exc, MediaApiError):
+                    raw_status = exc.metadata.get("status")
+                    if isinstance(raw_status, int):
+                        status_code = raw_status
+                    raw_body = exc.metadata.get("response_body")
+                    if isinstance(raw_body, str):
+                        response_body = raw_body
+                transient_code, retryable = classify_provider_error(
+                    status_code=status_code,
+                    response_body=response_body if response_body is not None else str(exc),
+                )
+                error_metadata: dict[str, Any] = {}
+                if retryable and transient_code is not None:
+                    error_metadata["retryable"] = True
+                    if status_code is not None:
+                        error_metadata["provider_http_status"] = status_code
+                    provider_error_type = provider_error_type_from_body(
+                        response_body if response_body is not None else str(exc)
+                    )
+                    if provider_error_type is not None:
+                        error_metadata["provider_error_type"] = provider_error_type
+                    error_code = transient_code
+                else:
+                    error_code = "provider_generation_failed"
                 return V2ProviderResult(
                     status="failed",
                     media_type=media_type,
                     provider_payload_snapshot=sanitize_context_for_llm_text(provider_payload),
                     reference_asset_ids=reference_asset_ids,
-                    error_code="provider_generation_failed",
+                    error_code=error_code,
                     error_message=_bounded_provider_error_message(
                         str(exc),
                         _request_prompt_values((provider_payload,)),
                     ),
+                    metadata=error_metadata,
                 )
         return self._placeholder_result(
             media_type=media_type,
@@ -1405,6 +1471,7 @@ class V2ProviderExecutor:
                     error_code="provider_generation_failed",
                     audit=compiled.audit,
                     reference_asset_ids=reference_asset_ids,
+                    raw_body=_native_status_error_text(status),
                 )
             artifact = adapter.download(status)
             normalized = adapter.normalize(artifact)
@@ -1433,6 +1500,10 @@ class V2ProviderExecutor:
                 provider_payload=provider_payload,
                 error_code="provider_generation_failed",
                 error_message=_bounded_provider_error_message(str(error), ()),
+                # Classify the vendor's own text, not the bounded projection: a
+                # 503 body sits before the redaction cap today, but nothing
+                # guarantees that for every provider's field order.
+                raw_body=str(error),
                 reference_asset_ids=reference_asset_ids,
             )
 
@@ -1494,6 +1565,7 @@ class V2ProviderExecutor:
                         error_code="provider_generation_failed",
                         audit=audit,
                         reference_asset_ids=_native_reference_asset_ids(provider_payload),
+                        raw_body=_native_status_error_text(status),
                     )
                 return _native_waiting_result(
                     media_type=media_type,
@@ -2244,8 +2316,10 @@ class V2ProviderExecutor:
                 reference_asset_ids=list(plan.reference_asset_ids),
                 error_code="v2_video_duration_unsupported",
                 error_message=(
-                    "V2 storyboard video duration must be one of "
-                    f"{sorted(SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS)} seconds, "
+                    "V2 storyboard video duration must be an integer between "
+                    f"{SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS} and "
+                    f"{SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS} seconds "
+                    "(7-8s is the model's strongest band), "
                     f"got {duration_seconds}."
                 ),
                 metadata={
@@ -2255,7 +2329,14 @@ class V2ProviderExecutor:
                     "slot_id": slot.slot_id,
                     "slot_type": slot.slot_type,
                     "requested_duration_seconds": duration_seconds,
-                    "supported_duration_seconds": sorted(SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS),
+                    "supported_duration_seconds": [
+                        SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS,
+                        SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS,
+                    ],
+                    "preferred_duration_seconds": [
+                        SEEDANCE_PREFERRED_SEGMENT_SECONDS - 1,
+                        SEEDANCE_PREFERRED_SEGMENT_SECONDS,
+                    ],
                     "prompt_audit": audit,
                 },
             )
@@ -2377,15 +2458,38 @@ class V2ProviderExecutor:
         workflow_id: str,
     ) -> dict[str, Any]:
         if self._uses_default_provider_factory:
-            resolved_provider_id = _resolved_bgm_provider_id(bgm_plan)
-            adapter = (
-                build_bgm_provider_adapter(
-                    self._settings,
-                    self._data_dir,
-                    resolved_provider_id=resolved_provider_id,
-                )
-                if resolved_provider_id is not None
-                else build_bgm_provider_adapter(self._settings, self._data_dir)
+            # BGM_PROVIDER is the operator's explicit choice, so it decides
+            # submission. The plan's resolved id came from the model catalog,
+            # which carries no music entry at all — it returns "tianpuyue" only
+            # because tianpuyue is the one other audio (TTS) provider — and
+            # passing that made build_bgm_provider_adapter raise a provider
+            # mismatch against BGM_PROVIDER=stepfun_music. A catalog slot with
+            # no music entry must not redirect the operator's setting, so the
+            # configured value always wins; leaving it empty lets the factory
+            # report the unset config instead of a bogus mismatch.
+            configured_provider = normalized_bgm_provider_id(self._settings)
+            resolved_provider_id = configured_provider or None
+            # BGM_MODEL is the operator's explicit music-model choice, so it
+            # wins over the plan's provider_model_id. That id is frozen from the
+            # ``audio`` capability default, which is a *TTS* model
+            # (tianpuyue:TemPolor-i3) — the model catalog has no music entry at
+            # all, so it is an artifact of the missing entry, not a music
+            # choice. StepFun Music answers a TTS model id with HTTP 404
+            # "model does not exist or you do not have access to it", which read
+            # as a permission problem rather than the misconfiguration it is.
+            # An unset BGM_MODEL leaves the plan's id in place so the adapter's
+            # own default still applies.
+            configured_model = str(getattr(self._settings, "bgm_model", "") or "").strip()
+            if configured_model:
+                bgm_plan = {
+                    key: value
+                    for key, value in bgm_plan.items()
+                    if key != "provider_model_id"
+                }
+            adapter = build_bgm_provider_adapter(
+                self._settings,
+                self._data_dir,
+                resolved_provider_id=resolved_provider_id,
             )
             asset = adapter.generate_bgm_audio(bgm_plan, workflow_id)
             return {
@@ -2462,9 +2566,13 @@ class V2ProviderExecutor:
 
     def _missing_real_config(self, media_type: str) -> str | None:
         if media_type == "image" and (
-            not self._settings.image_generation_api_key
+            not self._settings.image_generation_credential
             or not self._settings.image_generation_endpoint
         ):
+            # ``image_generation_credential`` rather than ``image_generation_api_key``:
+            # on an Agnes endpoint the key that authenticates is the video one,
+            # and checking the image key here would report "credentials missing"
+            # for a request that is correctly configured.
             return "Real image provider requires IMAGE_GENERATION_API_KEY and IMAGE_GENERATION_ENDPOINT."
         if media_type == "video" and (
             not self._settings.video_generation_api_key
@@ -2779,6 +2887,34 @@ def _decode_native_result_value(value: str) -> bytes | None:
     return decoded or None
 
 
+def _native_status_error_text(status: Any) -> str:
+    """Pull the vendor's own failure text out of a poll result.
+
+    A poll that comes back ``failed`` carries the reason in ``raw`` -- the video
+    provider reports a full render queue as
+    ``{"code":"video_queue_full","message":"视频队列已满，请稍后重试"}``. Without
+    this text the classifier ever only sees the generic "failed" state and cannot
+    tell a transient queue backlog from a content rejection, so both come back
+    non-retryable and the node stays red until an operator intervenes.
+    """
+
+    raw = getattr(status, "raw", None)
+    if not isinstance(raw, Mapping):
+        return str(getattr(status, "state", "") or "")[:400]
+    parts: list[str] = []
+    for key in ("code", "error", "message", "reason"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(f"{key}={value.strip()[:200]}")
+        elif isinstance(value, Mapping):
+            nested = value.get("code") or value.get("message") or value.get("reason")
+            if isinstance(nested, str) and nested.strip():
+                parts.append(f"{key}={nested.strip()[:200]}")
+    if not parts:
+        return str(raw)[:400]
+    return " ".join(parts)
+
+
 def _native_provider_failure(
     *,
     media_type: WorkflowMediaTypeV2,
@@ -2788,8 +2924,27 @@ def _native_provider_failure(
     error_message: str | None = None,
     audit: Mapping[str, object] | None = None,
     reference_asset_ids: list[str] | None = None,
+    raw_body: str | None = None,
 ) -> V2ProviderResult:
     safe_audit = dict(audit or {})
+    metadata: dict[str, Any] = (
+        _native_result_metadata(safe_audit, "") if safe_audit else {"stage": "native_adapter"}
+    )
+    message = error_message or error_code
+    # The native adapter path used to hardcode provider_generation_failed, which
+    # is not a member of RETRYABLE_PROVIDER_ERROR_CODES: a 503 engine_overloaded
+    # from Ark, or a video queue_full, reached the user as a permanently red
+    # node while the executor's own MediaApiError branch was already classifying
+    # the very same response as transient.  Classify here so the native path and
+    # the request path share one verdict.
+    if error_code == "provider_generation_failed":
+        transient_code, retryable = classify_provider_error(
+            response_body=raw_body or message
+        )
+        if retryable and transient_code is not None:
+            metadata["retryable"] = True
+            metadata["native_error_code"] = error_code
+            error_code = transient_code
     return V2ProviderResult(
         status="failed",
         media_type=media_type,
@@ -2798,10 +2953,8 @@ def _native_provider_failure(
         provider_payload_snapshot=_native_payload_snapshot(provider_payload, safe_audit),
         reference_asset_ids=reference_asset_ids or _native_reference_asset_ids(provider_payload),
         error_code=error_code,
-        error_message=error_message or error_code,
-        metadata=(
-            _native_result_metadata(safe_audit, "") if safe_audit else {"stage": "native_adapter"}
-        ),
+        error_message=message,
+        metadata=metadata,
     )
 
 

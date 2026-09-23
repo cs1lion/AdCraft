@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import Settings, get_settings
+from app.schemas.v2_video_duration import (
+    V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+    V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+    V2_VIDEO_RELIABLE_MAX_DURATION_SECONDS,
+    V2_VIDEO_TARGET_DURATION_SECONDS,
+)
 from app.schemas.workflow_v2_storyboard_detail import (
     V2StoryboardCellPromptPlan,
     V2StoryboardDetailInput,
@@ -339,24 +345,47 @@ def _cell_prompt(
     )
 
 
+_MOCK_TIME_SEGMENT_COUNT = 4
+_MOCK_TIME_SEGMENT_LABELS = (
+    "wide camera establishes the setting and product before action",
+    "medium camera shows character interaction and action progression",
+    "close camera emphasizes product interaction and detail focus",
+    "hero camera resolves the action with a clean transition payoff",
+)
+
+
 def _time_segments(duration: int, action: str) -> list[V2StoryboardVideoTimeSegment]:
-    if duration == 10:
-        boundaries = [(0.0, 2.5), (2.5, 5.0), (5.0, 7.5), (7.5, 10.0)]
-    else:
-        boundaries = [(0.0, 1.2), (1.2, 2.5), (2.5, 3.8), (3.8, 5.0)]
-    labels = [
-        "wide camera establishes the setting and product before action",
-        "medium camera shows character interaction and action progression",
-        "close camera emphasizes product interaction and detail focus",
-        "hero camera resolves the action with a clean transition payoff",
+    """Four beats that add up to the clip's own length.
+
+    These boundaries used to be two hardcoded shapes -- one for 10s and one for
+    *everything else* -- so any other duration produced a beat grid that still
+    ended at 5.0.  The quality gate then (correctly) failed the plan with
+    ``video_time_segments_valid``, because the last beat did not line up with
+    the duration the plan claims.  That is what a 15s shot hit once
+    ``normalize_provider_duration`` stopped snapping every request onto 5 or 10,
+    which is exactly the fiction worth removing: the provider takes 1-15s and
+    real output comes back at 6.6-8.0s, so a grid that can only describe 5s or
+    10s describes almost nothing.
+
+    The last beat is pinned to ``duration`` so the grid ends where the plan
+    says it does even when the equal split does not divide cleanly.
+    """
+
+    step = float(duration) / _MOCK_TIME_SEGMENT_COUNT
+    boundaries = [
+        (round(step * index, 2), round(step * (index + 1), 2))
+        for index in range(_MOCK_TIME_SEGMENT_COUNT)
     ]
+    boundaries[-1] = (boundaries[-1][0], float(duration))
     return [
         V2StoryboardVideoTimeSegment(
             start_seconds=start,
             end_seconds=end,
             content=f"{label}: {action}.",
         )
-        for (start, end), label in zip(boundaries, labels, strict=True)
+        for (start, end), label in zip(
+            boundaries, _MOCK_TIME_SEGMENT_LABELS, strict=True
+        )
     ]
 
 
@@ -387,7 +416,18 @@ def _materializer_payload(input_data: V2StoryboardDetailInput) -> dict[str, Any]
                     "shot_cell_4",
                 ],
                 "cell_roles": ["establishing", "action", "detail", "payoff"],
-                "video_provider_duration_seconds": [5, 10],
+                # The provider's advertised range, not a two-value enum: a
+                # 7s or 8s beat is the length real output comes back at and must
+                # be askable for.
+                "video_provider_duration_seconds": [
+                    V2_VIDEO_PROVIDER_MIN_DURATION_SECONDS,
+                    V2_VIDEO_PROVIDER_MAX_DURATION_SECONDS,
+                ],
+                "video_duration_note": (
+                    "Clips longer than "
+                    f"{V2_VIDEO_RELIABLE_MAX_DURATION_SECONDS}s are accepted but render poorly; "
+                    f"prefer around {V2_VIDEO_TARGET_DURATION_SECONDS}s."
+                ),
                 "no_media_generation": True,
                 "no_provider_tasks": True,
                 "no_bgm_or_music_in_video_detail": True,

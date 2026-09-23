@@ -16,6 +16,7 @@ from app.schemas.agent_canvas_runtime_authority import CanvasPostReadyEffectV2
 from app.schemas.agent_canvas_media_review_authority import (
     CanvasPostReadyEffectDispositionV1,
 )
+from app.services.agent_canvas_execution_state import bounded_error_message
 
 
 PostReadyHandler = Callable[[CanvasPostReadyEffectV2], CanvasPostReadyEffectDispositionV1]
@@ -132,7 +133,9 @@ class AgentCanvasPostReadyEffectWorker:
                         if isinstance(error, V2PersistenceError)
                         else "post_ready_effect_failed"
                     ),
-                    message=str(error)[:1024] or "Post-Ready effect failed.",
+                    message=bounded_error_message(
+                        error, fallback="Post-Ready effect failed."
+                    ),
                     retryable=handler is not None and not non_retryable,
                 )
                 if guided_interaction_wait:

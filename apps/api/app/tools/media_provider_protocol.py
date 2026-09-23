@@ -3,8 +3,22 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 
-SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS = {5, 10}
-SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS = max(SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS)
+# Seedance's own parameter matrix (provider_model_catalog._ark_video_profile)
+# declares duration_seconds as an integer with minimum 1 / maximum 15, and every
+# doubao-seedance manifest repeats it as "duration_range_seconds": [1, 15].
+# The {5, 10} set that used to live here was copied from an early Ark release
+# note and never reconciled with the catalog, so a legal 7s / 8s / 12s request
+# was rejected inside our own validator before it ever reached the provider.
+# The range is now the single source of truth; the "sweet spot" band below is
+# only a *preference* for the segment planner, never a hard rejection.
+SEEDANCE_SINGLE_TASK_DURATIONS_SECONDS = frozenset(range(1, 16))
+SEEDANCE_MIN_SINGLE_TASK_DURATION_SECONDS = 1
+SEEDANCE_MAX_SINGLE_TASK_DURATION_SECONDS = 15
+# Quality band observed on the Seedance family: the model is strongest around
+# 7-8s and degrades past ~12s.  Segment planning targets this band so a shot is
+# cut into more, better clips rather than fewer marginal ones.
+SEEDANCE_PREFERRED_SEGMENT_SECONDS = 8
+SEEDANCE_SUPPORTED_SEGMENT_SECONDS_CEILING = 12
 ARK_SEEDANCE_RESOLUTION = "480p"
 DEFAULT_VIDEO_RATIO = "16:9"
 SEEDREAM_MIN_IMAGE_PIXELS = 3_686_400

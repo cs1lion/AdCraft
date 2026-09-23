@@ -4,30 +4,9 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, Iterator
 from uuid import uuid4
-
-if sys.platform == "win32":
-    import msvcrt
-
-    def _flock_exclusive(file_object: BinaryIO) -> None:
-        file_object.seek(0)
-        msvcrt.locking(file_object.fileno(), msvcrt.LK_LOCK, 1)
-
-    def _flock_release(file_object: BinaryIO) -> None:
-        file_object.seek(0)
-        msvcrt.locking(file_object.fileno(), msvcrt.LK_UNLCK, 1)
-
-else:
-    import fcntl
-
-    def _flock_exclusive(file_object: BinaryIO) -> None:
-        fcntl.flock(file_object.fileno(), fcntl.LOCK_EX)
-
-    def _flock_release(file_object: BinaryIO) -> None:
-        fcntl.flock(file_object.fileno(), fcntl.LOCK_UN)
 
 from pydantic import ValidationError
 
@@ -36,6 +15,7 @@ from app.schemas.workflow_v2_production_acceptance import (
     V2ProductionAcceptanceRunState,
 )
 from app.services.agent_trace import utc_now
+from app.services._file_lock_compat import lock_exclusive, unlock
 from app.services.v2_data_boundary import V2DataBoundaryError, validate_v2_data_path
 
 
@@ -338,11 +318,11 @@ class V2ProductionAcceptanceStore:
         lock_path = self._validated(self._control / "store.lock")
         try:
             with lock_path.open("a+b") as lock_file:
-                _flock_exclusive(lock_file)
+                lock_exclusive(lock_file)
                 try:
                     yield
                 finally:
-                    _flock_release(lock_file)
+                    unlock(lock_file)
         except V2ProductionAcceptanceStoreError:
             raise
         except OSError as exc:
@@ -416,7 +396,9 @@ class V2ProductionAcceptanceStore:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
+    if not hasattr(os, "O_DIRECTORY"):
+        return  # Windows cannot open directory handles for fsync.
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
     finally:

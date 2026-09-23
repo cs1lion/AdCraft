@@ -168,7 +168,7 @@ class V2LibraryReferencePreviewResolver:
             raise LibraryReferencePreviewError("preview_rendition_unreadable") from error
         sha256 = hashlib.sha256(content).hexdigest()
         byte_count = len(content)
-        mime_type, width, height = _image_metadata(content)
+        mime_type, width, height = image_metadata(content)
         expected_sha256 = expected.get("sha256")
         expected_size = expected.get("size_bytes")
         expected_mime = expected.get("mime_type")
@@ -210,7 +210,7 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _image_metadata(content: bytes) -> tuple[str, int, int]:
+def image_metadata(content: bytes) -> tuple[str, int, int]:
     if content[:8] == b"\x89PNG\r\n\x1a\n" and len(content) >= 24 and content[12:16] == b"IHDR":
         return (
             "image/png",

@@ -27,6 +27,8 @@ from app.tools.volcengine_pure_music import (
 
 CallbackBaseUrlResolver = Callable[[], str]
 
+SUPPORTED_BGM_PROVIDERS = ("stepfun_music", "tianpuyue", "volcengine_ai_music")
+
 
 class BgmProviderAdapter(Protocol):
     def generate_bgm_audio(self, bgm_plan: dict[str, Any], workflow_id: str) -> dict[str, Any]: ...
@@ -51,8 +53,15 @@ def build_bgm_provider_adapter(
     configured_provider = normalized_bgm_provider_id(settings)
     provider = str(resolved_provider_id or configured_provider).strip().lower()
     if resolved_provider_id is not None and provider != configured_provider:
+        # Name both values: a mismatch between the model catalog's resolved
+        # provider and BGM_PROVIDER is a configuration bug, and the operator
+        # needs to see which side to change rather than a bare mismatch.
         raise MediaConfigurationError(
-            "Resolved BGM provider does not match configured BGM_PROVIDER."
+            "Resolved BGM provider does not match configured BGM_PROVIDER. "
+            f"model catalog resolved {provider!r}, but BGM_PROVIDER is "
+            f"{configured_provider or '<empty>'!r}; both must agree. Set "
+            f"BGM_PROVIDER={provider} or select a BGM model belonging to "
+            f"{configured_provider or 'a supported provider'}."
         )
     if provider == "stepfun_music":
         validate_stepfun_music_settings(settings)
@@ -71,7 +80,8 @@ def build_bgm_provider_adapter(
     if provider == "volcengine_ai_music":
         return VolcenginePureMusicAdapter(settings, data_dir)
     raise MediaConfigurationError(
-        f"Unsupported BGM_PROVIDER: {settings.bgm_provider or '<empty>'}."
+        f"Unsupported BGM_PROVIDER: {settings.bgm_provider or '<empty>'!r}. "
+        f"Supported values: {', '.join(SUPPORTED_BGM_PROVIDERS)}."
     )
 
 
@@ -80,15 +90,23 @@ def normalized_bgm_provider_id(settings: Settings) -> str:
 
 
 def is_supported_bgm_provider(settings: Settings) -> bool:
-    return normalized_bgm_provider_id(settings) in {
-        "stepfun_music",
-        "tianpuyue",
-        "volcengine_ai_music",
-    }
+    return normalized_bgm_provider_id(settings) in set(SUPPORTED_BGM_PROVIDERS)
 
 
 def bgm_provider_configuration_error(settings: Settings) -> str | None:
+    """Return why BGM cannot run right now, or None when it is ready.
+
+    This is the pre-flight check the canvas surface calls before it lets an
+    operator run a BGM node, so it has to report the *actual* blocking cause.
+    A missing credential and an unusable model selection are different fixes,
+    and reporting one as the other sends the operator chasing the wrong file.
+    """
     provider = normalized_bgm_provider_id(settings)
+    if provider not in set(SUPPORTED_BGM_PROVIDERS):
+        return (
+            f"Unsupported BGM_PROVIDER: {settings.bgm_provider or '<empty>'!r}. "
+            f"Supported values: {', '.join(SUPPORTED_BGM_PROVIDERS)}."
+        )
     try:
         if provider == "stepfun_music":
             validate_stepfun_music_settings(settings)
@@ -97,12 +115,10 @@ def bgm_provider_configuration_error(settings: Settings) -> str | None:
             validate_tianpuyue_bgm_settings(settings)
             validate_tianpuyue_callback_settings(settings)
             return None
-        if provider == "volcengine_ai_music":
-            _validate_volcengine_bgm_settings(settings)
-            return None
+        _validate_volcengine_bgm_settings(settings)
+        return None
     except MediaConfigurationError as exc:
         return str(exc)
-    return None
 
 
 def _tianpuyue_callback_resolver(

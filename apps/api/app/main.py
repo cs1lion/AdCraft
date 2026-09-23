@@ -3,6 +3,8 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import logging
+import urllib.error
+import urllib.request
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +31,58 @@ from app.services.agent_model_trace_sessions import (
 from app.services.agent_model_replay_policy import AgentModelReplayPolicyService
 
 logger = logging.getLogger(__name__)
+
+
+def _probe_agent_runtime(settings: Settings) -> str:
+    """Probe the Node agent runtime once at startup ("reachable"/"unreachable"/"disabled").
+
+    The runtime is a separate service that is easy to forget in local
+    development; every chat turn then fails with agent_runtime_unavailable.  An
+    early warning (and the health-endpoint field) makes the gap visible.
+    """
+
+    if settings.agent_runtime_mode == "fake":
+        return "disabled"
+    probe = urllib.request.Request(
+        settings.agent_runtime_base_url.rstrip("/") + "/internal/v1/health",
+        headers={
+            "Authorization": "Bearer " + (settings.agent_runtime_internal_token or "")
+        },
+    )
+    try:
+        with urllib.request.urlopen(probe, timeout=2.0):
+            return "reachable"
+    except urllib.error.HTTPError:
+        # Any HTTP response, including auth failures, proves the process is up.
+        return "reachable"
+    except Exception:
+        return "unreachable"
 AgentCanvasRuntimeFactory = Callable[[Settings], AgentCanvasRuntime]
+
+
+def _new_agent_canvas_runtime(
+    settings: Settings,
+    runtime_factory: AgentCanvasRuntimeFactory | None,
+) -> AgentCanvasRuntime:
+    """Build a runtime for one background recovery cycle.
+
+    Model policy is seeded once per startup by ``PersistenceBootstrapService``
+    (``main.py:164``), before the recovery calls and poll tasks that follow it.
+    The request path already relies on that same seeding -- see
+    ``get_agent_canvas_runtime``, which passes ``bootstrap_model_policy=False``
+    with the comment "HTTP requests consume the policy initialized by
+    PersistenceBootstrapService."
+
+    Re-running the full bootstrap on every poll tick rewrites every catalog row
+    against the SQLite file, which is wasted work at best; under a OneDrive sync
+    stall it turned a transient ``disk I/O error`` into a failed recovery cycle.
+    A supplied test factory is honoured as-is, since tests may depend on the
+    bootstrap running.
+    """
+
+    if runtime_factory is not None:
+        return runtime_factory(settings)
+    return create_agent_canvas_runtime(settings, bootstrap_model_policy=False)
 
 
 class AccessTokenMiddleware(BaseHTTPMiddleware):
@@ -161,6 +214,13 @@ def _lifespan(
         coordinator = _create_asset_catalog_coordinator(settings)
         application.state.v2_asset_catalog_coordinator = coordinator
         coordinator.ensure_indexed()
+        application.state.agent_runtime_status = _probe_agent_runtime(settings)
+        if application.state.agent_runtime_status == "unreachable":
+            logger.warning(
+                "Agent runtime is unreachable at %s; chat turns will fail until "
+                "it is started (npm start in apps/api/agent).",
+                settings.agent_runtime_base_url,
+            )
         try:
             recovery_kwargs = (
                 {"runtime_factory": runtime_factory} if runtime_factory is not None else {}
@@ -215,7 +275,7 @@ def _recover_agent_canvas_chat_turns(
 ) -> None:
     """Resume durable queued Agent Canvas turns after process restart."""
 
-    runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    runtime = _new_agent_canvas_runtime(settings, runtime_factory)
     try:
         runtime.commands.recover_applying_plans()
         runtime.conversations.recover_pending_turns()
@@ -230,7 +290,7 @@ def _recover_agent_canvas_executions(
 ) -> None:
     """Resume persisted non-terminal Agent Canvas scheduler memberships."""
 
-    runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    runtime = _new_agent_canvas_runtime(settings, runtime_factory)
     stale_timeout = timedelta(minutes=30)
     now = datetime.now(timezone.utc)
     try:
@@ -300,7 +360,7 @@ def _recover_agent_canvas_continuations(
     *,
     runtime_factory: AgentCanvasRuntimeFactory | None = None,
 ) -> None:
-    runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    runtime = _new_agent_canvas_runtime(settings, runtime_factory)
     try:
         prompt_preparation_worker = getattr(runtime, "prompt_preparation_worker", None)
         if prompt_preparation_worker is not None:
@@ -343,7 +403,7 @@ def _recover_agent_canvas_guided_media_resumes(
     *,
     runtime_factory: AgentCanvasRuntimeFactory | None = None,
 ) -> None:
-    runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    runtime = _new_agent_canvas_runtime(settings, runtime_factory)
     try:
         runtime.guided_media_resume_worker.run_once()
     finally:
@@ -381,7 +441,7 @@ def _recover_agent_canvas_provider_tasks(
     *,
     runtime_factory: AgentCanvasRuntimeFactory | None = None,
 ) -> None:
-    runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    runtime = _new_agent_canvas_runtime(settings, runtime_factory)
     try:
         runtime.provider_recovery.recover_due_tasks()
         runtime.post_ready_effects.run_once()
@@ -398,7 +458,7 @@ def _recover_agent_canvas_editing_exports(
 ) -> None:
     """Resume persisted non-terminal Agent Canvas Editing exports."""
 
-    runtime = (runtime_factory or create_agent_canvas_runtime)(settings)
+    runtime = _new_agent_canvas_runtime(settings, runtime_factory)
     try:
         runtime.editing_exports.resume_active()
     finally:

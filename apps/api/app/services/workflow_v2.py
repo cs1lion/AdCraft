@@ -7877,6 +7877,9 @@ def _expired_remote_reconciliation_eligible(task: V2ProviderTask) -> bool:
     )
 
 
+# The provider codes come from the shared classifier so this set cannot drift
+# from what the classifier actually emits; the transport-specific entries below
+# are raised by the V2 poll loop itself.
 RETRYABLE_PROVIDER_ERROR_CODES = {
     "provider_rate_limited",
     "provider_timeout",

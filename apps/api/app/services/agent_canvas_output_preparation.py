@@ -89,7 +89,7 @@ class AgentCanvasOutputPreparationService:
         effects = _effects(context)
         if outcome.media is not None:
             metadata = project_canvas_publication_metadata(
-                context, publication, outcome.media.metadata
+                context, publication, _declared_vendor_metadata(outcome)
             )
             effective_parameters = (
                 context.effective_parameters.effective
@@ -182,6 +182,31 @@ class AgentCanvasOutputPreparationService:
             provider_task_id=outcome.provider_task_id,
             post_ready_effects=effects,
         )
+
+
+def _declared_vendor_metadata(outcome: NodeExecutionOutcome) -> dict[str, object]:
+    """Name the vendor that actually produced the bytes.
+
+    ``MediaNodeExecutor`` states it as ``provider`` / ``model_id`` when it
+    publishes a completed result itself, but a provider-task descriptor carries
+    the same fact under ``provider`` / ``provider_model``.  Normalizing here
+    keeps ``project_canvas_publication_metadata``'s vendor precedence effective
+    on the recovery path, where a ``bgm`` node resolves the catalog ``audio``
+    default and then routes to the configured BGM adapter -- without it the
+    published asset row names a provider that never produced the file, while the
+    nested ``provider_asset`` names the real one.
+    """
+
+    metadata = dict(outcome.media.metadata or {}) if outcome.media is not None else {}
+    if outcome.provider:
+        metadata.setdefault("provider", outcome.provider)
+    if "model_id" not in metadata:
+        provider_model = metadata.get("provider_model")
+        if isinstance(provider_model, str) and provider_model.strip():
+            metadata["model_id"] = provider_model
+    if outcome.provider_task_id:
+        metadata.setdefault("provider_task_id", outcome.provider_task_id)
+    return metadata
 
 
 def _effects(

@@ -126,6 +126,34 @@ def _is_v2_provider_result_path(relative_path: Path) -> bool:
     )
 
 
+def _download_owner_path(output_path: Path) -> Path:
+    """Sidecar naming the provider task that produced the bytes at `output_path`.
+
+    Dot-prefixed so it stays out of any `*.mp4` scan of the segments directory,
+    which is keyed by segment order and reused across tasks.
+    """
+    return output_path.with_name(f".{output_path.name}.owner")
+
+
+def _write_download_owner(output_path: Path, owner: str) -> None:
+    try:
+        _download_owner_path(output_path).write_text(str(owner), encoding="utf-8")
+    except OSError:
+        # A sidecar that cannot be written only costs the reuse of bytes already
+        # verified on this run; it must never fail a download that succeeded.
+        pass
+
+
+def _download_owner_matches(output_path: Path, owner: str | None) -> bool:
+    if not owner:
+        return False
+    try:
+        recorded = _download_owner_path(output_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return bool(recorded) and recorded == str(owner).strip()
+
+
 def _validate_v2_provider_result_output_path(data_dir: Path, output_path: Path) -> None:
     try:
         relative_path = output_path.resolve(strict=False).relative_to(data_dir.resolve())
@@ -298,7 +326,10 @@ class RealMediaProvider:
                 "Real media mode is enabled, but COMPOSITION_ENDPOINT is missing."
             )
 
-        _normalize_image_generation_size(self._settings.image_generation_size)
+        _normalize_image_generation_size(
+            self._settings.image_generation_size,
+            model=self._settings.image_generation_model,
+        )
 
     # V1-only compatibility adapter; V2 image generation uses generate_v2_canonical_image.
     def generate_storyboard_images(
@@ -319,7 +350,10 @@ class RealMediaProvider:
                     "model": self._settings.image_generation_model,
                     "prompt": prompt,
                     "response_format": "url",
-                    "size": _normalize_image_generation_size(self._settings.image_generation_size),
+                    "size": _normalize_image_generation_size(
+                        self._settings.image_generation_size,
+                        model=self._settings.image_generation_model,
+                    ),
                     "watermark": False,
                     "references": _image_generation_reference_inputs(scene_input_assets),
                     "context": _storyboard_item_context(scene, context or {}),
@@ -385,7 +419,10 @@ class RealMediaProvider:
                     "model": self._settings.image_generation_model,
                     "prompt": prompt,
                     "response_format": "url",
-                    "size": _normalize_image_generation_size(self._settings.image_generation_size),
+                    "size": _normalize_image_generation_size(
+                        self._settings.image_generation_size,
+                        model=self._settings.image_generation_model,
+                    ),
                     "watermark": False,
                 }
             )
@@ -452,7 +489,10 @@ class RealMediaProvider:
                     "model": self._settings.image_generation_model,
                     "prompt": prompt,
                     "response_format": "url",
-                    "size": _normalize_image_generation_size(self._settings.image_generation_size),
+                    "size": _normalize_image_generation_size(
+                        self._settings.image_generation_size,
+                        model=self._settings.image_generation_model,
+                    ),
                     "watermark": False,
                     "references": _image_generation_reference_inputs(product_input_assets),
                     "context": _product_item_context(product, product_input_assets),
@@ -519,7 +559,8 @@ class RealMediaProvider:
             model=model,
             canonical_prompt=prompt,
             size=_normalize_image_generation_size(
-                request.get("size") or self._settings.image_generation_size
+                request.get("size") or self._settings.image_generation_size,
+                model=model,
             ),
             references=reference_assets,
             required_reference_asset_ids=list(request.get("submitted_reference_asset_ids") or []),
@@ -715,7 +756,10 @@ class RealMediaProvider:
                     "model": self._settings.image_generation_model,
                     "prompt": prompt,
                     "response_format": "url",
-                    "size": _normalize_image_generation_size(self._settings.image_generation_size),
+                    "size": _normalize_image_generation_size(
+                        self._settings.image_generation_size,
+                        model=self._settings.image_generation_model,
+                    ),
                     "watermark": False,
                 }
             )
@@ -760,11 +804,15 @@ class RealMediaProvider:
     def _submit_image_generation_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         endpoint = self._settings.image_generation_endpoint or ""
+        # The credential is chosen by the endpoint's host, not by the capability:
+        # ``api.agnes-ai.cn`` and ``api.stepfun.com`` are different vendors with
+        # different keys, and this one setting has pointed at each of them.
+        credential = self._settings.image_generation_credential
         request = urllib_request.Request(
             endpoint,
             data=body,
             headers={
-                "Authorization": f"Bearer {self._settings.image_generation_api_key}",
+                "Authorization": f"Bearer {credential}",
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -789,6 +837,7 @@ class RealMediaProvider:
         self,
         url: str | None,
         relative_path: Path,
+        owner: str | None = None,
     ) -> dict[str, Any]:
         if not url:
             return {
@@ -800,7 +849,7 @@ class RealMediaProvider:
         v2_result_path = _is_v2_provider_result_path(relative_path)
         try:
             if v2_result_path:
-                self._download_v2_provider_result(url, output_path)
+                self._download_v2_provider_result(url, output_path, owner)
             else:
                 self._download_remote_file(url, output_path)
         except Exception as exc:  # noqa: BLE001 - convert transport errors at this boundary.
@@ -819,11 +868,28 @@ class RealMediaProvider:
             "download_status": "downloaded",
         }
 
-    def _download_v2_provider_result(self, url: str, output_path: Path) -> None:
+    def _download_v2_provider_result(
+        self,
+        url: str,
+        output_path: Path,
+        owner: str | None = None,
+    ) -> None:
         _validate_v2_provider_result_output_path(self._settings.media_data_dir, output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.exists():
-            if output_path.stat().st_size > 0 and _is_video_file(output_path):
+            # Reusing bytes already on disk is only safe when the same task put
+            # them there.  The path is keyed by segment *order*, not by task, so a
+            # re-submitted segment finds the previous task's file sitting at this
+            # exact path -- and returning here reported it as the new task's
+            # output.  That is a stale success indistinguishable from a real one:
+            # the metadata says `downloaded`, the task id is the new one, and the
+            # bytes belong to a run from hours or days earlier.
+            if (
+                owner
+                and output_path.stat().st_size > 0
+                and _is_video_file(output_path)
+                and _download_owner_matches(output_path, owner)
+            ):
                 return
             output_path.unlink()
         part_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.part")
@@ -861,6 +927,8 @@ class RealMediaProvider:
                     received_bytes=received_bytes,
                 )
             part_path.replace(output_path)
+            if owner:
+                _write_download_owner(output_path, owner)
         except Exception as exc:
             if part_path.exists():
                 part_path.unlink()
@@ -1148,7 +1216,13 @@ class RealMediaProvider:
         )
         if download_media:
             if video_url:
-                download_result = self._download_remote_asset(video_url, relative_video_path)
+                # `response_task_id` is the id the provider actually answered for,
+                # and it is what the reuse guard compares against -- so a re-poll
+                # of the same task keeps its bytes, and a re-submitted segment does
+                # not inherit the previous task's.
+                download_result = self._download_remote_asset(
+                    video_url, relative_video_path, response_task_id
+                )
             elif str(response.get("status") or "").strip().lower() in {
                 "succeeded",
                 "completed",

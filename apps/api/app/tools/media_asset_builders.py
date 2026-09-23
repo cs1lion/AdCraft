@@ -59,6 +59,10 @@ def _storyboard_video_segment_asset(
         "character_ids": segment.get("character_ids", []),
         "product_reference_ids": segment.get("product_reference_ids", []),
         "style_reference_ids": segment.get("style_reference_ids", []),
+        # Props were the one binding the caller could declare and the artifact
+        # then dropped, so a segment that carried a scene and characters looked
+        # half-bound to anything reading this file back.
+        "prop_ids": segment.get("prop_ids", []),
         "no_scene_reason": segment.get("no_scene_reason"),
         "prompt": segment["prompt"],
         "duration_seconds": actual_duration,

@@ -96,6 +96,7 @@ export function projectChatEvents(
         warning_code: payload.warning_code === "specialist_materialization_fallback"
           ? "specialist_materialization_fallback"
           : null,
+        actionable_failure: null,
       });
     }
   });

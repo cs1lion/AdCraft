@@ -515,6 +515,20 @@ describe("AgentCanvasNodeCard", () => {
     expect(screen.getByLabelText("General Audio node type")).toBeTruthy();
   });
 
+  it("renders the audio player for a voice-cast node", () => {
+    const node: CanvasNodeV2 = {
+      ...makeNode("audio", "ready"),
+      node_type: "voice-cast",
+      creative_role: "voice_cast",
+    };
+
+    render(
+      <AgentCanvasNodeCard node={node} asset={makeAsset("audio")} />,
+    );
+
+    expect(screen.getByLabelText("Audio player")).toBeTruthy();
+  });
+
   it("never offers Run for a text node", () => {
     render(<AgentCanvasNodeCard node={makeNode("text")} onRun={vi.fn()} />);
 

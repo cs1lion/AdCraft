@@ -44,6 +44,7 @@ import type {
   CanvasLayoutPositionV2,
   CanvasNodeV2,
   CanvasPositionV2,
+  CreationFlowAssessmentResponse,
   NodeRuntimeV2,
   ProjectAssetSummaryV2,
   SaveAgentCanvasImageToLibraryRequestV2,
@@ -300,6 +301,11 @@ export function AgentCanvasPage() {
   const [serverProgress, setServerProgress] = useState<WorkflowProgressResponse | null>(null);
   const [diagnosticOpen, setDiagnosticOpen] = useState(false);
   const [creationFlowOpen, setCreationFlowOpen] = useState(false);
+  const [creationFlowAssessment, setCreationFlowAssessment] = useState<CreationFlowAssessmentResponse | null>(null);
+  // CreationFlowGuidance re-fetches whenever this callback identity changes, so it must stay stable.
+  const handleCreationFlowAssessment = useCallback((assessment: CreationFlowAssessmentResponse) => {
+    setCreationFlowAssessment(assessment);
+  }, []);
   const workflowNodesRef = useRef(workflow?.nodes ?? []);
   const canonicalNodesRef = useRef<readonly AgentCanvasFlowNode[]>([]);
   const visibleCanonicalNodesRef = useRef<readonly AgentCanvasFlowNode[]>([]);
@@ -1543,6 +1549,39 @@ export function AgentCanvasPage() {
           <Controls position="bottom-left" showInteractive={false} />
         </ReactFlow>
 
+        <div className="agent-canvas-creation-flow-dock">
+          <button
+            type="button"
+            className={`agent-canvas-creation-flow-toggle${creationFlowOpen ? " is-open" : ""}`}
+            aria-expanded={creationFlowOpen}
+            aria-controls="agent-canvas-creation-flow-panel"
+            title={creationFlowOpen ? "Hide creation flow" : "Show creation flow"}
+            onClick={() => setCreationFlowOpen((current) => !current)}
+          >
+            <span aria-hidden="true">🎬</span>
+            Creation flow
+            {creationFlowAssessment
+              ? ` · ${Math.round(creationFlowAssessment.progress_percent)}%`
+              : ""}
+            {creationFlowAssessment?.blockers.length
+              ? ` · ${creationFlowAssessment.blockers.length} blocked`
+              : ""}
+            <span className="agent-canvas-creation-flow-toggle-chevron" aria-hidden="true">
+              {creationFlowOpen ? "▲" : "▼"}
+            </span>
+          </button>
+          {creationFlowOpen ? (
+            <div id="agent-canvas-creation-flow-panel" className="agent-canvas-creation-flow-panel">
+              <CreationFlowGuidance
+                workflowId={workflow.workflow_id}
+                pollInterval={5000}
+                showDetails
+                onAssessment={handleCreationFlowAssessment}
+              />
+            </div>
+          ) : null}
+        </div>
+
         <CanvasPreviewPrefetcher
           ref={previewPrefetchRef}
           nodes={canonicalNodes}
@@ -1663,7 +1702,15 @@ export function AgentCanvasPage() {
                     className="agent-canvas-toolbar__progress-label is-failed"
                     title={blockedHint ?? undefined}
                     style={{ cursor: "pointer" }}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setDiagnosticOpen((v) => !v)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setDiagnosticOpen((v) => !v);
+                      }
+                    }}
                   >
                     {failedNodes} failed · {readyNodes}/{totalNodes} complete{blockedHint ? ` · ${blockedHint}` : ""}
                     <span style={{ marginLeft: 6, fontSize: 10 }}>{diagnosticOpen ? "▲" : "▼"}</span>

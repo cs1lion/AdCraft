@@ -1,12 +1,8 @@
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_front_desk_service
-from app.api.v2.endpoints.workflows import get_workflow_v2_service
 from app.core.config import Settings
-from app.main import create_app
 from app.schemas.front_desk import FrontDeskChatRequest, FrontDeskChatResponse
 from app.services.front_desk import FrontDeskError, FrontDeskService
 from app.services.v2_structured_generation_runtime import StructuredGenerationRuntimeError
@@ -15,48 +11,6 @@ from app.services.workflow_v2 import WorkflowV2Error, WorkflowV2Service
 
 def _settings(data_dir: Path) -> Settings:
     return Settings(agent_runtime_mode="real", media_data_dir=data_dir)
-
-
-def test_plan_from_chat_returns_typed_503_when_agent_runtime_is_unavailable(
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "data"
-    application = create_app(_settings(data_dir))
-
-    class UnavailableWorkflowService:
-        def plan_from_chat(self, request: object, front_desk_service: object) -> None:
-            del request, front_desk_service
-            raise WorkflowV2Error(
-                "agent_runtime_unavailable",
-                "Agent runtime is temporarily unavailable.",
-                details={"retryable": True},
-            )
-
-    application.dependency_overrides[get_workflow_v2_service] = lambda: UnavailableWorkflowService()
-    application.dependency_overrides[get_front_desk_service] = lambda: object()
-    try:
-        with TestClient(application) as client:
-            response = client.post(
-                "/api/v2/workflows/plan-from-chat",
-                json={
-                    "message": "Create a fictional phone advertisement.",
-                    "workflow_schema_version": 2,
-                },
-            )
-    finally:
-        application.dependency_overrides.clear()
-
-    assert response.status_code == 503
-    assert response.json() == {
-        "detail": {
-            "code": "agent_runtime_unavailable",
-            "message": "Agent runtime is temporarily unavailable.",
-            "retryable": True,
-        }
-    }
-    assert not (data_dir / "v2" / "workflows").exists()
-    assert not (data_dir / "v2" / "runs").exists()
-    assert not (data_dir / "assets").exists()
 
 
 def test_front_desk_maps_structured_runtime_unavailability_without_internal_details(

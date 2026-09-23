@@ -1022,9 +1022,11 @@
             "product",
             "prop",
             "scene",
+            "scene_3d_previs",
             "script",
             "storyboard_sequence",
             "storyboard_video",
+            "voice_cast",
             "world_setting"
           ],
           "title": "Creative Role",
@@ -7829,6 +7831,16 @@
     "CanvasNodeV2": {
       "additionalProperties": false,
       "properties": {
+        "authoring_origin": {
+          "default": "user_free",
+          "enum": [
+            "agent_guided",
+            "template",
+            "user_free"
+          ],
+          "title": "Authoring Origin",
+          "type": "string"
+        },
         "created_at": {
           "format": "date-time",
           "title": "Created At",
@@ -7847,9 +7859,11 @@
             "product",
             "prop",
             "scene",
+            "scene_3d_previs",
             "script",
             "storyboard_sequence",
             "storyboard_video",
+            "voice_cast",
             "world_setting"
           ],
           "title": "Creative Role",
@@ -7886,6 +7900,18 @@
           ],
           "default": null,
           "title": "Generation Prompt"
+        },
+        "intent_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intent Hint"
         },
         "latest_attempt": {
           "anyOf": [
@@ -7949,9 +7975,11 @@
             "audio",
             "editing",
             "image",
+            "scene-3d",
             "script",
             "text",
-            "video"
+            "video",
+            "voice-cast"
           ],
           "title": "Node Type",
           "type": "string"
@@ -13910,6 +13938,111 @@
       "title": "EditableRequirementDirectiveV1",
       "type": "object"
     },
+    "EditingAudioEntryV2": {
+      "additionalProperties": false,
+      "description": "One timeline-positioned audio clip (voice-over, BGM segment, or SFX).",
+      "properties": {
+        "asset_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Id"
+        },
+        "binding_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Binding Id"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fade_in_seconds": {
+          "default": 0.0,
+          "maximum": 30.0,
+          "minimum": 0.0,
+          "title": "Fade In Seconds",
+          "type": "number"
+        },
+        "fade_out_seconds": {
+          "default": 0.0,
+          "maximum": 30.0,
+          "minimum": 0.0,
+          "title": "Fade Out Seconds",
+          "type": "number"
+        },
+        "role": {
+          "enum": [
+            "bgm",
+            "sfx",
+            "voice"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "timeline_start_seconds": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Timeline Start Seconds",
+          "type": "number"
+        },
+        "trim_end_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trim End Seconds"
+        },
+        "trim_start_seconds": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Trim Start Seconds",
+          "type": "number"
+        },
+        "volume": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Volume",
+          "type": "number"
+        },
+        "volume_keyframes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EditingVolumeKeyframeV2"
+          },
+          "title": "Volume Keyframes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "EditingAudioEntryV2",
+      "type": "object"
+    },
     "EditingBgmEntryV2": {
       "additionalProperties": false,
       "properties": {
@@ -13988,13 +14121,80 @@
       "title": "EditingBgmEntryV2",
       "type": "object"
     },
+    "EditingDuckingConfigV2": {
+      "additionalProperties": false,
+      "description": "Sidechain auto-ducking applied to BGM clips while voice clips are active.",
+      "properties": {
+        "attack_ms": {
+          "default": 50,
+          "maximum": 2000,
+          "minimum": 0,
+          "title": "Attack Ms",
+          "type": "integer"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "makeup_gain_db": {
+          "default": 0.0,
+          "maximum": 24.0,
+          "minimum": 0.0,
+          "title": "Makeup Gain Db",
+          "type": "number"
+        },
+        "ratio": {
+          "default": 12.0,
+          "exclusiveMinimum": 1.0,
+          "maximum": 60.0,
+          "title": "Ratio",
+          "type": "number"
+        },
+        "release_ms": {
+          "default": 250,
+          "maximum": 5000,
+          "minimum": 0,
+          "title": "Release Ms",
+          "type": "integer"
+        },
+        "threshold_db": {
+          "default": -30.0,
+          "maximum": -10.0,
+          "minimum": -80.0,
+          "title": "Threshold Db",
+          "type": "number"
+        }
+      },
+      "title": "EditingDuckingConfigV2",
+      "type": "object"
+    },
     "EditingManifestV2": {
       "additionalProperties": false,
       "properties": {
+        "audio_entries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EditingAudioEntryV2"
+          },
+          "title": "Audio Entries",
+          "type": "array"
+        },
         "bgm": {
           "anyOf": [
             {
               "$ref": "#/$defs/EditingBgmEntryV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ducking": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EditingDuckingConfigV2"
             },
             {
               "type": "null"
@@ -14010,6 +14210,19 @@
         },
         "output": {
           "$ref": "#/$defs/EditingOutputSettingsV2"
+        },
+        "subtitle_burn_in": {
+          "default": true,
+          "title": "Subtitle Burn In",
+          "type": "boolean"
+        },
+        "subtitle_entries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EditingSubtitleEntryV2"
+          },
+          "title": "Subtitle Entries",
+          "type": "array"
         },
         "timeline_duration_seconds": {
           "anyOf": [
@@ -14099,6 +14312,46 @@
       "title": "EditingOutputSettingsV2",
       "type": "object"
     },
+    "EditingSubtitleEntryV2": {
+      "additionalProperties": false,
+      "description": "One subtitle cue positioned on the export timeline (text-only, no asset).",
+      "properties": {
+        "end_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "start_seconds": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "style": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimelineSubtitleStyleV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "end_seconds",
+        "text"
+      ],
+      "title": "EditingSubtitleEntryV2",
+      "type": "object"
+    },
     "EditingVideoEntryV2": {
       "additionalProperties": false,
       "properties": {
@@ -14164,7 +14417,10 @@
           "default": "cut",
           "enum": [
             "cut",
-            "fade"
+            "dissolve",
+            "fade",
+            "slide",
+            "wipe"
           ],
           "title": "Transition",
           "type": "string"
@@ -14204,6 +14460,29 @@
         }
       },
       "title": "EditingVideoEntryV2",
+      "type": "object"
+    },
+    "EditingVolumeKeyframeV2": {
+      "additionalProperties": false,
+      "description": "One point of a clip-relative volume envelope (linear gain 0\u20131).",
+      "properties": {
+        "time_seconds": {
+          "minimum": 0.0,
+          "title": "Time Seconds",
+          "type": "number"
+        },
+        "value": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "time_seconds",
+        "value"
+      ],
+      "title": "EditingVolumeKeyframeV2",
       "type": "object"
     },
     "ExpertActivityV2": {
@@ -14858,6 +15137,7 @@
           "enum": [
             "clarification",
             "concept_selection",
+            "free_node_advisory",
             "manual_node_run",
             "media_review",
             "milestone_idle",
@@ -14883,6 +15163,7 @@
         "resume_policy": {
           "enum": [
             "explicit_resume",
+            "free_node_completed",
             "next_user_message",
             "node_terminal",
             "submit_interaction"
@@ -31132,6 +31413,44 @@
           "title": "Camera",
           "type": "string"
         },
+        "camera_move": {
+          "anyOf": [
+            {
+              "enum": [
+                "crane",
+                "dolly",
+                "handheld",
+                "pan",
+                "static",
+                "tilt",
+                "zoom"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Camera Move"
+        },
+        "character_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Character Ids",
+          "type": "array"
+        },
+        "character_speech_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Maps character_id to speech_audio asset_id for lip-sync and bound-mode timing (P2, per ADR bulletin Objection 3)",
+          "title": "Character Speech Map",
+          "type": "object"
+        },
         "composition": {
           "maxLength": 2048,
           "minLength": 1,
@@ -31144,11 +31463,79 @@
           "title": "Continuity From Previous",
           "type": "string"
         },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "maximum": 60,
+              "minimum": 0.5,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Seconds"
+        },
         "panel_index": {
           "maximum": 9,
           "minimum": 1,
           "title": "Panel Index",
           "type": "integer"
+        },
+        "prop_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Prop Ids",
+          "type": "array"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "scene_script_id": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Script Id"
+        },
+        "shot_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "close-up",
+                "ecu",
+                "medium",
+                "ots",
+                "wide"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shot Type"
         },
         "subject_action": {
           "maxLength": 2048,
@@ -32505,6 +32892,109 @@
         "version"
       ],
       "title": "StyleSkillPublicFactV1",
+      "type": "object"
+    },
+    "TimelineSubtitleStyleV1": {
+      "additionalProperties": false,
+      "description": "Per-cue subtitle styling; every field left as None falls back to the\nrenderer default when SRT/ASS is generated or the cue is burned in.",
+      "properties": {
+        "bold": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bold"
+        },
+        "font_family": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Family"
+        },
+        "font_size": {
+          "anyOf": [
+            {
+              "maximum": 160,
+              "minimum": 8,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Size"
+        },
+        "italic": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Italic"
+        },
+        "outline_color": {
+          "anyOf": [
+            {
+              "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outline Color"
+        },
+        "position": {
+          "anyOf": [
+            {
+              "enum": [
+                "bottom",
+                "middle",
+                "top"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Position"
+        },
+        "primary_color": {
+          "anyOf": [
+            {
+              "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Color"
+        }
+      },
+      "title": "TimelineSubtitleStyleV1",
       "type": "object"
     },
     "TurnIntentContextV2": {
@@ -36349,6 +36839,16 @@
           "title": "Era And Place",
           "type": "string"
         },
+        "owned_scene_ids": {
+          "default": [],
+          "description": "IDs of scene nodes owned by this world setting. Establishes world\u2192scenes hierarchy for the structured-derivation flow (P0-P3).",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Owned Scene Ids",
+          "type": "array"
+        },
         "premise": {
           "maxLength": 2048,
           "minLength": 1,
@@ -36739,6 +37239,7 @@
     "StoryboardSegmentMaterializationDraftV2",
     "V2QuickMediaPromptPlan",
     "V2ProductMainPromptPlan",
+    "AgentCanvasScene3DOutput",
     "V2ProductMultiViewPromptPlan",
     "V2ProductPromptPlan",
     "V2CharacterMainPromptPlan",
@@ -37169,6 +37670,18 @@
       "operation": "execute_canvas_script",
       "result_contract_name": "AgentCanvasScriptOutput",
       "style_projection_role": "script",
+      "validation_profile": null
+    },
+    {
+      "capability_id": null,
+      "context_contract_name": "AgentRunContext",
+      "display_name": "3D Storyboard",
+      "internal_skill_id": "video_agent_3d_storyboard",
+      "max_handoffs": 0,
+      "max_skill_context_bytes": 8192,
+      "operation": "execute_canvas_scene_3d",
+      "result_contract_name": "AgentCanvasScene3DOutput",
+      "style_projection_role": null,
       "validation_profile": null
     },
     {

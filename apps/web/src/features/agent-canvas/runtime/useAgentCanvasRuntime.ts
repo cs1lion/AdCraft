@@ -39,7 +39,9 @@ export class NodeRunBlockedError extends Error {
       | "no_workflow"
       | "unsupported_node_type"
       | "source_only_node"
-      | "not_runnable_status",
+      | "not_runnable_status"
+      | "workflow_not_loaded"
+      | "no_failed_nodes",
     message: string,
     public readonly suggestedNext?: string,
   ) {
@@ -476,7 +478,13 @@ export function useAgentCanvasRuntime(
   }, [processEvent, refreshRuntime, refreshWorkflow, workflowId]);
 
   const runAll = useCallback(async () => {
-    if (!workflowId || !workflow) return;
+    if (!workflowId || !workflow) {
+      throw new NodeRunBlockedError(
+        "workflow_not_loaded",
+        "The canvas is still loading. Try again in a moment.",
+        "Wait for the workflow to finish loading, then run again.",
+      );
+    }
     setRunPending(true);
     try {
       const migrations = runnableDraftParameterMigrations(workflow);
@@ -541,9 +549,21 @@ export function useAgentCanvasRuntime(
   }, [refreshRuntime, workflowId]);
 
   const retryAllFailed = useCallback(async () => {
-    if (!workflowId || !workflow) return;
+    if (!workflowId || !workflow) {
+      throw new NodeRunBlockedError(
+        "workflow_not_loaded",
+        "The canvas is still loading. Try again in a moment.",
+        "Wait for the workflow to finish loading, then retry.",
+      );
+    }
     const failedNodes = workflow.nodes.filter((n) => n.status === "failed");
-    if (failedNodes.length === 0) return;
+    if (failedNodes.length === 0) {
+      throw new NodeRunBlockedError(
+        "no_failed_nodes",
+        "There are no failed nodes to retry.",
+        "Run a draft node instead.",
+      );
+    }
     setRunPending(true);
     try {
       for (const node of failedNodes) {
@@ -589,6 +609,7 @@ export function useAgentCanvasRuntime(
     actions: {
       refreshRuntime,
       refreshWorkflow,
+      refreshAssets,
       runAll,
       retryAllFailed,
       runNode,

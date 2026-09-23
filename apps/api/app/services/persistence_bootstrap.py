@@ -11,7 +11,7 @@ from app.persistence.database import create_v2_database, resolve_v2_database_pat
 from app.persistence.errors import V2PersistenceError
 from app.persistence.event_repository import EventRepository
 from app.persistence.provider_model_repository import ProviderModelRepository
-from app.persistence.schema import upgrade_v2_schema
+from app.persistence.schema import upgrade_v2_schema, verify_v2_schema
 from app.schemas.v2_persistence import PersistenceBootstrapState
 from app.services.v2_event_import import V2EventImportService
 from app.services.v2_asset_metadata_import import V2AssetMetadataImportService
@@ -55,6 +55,7 @@ class PersistenceBootstrapService:
                 resolve_v2_database_path(self._settings.media_data_dir),
             )
             schema_revision = upgrade_v2_schema(database)
+            verify_v2_schema(database)
             event_repository = EventRepository(database)
             project_catalog_repair_report = V2ProjectCatalogRepairService(
                 database,

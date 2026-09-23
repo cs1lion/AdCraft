@@ -8,3 +8,4 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     mode: Literal["mock", "real"]
+    agent_runtime: Literal["reachable", "unreachable", "disabled", "unknown"] | None = None
