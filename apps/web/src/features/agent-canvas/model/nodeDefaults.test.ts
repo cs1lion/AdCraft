@@ -24,6 +24,7 @@ describe("Agent Canvas node defaults", () => {
       "editing",
       "scene-3d",
       "voice-cast",
+      "replica",
     ]);
   });
 
@@ -36,6 +37,7 @@ describe("Agent Canvas node defaults", () => {
     ["editing", "editing"],
     ["scene-3d", "scene_3d_previs"],
     ["voice-cast", "voice_cast"],
+    ["replica", "replica_blueprint"],
   ] as const)("uses the frozen creative role for %s nodes", (nodeType, creativeRole) => {
     expect(createDefaultCanvasNodeRequest(nodeType, { x: 10, y: 20 })).toMatchObject({
       node_type: nodeType,
