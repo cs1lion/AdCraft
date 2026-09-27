@@ -36,6 +36,7 @@ from app.schemas.scene_script import (
     CharacterKeyframe,
     SpeechBinding,
 )
+from app.schemas.scene_script import _RADIAN_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,13 @@ class SpeechSegment:
     audio_path: str | None = None
     emotion: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Word-level timings (whisperX forced alignment), each {"text", "start",
+    # "end"} in seconds. Optional: the estimated aligner has none, and the
+    # lip-sync generator falls back to its syllable metronome. With them, the
+    # mouth opens per WORD instead of on a metronome — the difference between
+    # "the mouth flaps while sound exists" and "the mouth flaps with the
+    # words" (V0.2 §14.9: the preview must be judgeable).
+    word_timings: tuple[dict[str, Any], ...] | None = None
 
     @property
     def duration(self) -> float:
@@ -394,6 +402,95 @@ class SpeechTimeline:
 # ---------------------------------------------------------------------------
 
 
+def _interpolated_pose_at(character: SceneCharacter, frame: int) -> tuple[list[float], float]:
+    """The pose the renderer SHOWS at ``frame`` (linear interpolation).
+
+    Same semantics as the frontend's ``characterStateAtFrame``: before the
+    first keyframe it holds it, after the last it holds it, and between two it
+    interpolates linearly — which is exactly how the preview and the Blender
+    renderer play a SceneScript back. The lip-sync merge uses this so that
+    inserting frames never changes the motion the author authored (V0.2 §14.13).
+
+    One deliberate exception for the YAW: an interpolated angle can land in
+    the schema's radian blind zone (0 < |yaw| <= 2pi, where
+    ``_validate_rotation_y`` refuses the value because a tiny degree value is
+    indistinguishable from a radian one). Such frames fall back to the
+    at-or-before keyframe's yaw — a small turn may quantize at its very start,
+    while positions (the visibly expensive channel) never do.
+    """
+
+    keyframes = sorted(character.keyframes, key=lambda keyframe: keyframe.frame)
+    if not keyframes:
+        return [0.0, 0.0, 0.0], 0.0
+    if frame <= keyframes[0].frame:
+        first = keyframes[0]
+        return list(first.position), float(first.rotation_y)
+    last = keyframes[-1]
+    if frame >= last.frame:
+        return list(last.position), float(last.rotation_y)
+    for index in range(len(keyframes) - 1):
+        a = keyframes[index]
+        b = keyframes[index + 1]
+        if a.frame <= frame <= b.frame:
+            span = b.frame - a.frame or 1
+            t = (frame - a.frame) / span
+            position = [
+                a.position[0] + (b.position[0] - a.position[0]) * t,
+                a.position[1] + (b.position[1] - a.position[1]) * t,
+                a.position[2] + (b.position[2] - a.position[2]) * t,
+            ]
+            yaw = a.rotation_y + (b.rotation_y - a.rotation_y) * t
+            if 0 < abs(yaw) <= _RADIAN_THRESHOLD:
+                # Schema blind zone (see docstring): hold the authored yaw.
+                yaw = a.rotation_y
+            return position, float(yaw)
+    return list(last.position), float(last.rotation_y)
+
+
+def _as_float(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def word_mouth_frames(
+    segment: SpeechSegment,
+    *,
+    frame_rate: int,
+    line_frame_start: int,
+) -> list[tuple[int, str]]:
+    """Mouth frames for one line, driven by WORD timings when they exist.
+
+    Each word opens the mouth at its start and closes it at its end; the
+    frames land inside the line's window. When the word timings are missing,
+    degenerate (backwards or zero-length), or fall outside the line, this
+    returns an empty list and the caller keeps its syllable metronome — the
+    upgrade is strictly additive: bad data never makes the mouth worse than
+    the metronome was.
+    """
+
+    if not segment.word_timings:
+        return []
+    fps = frame_rate if frame_rate > 0 else 30
+    frames: list[tuple[int, str]] = []
+    for word in segment.word_timings:
+        start = _as_float(word.get("start"))
+        end = _as_float(word.get("end"))
+        if start is None or end is None or end <= start:
+            continue
+        if end <= segment.start_time or start >= segment.end_time:
+            continue  # the word is not inside this line's window
+        open_frame = line_frame_start + int(round((start - segment.start_time) * fps))
+        close_frame = line_frame_start + int(round((end - segment.start_time) * fps))
+        if close_frame <= open_frame:
+            close_frame = open_frame + 1
+        frames.append((max(0, open_frame), "talk"))
+        frames.append((max(0, close_frame), "stand"))
+    # A word gate per frame: the same frame never gets two actions.
+    deduplicated: dict[int, str] = {}
+    for frame, action in frames:
+        deduplicated.setdefault(frame, action)
+    return sorted(deduplicated.items())
+
+
 class LipSyncGenerator:
     """Generates lip-sync keyframes from speech segments.
 
@@ -458,6 +555,27 @@ class LipSyncGenerator:
                 action=self.mouth_open_action,
             ))
 
+            # Word-level variation when the alignment supplied word timings
+            # (whisperX): the mouth opens and closes WITH the words instead
+            # of on a metronome. Degenerate timings fall through to the
+            # syllable alternation below — never worse than before.
+            word_frames = word_mouth_frames(
+                seg,
+                frame_rate=self.frame_rate,
+                line_frame_start=start_frame,
+            )
+            if word_frames:
+                for frame, action in word_frames:
+                    if frame <= max(0, start_frame):
+                        continue
+                    keyframes.append(CharacterKeyframe(
+                        frame=frame,
+                        position=base_position,
+                        rotation_y=base_rotation,
+                        action=action,
+                    ))
+                continue
+
             # Syllable-level variation (open/close alternation)
             num_syllables = max(1, int(seg.duration * self.syllables_per_second))
             for i in range(1, num_syllables):
@@ -514,60 +632,47 @@ class LipSyncGenerator:
                 updated_characters.append(char)
                 continue
 
-            # Merge: for each lip keyframe, find nearest existing keyframe
-            # to inherit position/rotation, then create merged keyframe
-            existing = {kf.frame: kf for kf in char.keyframes}
-            existing_frames = sorted(existing.keys())
-
-            merged_keyframes = list(char.keyframes)
+            # Merge: authored keyframes first; then each lip keyframe
+            # OVERWRITES the action at its frame, inheriting the pose the
+            # character ALREADY HAS at that frame.
+            #
+            # The inheritance is the INTERPOLATED pose, not the at-or-before
+            # keyframe's raw values: the renderer interpolates linearly, so a
+            # lip frame that copied the keyframe at-or-before it would turn a
+            # smooth walk into hold-at-origin-then-jump — an audio redo
+            # silently degrading the visual layer (V0.2 §14.13: 锁 Visual 重做
+            # Audio). Sitting ON the authored path means inserting frames is
+            # invisible to the motion.
+            #
+            # The previous implementation updated a side dict for colliding
+            # frames while the output list was copied from the authored
+            # keyframes BEFORE the loop — so a lip frame colliding with an
+            # authored keyframe (e.g. the ubiquitous frame-0 keyframe) silently
+            # lost its action. Keying the merge by frame makes the overwrite
+            # structural instead of incidental.
+            authored = {kf.frame: kf for kf in char.keyframes}
+            merged_by_frame: dict[int, CharacterKeyframe] = dict(authored)
 
             for lip_kf in lip_keyframes:
-                # Inherit position/rotation from the closest keyframe AT OR
-                # BEFORE the lip frame (forward-hold), falling back to the
-                # globally nearest one when the lip frame precedes all of them.
-                # This avoids teleporting a moving character to its origin.
-                prior = [f for f in existing_frames if f <= lip_kf.frame]
-                if prior:
-                    nearest = max(prior)
-                    ref_kf = existing[nearest]
-                    position = list(ref_kf.position)
-                    rotation_y = ref_kf.rotation_y
-                elif existing_frames:
-                    nearest = min(existing_frames, key=lambda f: abs(f - lip_kf.frame))
-                    ref_kf = existing[nearest]
-                    position = list(ref_kf.position)
-                    rotation_y = ref_kf.rotation_y
-                else:
-                    position = [0.0, 0.0, 0.0]
-                    rotation_y = 0.0
+                position, rotation_y = _interpolated_pose_at(char, lip_kf.frame)
 
-                # Check if frame already exists
-                if lip_kf.frame in existing:
-                    # Update action only
-                    existing[lip_kf.frame] = CharacterKeyframe(
-                        frame=lip_kf.frame,
-                        position=position,
-                        rotation_y=rotation_y,
-                        action=lip_kf.action,
-                    )
-                else:
-                    merged_keyframes.append(CharacterKeyframe(
-                        frame=lip_kf.frame,
-                        position=position,
-                        rotation_y=rotation_y,
-                        action=lip_kf.action,
-                    ))
+                merged_by_frame[lip_kf.frame] = CharacterKeyframe(
+                    frame=lip_kf.frame,
+                    position=position,
+                    rotation_y=rotation_y,
+                    action=lip_kf.action,
+                )
 
-            # Deduplicate and sort
-            seen: dict[int, CharacterKeyframe] = {}
-            for kf in merged_keyframes:
-                seen[kf.frame] = kf
-            final_keyframes = sorted(seen.values(), key=lambda kf: kf.frame)
+            final_keyframes = sorted(merged_by_frame.values(), key=lambda kf: kf.frame)
 
             updated_char = SceneCharacter(
                 id=char.id,
                 type=char.type,
                 appearance=char.appearance,
+                # The Dramagic identity binding must SURVIVE the lip-sync
+                # merge: rebuilding the character without it silently strips
+                # the asset reference the consistency gate depends on.
+                character_asset_id=char.character_asset_id,
                 keyframes=final_keyframes,
             )
             updated_characters.append(updated_char)
@@ -620,6 +725,12 @@ def build_timeline_from_script(
         character_id = line.get("character_id", f"char_{i}")
         text = line.get("text", "")
         emotion = line.get("emotion")
+        raw_word_timings = line.get("word_timings")
+        word_timings = (
+            tuple(entry for entry in raw_word_timings if isinstance(entry, dict))
+            if isinstance(raw_word_timings, list)
+            else None
+        )
 
         if "start_time" in line and "end_time" in line:
             start = float(line["start_time"])
@@ -641,6 +752,7 @@ def build_timeline_from_script(
             start_time=start,
             end_time=end,
             emotion=emotion,
+            word_timings=word_timings,
         )
         timeline.add(segment)
 

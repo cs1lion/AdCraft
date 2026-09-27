@@ -231,6 +231,12 @@ class CharacterIdentityAuthorityProjectionV1(_RolePromptModel):
     face_and_hair: str = Field(min_length=1, max_length=2_048)
     silhouette_and_proportions: str = Field(min_length=1, max_length=2_048)
     wardrobe: str = Field(min_length=1, max_length=2_048)
+    # ADR 0011: the declared palette travels WITH the identity, because the
+    # turnaround is the same person — a second declaration would be a second
+    # truth about one wardrobe.
+    appearance_palette: tuple[str, ...] | None = Field(
+        default=None, max_length=4, description="Declared wardrobe palette (hex)"
+    )
     accessories: str = Field(max_length=1_024)
     rendering_mode: Literal["detailed_semi_realistic_commercial_illustration"] = (
         "detailed_semi_realistic_commercial_illustration"
@@ -516,6 +522,13 @@ class CharacterMainRoleBriefV2(_RoleBriefModel):
     silhouette_and_proportions: str = Field(min_length=1, max_length=2_048)
     wardrobe: str = Field(min_length=1, max_length=2_048)
     accessories: str = Field(default="", max_length=1_024)
+    # ADR 0011: the declared wardrobe palette, in the character's own words'
+    # numbers. ``wardrobe`` stays the prose ("黑色风衣"); this is the machine
+    # comparable half, so the 3D previs — a proxy that must not invent the
+    # character's colours — has something concrete to be checked against.
+    appearance_palette: tuple[str, ...] | None = Field(
+        default=None, max_length=4, description="Declared wardrobe palette (hex)"
+    )
     gender_presentation: CharacterGenderPresentationV1 = "unspecified"
     rendering_mode: Literal["detailed_semi_realistic_commercial_illustration"] = (
         "detailed_semi_realistic_commercial_illustration"

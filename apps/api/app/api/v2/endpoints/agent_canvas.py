@@ -225,6 +225,7 @@ from app.schemas.workflow_v2_projects import (
     ProjectV2ListResponse,
     ProjectV2UpdateRequest,
 )
+from app.services.agent_canvas_scope_report import build_patch_scope_report
 from app.services.agent_canvas_assets import (
     AgentCanvasAssetService,
     deterministic_media_facts_probe,
@@ -2442,6 +2443,12 @@ def patch_node(
         workflow = runtime.projects.get_workflow(workflow_id)
         workflow = runtime.editing_responses.project_workflow(workflow)
         node = _projected_node(workflow, node.node_id)
+        # ADR 0009 决策 2: 告诉作者这一改影响什么、没影响什么。只有 SET 的字段算编辑。
+        scope_report = build_patch_scope_report(
+            node_type=current.node_type,
+            before_structured=current.structured_content,
+            patch_fields=request.model_dump(exclude_unset=True),
+        ).to_dict()
     except ValueError as error:
         raise _http_error(
             "editing_manifest_invalid",
@@ -2451,7 +2458,11 @@ def patch_node(
     except V2PersistenceError as error:
         raise _persistence_http_error(error) from error
     response.headers["ETag"] = workflow_etag(workflow_id, workflow.revision)
-    return CanvasMutationResponseV2(workflow=workflow, node=node)
+    return CanvasMutationResponseV2(
+        workflow=workflow,
+        node=node,
+        scope_report=scope_report,
+    )
 
 
 @router.post(

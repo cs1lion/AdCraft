@@ -10,6 +10,7 @@ Endpoints:
 - POST /scene-3d/prompt      — Generate video-model prompts from a SceneScript
 - POST /scene-3d/template    — Generate a SceneScript from a shot template
 - POST /scene-3d/adapt-aspect — Adapt a SceneScript for a target aspect ratio
+- POST /scene-3d/transition-proposals — Propose A→B 衔接方案 (advisory)
 """
 
 from __future__ import annotations
@@ -20,15 +21,20 @@ import tempfile
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from app.schemas.scene_script import SceneScriptRoot
+from app.services.scene3d.speech_orchestration import SpeechSegment
+from app.services.scene3d.transition_proposals import (
+    audit_declared_intent,
+    propose_transitions,
+)
 from app.services.scene3d.blender_renderer import (
     get_blender_capability,
     render_scene_script,
 )
-from app.services.scene3d.encoder import encode_png_sequence
+from app.services.scene3d.encoder import encode_png_sequence, mux_audio_to_video
 from app.services.scene3d.keyframes import extract_keyframes, keyframe_manifest
 from app.services.scene3d.prompt_builder import (
     build_video_prompt_bundle,
@@ -78,6 +84,18 @@ class RenderRequest(BaseModel):
     quality: str = Field("preview", description="Render quality: preview | standard | high")
     blender_executable: str | None = Field(None, description="Override Blender executable path")
     timeout_seconds: int = Field(600, ge=30, le=3600)
+    audio_path: str | None = Field(
+        None,
+        description=(
+            "Dialogue bed to mux into the render (the V0.2 §14.9 animatic: "
+            "480P picture + real voice). A missing file degrades to a silent "
+            "render with a reported reason, never a failed render."
+        ),
+    )
+    audio_asset_id: str | None = Field(
+        None,
+        description="Project asset whose content is the bed (resolved server-side)",
+    )
 
 
 class RenderResponse(BaseModel):
@@ -86,9 +104,12 @@ class RenderResponse(BaseModel):
     output_dir: str | None = None
     frame_count: int = 0
     video_path: str | None = None
+    animatic_video_path: str | None = None
+    audio_muxed: bool = False
     keyframes: list[dict[str, Any]] = []
     duration_seconds: float = 0.0
     blender_version: str | None = None
+    warnings: list[str] = []
     error: str | None = None
 
 
@@ -96,6 +117,54 @@ class KeyframesRequest(BaseModel):
     scene_script: dict[str, Any]
     frames_dir: str = Field(..., description="Directory containing rendered frame_XXXX.png files")
     output_dir: str | None = None
+
+
+class TransitionProposalsRequest(BaseModel):
+    """Ask how shot A could lead into shot B.
+
+    ``segments`` is optional: with the speech timeline the proposals can reason
+    about pauses (the time-jump reading); without it they degrade honestly.
+    ``polish_narratives`` asks the LLM to explain each reading for THIS pair
+    (V0.2 §6.2/§15). The operations never change — only the prose does — and
+    an unavailable LLM degrades to the rule narratives with a reported reason.
+    """
+
+    scene_script: dict[str, Any]
+    shot_a_id: str = Field(..., description="The outgoing shot id")
+    shot_b_id: str = Field(..., description="The incoming shot id")
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    transition_frames: int = Field(default=45, ge=1, le=600)
+    polish_narratives: bool = Field(
+        default=False,
+        description="Ask the LLM to explain each reading (degradation is reported)",
+    )
+    propose_readings: bool = Field(
+        default=False,
+        description=(
+            "Ask the LLM for readings beyond the rule catalogue; every proposed "
+            "reading is validated against the operation vocabulary and the scene "
+            "(unverifiable ones are dropped with a reason)"
+        ),
+    )
+    exclude_reading_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Reading ids the author already engaged with (applied or dismissed). "
+            "The multi-round memory (V0.2 §15): they are reserved, so the LLM "
+            "is asked for something new rather than re-pitching them."
+        ),
+    )
+
+
+class TransitionProposalsResponse(BaseModel):
+    success: bool
+    proposals: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    narrative_source: str = "rules"
+    #: Whether the shot's DECLARED entry reading still holds for this pair
+    #: (V0.2 §13 第 5 问). A declaration that outlives the timeline it was
+    #: made against is a lie, and nothing else would ever notice it.
+    intent_audit: dict[str, Any] = {}
 
 
 class KeyframesResponse(BaseModel):
@@ -198,6 +267,13 @@ async def render_scene(request: RenderRequest) -> RenderResponse:
     except HTTPException:
         raise
 
+    # The animatic bed (V0.2 §14.9): resolved here so a missing file is a
+    # reported degradation, not a failed render — the previs itself is the
+    # deliverable; the sound is the审片面 that makes it watchable.
+    audio_path, audio_warning = _resolve_render_audio(
+        request.audio_path, request.audio_asset_id
+    )
+
     # Run the entire blocking render pipeline in a worker thread so that a
     # long-running Blender subprocess does not stall the API event loop.
     result = await asyncio.to_thread(
@@ -208,8 +284,11 @@ async def render_scene(request: RenderRequest) -> RenderResponse:
         blender_executable=request.blender_executable,
         timeout_seconds=request.timeout_seconds,
         job_id=job_id,
+        audio_path=audio_path,
     )
-    return RenderResponse(job_id=job_id, **result)
+    warnings = list(audio_warning)
+    warnings.extend(result.pop("warnings", []) or [])
+    return RenderResponse(job_id=job_id, warnings=warnings, **result)
 
 
 def _run_render_pipeline(
@@ -219,6 +298,7 @@ def _run_render_pipeline(
     blender_executable: str | None,
     timeout_seconds: int,
     job_id: str,
+    audio_path: str | None = None,
 ) -> dict[str, Any]:
     """Execute the blocking Blender render + encode + keyframe pipeline."""
 
@@ -230,6 +310,8 @@ def _run_render_pipeline(
             "output_dir": None,
             "frame_count": 0,
             "video_path": None,
+            "animatic_video_path": None,
+            "audio_muxed": False,
             "keyframes": [],
             "duration_seconds": 0.0,
             "blender_version": None,
@@ -255,6 +337,8 @@ def _run_render_pipeline(
             "output_dir": output_dir,
             "frame_count": render_result.frame_count,
             "video_path": None,
+            "animatic_video_path": None,
+            "audio_muxed": False,
             "keyframes": [],
             "duration_seconds": render_result.duration_seconds,
             "blender_version": render_result.blender_version,
@@ -262,6 +346,9 @@ def _run_render_pipeline(
         }
 
     video_path = None
+    animatic_video_path = None
+    audio_muxed = False
+    warnings: list[str] = []
     if render_video:
         video_path = os.path.join(output_dir, "previs.mp4")
         encode_result = encode_png_sequence(
@@ -271,6 +358,17 @@ def _run_render_pipeline(
         )
         if not encode_result.success:
             video_path = None  # Don't fail the whole render if encoding fails
+        elif audio_path:
+            animatic_video_path = os.path.join(output_dir, "previs_animatic.mp4")
+            mux_result = mux_audio_to_video(video_path, audio_path, animatic_video_path)
+            if getattr(mux_result, "success", False):
+                audio_muxed = True
+            else:
+                # The previs ships; the sound does not. Reported, not silent.
+                animatic_video_path = None
+                warnings.append(
+                    f"音频床混入失败，已输出无声预演：{getattr(mux_result, 'error', 'unknown')}"
+                )
 
     keyframes_result = []
     if do_extract_keyframes:
@@ -290,9 +388,12 @@ def _run_render_pipeline(
         "output_dir": output_dir,
         "frame_count": render_result.frame_count,
         "video_path": video_path,
+        "animatic_video_path": animatic_video_path,
+        "audio_muxed": audio_muxed,
         "keyframes": keyframes_result,
         "duration_seconds": render_result.duration_seconds,
         "blender_version": render_result.blender_version,
+        "warnings": warnings,
         "error": None,
     }
 
@@ -442,6 +543,14 @@ class AsyncRenderRequest(BaseModel):
     blender_executable: str | None = None
     timeout_seconds: int = Field(600, ge=30, le=3600)
     output_dir: str | None = None
+    audio_path: str | None = Field(
+        None,
+        description="Dialogue bed to mux into the render (the animatic, V0.2 §14.9)",
+    )
+    audio_asset_id: str | None = Field(
+        None,
+        description="Project asset whose content is the bed (resolved server-side)",
+    )
 
 
 class AsyncRenderResponse(BaseModel):
@@ -470,6 +579,11 @@ class JobListResponse(BaseModel):
 async def submit_async_render(request: AsyncRenderRequest) -> AsyncRenderResponse:
     """Submit an asynchronous render job. Returns immediately with a job ID;
     poll GET /scene-3d/render/{job_id} for status."""
+    # The animatic bed resolves here (same rule as the sync endpoint): a
+    # missing file degrades with a warning, it does not fail the submission.
+    audio_path, audio_warning = _resolve_render_audio(
+        request.audio_path, request.audio_asset_id
+    )
     manager = get_render_job_manager()
     job_id = manager.submit(
         scene_script=request.scene_script,
@@ -478,6 +592,8 @@ async def submit_async_render(request: AsyncRenderRequest) -> AsyncRenderRespons
         blender_executable=request.blender_executable,
         timeout_seconds=request.timeout_seconds,
         output_dir=request.output_dir,
+        audio_path=audio_path,
+        audio_warning=audio_warning,
     )
     return AsyncRenderResponse(
         job_id=job_id,
@@ -524,9 +640,12 @@ async def get_render_job_status(job_id: str) -> JobStatusResponse:
             "output_dir": job.result.output_dir,
             "frame_count": job.result.frame_count,
             "video_path": job.result.video_path,
+            "animatic_video_path": job.result.animatic_video_path,
+            "audio_muxed": job.result.audio_muxed,
             "keyframes": job.result.keyframes,
             "duration_seconds": job.result.duration_seconds,
             "blender_version": job.result.blender_version,
+            "warnings": job.result.warnings,
         }
 
     return JobStatusResponse(
@@ -599,7 +718,7 @@ async def upload_reference_video(
 ) -> ReferenceUploadResponse:
     """Upload a reference video for video model conditioning.
 
-    Validates format (MP4/WebM/MOV), size (<=100MB), duration (<=10s),
+    Validates format (MP4/WebM/MOV), size (<=100MB), duration (<=60s),
     and extracts metadata. Optionally extracts evenly-spaced keyframes.
     """
     try:
@@ -952,3 +1071,948 @@ async def analyze_reference_video_endpoint(
             detail=f"Reference video analysis failed: {str(e)[:200]}",
         )
 
+
+# ---------------------------------------------------------------------------
+# Reference image analysis (multimodal LLM -> SceneScript)
+# ---------------------------------------------------------------------------
+
+
+class AnalyzeImageResponse(BaseModel):
+    success: bool
+    scene_script: dict[str, Any] | None = None
+    summary: dict[str, Any] = {}
+    image_analyses: list[dict[str, Any]] = []
+    image_count: int = 0
+    analyzed_image_count: int = 0
+    panorama_image_indices: list[int] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
+@router.post("/analyze-image", response_model=AnalyzeImageResponse)
+async def analyze_reference_images_endpoint(
+    files: list[UploadFile] = File(..., description="1-6 images of the same scene"),
+    user_description: str | None = None,
+    scene_name: str | None = None,
+    duration_seconds: float | None = None,
+    panorama: bool | None = None,
+) -> AnalyzeImageResponse:
+    """Analyze uploaded reference images and generate a SceneScript blockout.
+
+    This is the "drop an image in, get an editable 3D blockout" path:
+    user image(s) -> multimodal LLM analysis -> SceneScript -> 3D workbench.
+
+    Equirectangular panoramas (~2:1 aspect) are detected automatically and
+    sliced into 6 cubic faces before analysis so the LLM reads undistorted
+    perspective views; ``panorama=false`` forces whole-image analysis and
+    ``panorama=true`` is a hint that degrades with a warning when the image
+    does not look equirectangular.
+
+    Args:
+        files: 1-6 images (PNG/JPEG/WebP/BMP, <=20MB each) of the same scene.
+        user_description: Optional user description to guide analysis.
+        scene_name: Optional name for the generated scene.
+        duration_seconds: Target scene duration (default 6s, max 600s).
+        panorama: Force panorama slicing on/off (default: auto-detect).
+
+    Returns:
+        AnalyzeImageResponse with SceneScript, per-image analyses, and warnings.
+    """
+    from app.services.scene3d.image_analyzer import (
+        DEFAULT_DURATION_SECONDS,
+        AnalysisError,
+        analyze_images,
+    )
+
+    try:
+        if not files:
+            raise HTTPException(status_code=400, detail="No images uploaded")
+
+        # Save uploads to temp files for analysis (ASCII-only paths: ffmpeg and
+        # downstream tooling reject non-ASCII paths).
+        import tempfile
+        from pathlib import Path
+
+        tmp_paths: list[str] = []
+        for upload in files:
+            file_bytes = await upload.read()
+            if not file_bytes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Uploaded image is empty: {upload.filename or 'unnamed'}",
+                )
+            suffix = Path(upload.filename or "image.png").suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+                suffix = ".png"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_paths.append(tmp.name)
+
+        try:
+            # Run analysis in thread pool (LLM calls are blocking)
+            result = await asyncio.to_thread(
+                analyze_images,
+                image_paths=tmp_paths,
+                user_description=user_description,
+                scene_name=scene_name,
+                duration_seconds=(
+                    duration_seconds
+                    if duration_seconds is not None
+                    else DEFAULT_DURATION_SECONDS
+                ),
+                panorama=panorama,
+            )
+        finally:
+            # Clean up temp files (analyzed face files live in their own dir)
+            for tmp_path in tmp_paths:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        image_analyses_dicts = []
+        for fa in result.image_analyses:
+            image_analyses_dicts.append({
+                "image_index": fa.frame_index,
+                "scene_type": fa.scene_type,
+                "environment_description": fa.environment_description,
+                "lighting": fa.lighting,
+                "camera_angle": fa.camera_angle,
+                "shot_size": fa.shot_size,
+                "camera_motion_hint": fa.camera_motion_hint,
+                "characters": [
+                    {
+                        "description": c.description,
+                        "position_hint": c.position_hint,
+                        "action": c.action,
+                        "facing": c.facing,
+                    }
+                    for c in fa.characters
+                ],
+                "props": fa.props,
+                "notable_elements": fa.notable_elements,
+            })
+
+        return AnalyzeImageResponse(
+            success=True,
+            scene_script=result.scene_script_dict,
+            summary={
+                "scene_overview": result.summary.scene_overview,
+                "characters_summary": result.summary.characters_summary,
+                "camera_movement_summary": result.summary.camera_movement_summary,
+                "action_timeline": result.summary.action_timeline,
+                "inferred_duration_seconds": result.summary.inferred_duration_seconds,
+            },
+            image_analyses=image_analyses_dicts,
+            image_count=len(result.image_paths),
+            analyzed_image_count=len(result.analyzed_image_paths),
+            panorama_image_indices=result.panorama_image_indices,
+            warnings=result.warnings,
+        )
+
+    except AnalysisError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(e), "error_type": e.error_type},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Reference image analysis failed: {str(e)[:200]}",
+        )
+
+# ---------------------------------------------------------------------------
+# Dialogue-driven lip-sync (dialogue -> speech timeline -> SceneScript keyframes)
+# ---------------------------------------------------------------------------
+
+
+class DialogueLipSyncRequest(BaseModel):
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+    dialogue_lines: list[dict[str, Any]] = Field(
+        ...,
+        description="[{character_id, text, start_time?, emotion?}]; start_time omitted = sequential",
+    )
+    syllables_per_second: float = Field(4.0, ge=1.0, le=12.0)
+
+
+class DialogueLipSyncResponse(BaseModel):
+    success: bool
+    scene_script: dict[str, Any] | None = None
+    summary: dict[str, Any] = {}
+    error: str | None = None
+
+
+@router.post("/dialogue-lipsync", response_model=DialogueLipSyncResponse)
+async def apply_dialogue_lip_sync_endpoint(
+    request: DialogueLipSyncRequest,
+) -> DialogueLipSyncResponse:
+    """Apply dialogue-driven lip-sync keyframes to a SceneScript.
+
+    Chains the speech track (ADR 0003) into the 3D previs pipeline:
+    measured/estimated speech durations -> speech timeline -> lip-sync
+    keyframes merged into character keyframes (position/rotation inherited
+    by forward-hold). Timeline overlaps/gaps are reported in the summary,
+    never silently resolved.
+    """
+    from app.services.scene3d.dialogue_lipsync_service import (
+        DialogueLipSyncError,
+        apply_dialogue_lip_sync,
+    )
+
+    try:
+        result = apply_dialogue_lip_sync(
+            request.scene_script,
+            request.dialogue_lines,
+            syllables_per_second=request.syllables_per_second,
+        )
+        return DialogueLipSyncResponse(
+            success=True,
+            scene_script=result.scene_script.model_dump(mode="json"),
+            summary=result.summary,
+        )
+    except DialogueLipSyncError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(e), "error_code": e.code},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dialogue lip-sync failed: {str(e)[:200]}",
+        )
+
+# ---------------------------------------------------------------------------
+# Scene operations (white-model design mode: agent ops -> SceneScript)
+# ---------------------------------------------------------------------------
+
+
+class SceneOperationsRequest(BaseModel):
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+    operations: list[dict[str, Any]] = Field(
+        ...,
+        description=(
+            "Structured scene ops: add_environment/add_prop/add_character/add_camera/"
+            "move_object/rotate_object/scale_object/set_camera/add_keyframe/remove_object/"
+            "mcp_request. All-or-nothing: any invalid op rejects the batch."
+        ),
+    )
+    use_mcp: bool = Field(
+        False,
+        description="Execute mcp_request ops against a Blender MCP server",
+    )
+
+
+class SceneOperationsResponse(BaseModel):
+    success: bool
+    scene_script: dict[str, Any] | None = None
+    applied: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    mcp_results: list[dict[str, Any]] = []
+    error: str | None = None
+
+
+@router.post("/apply-operations", response_model=SceneOperationsResponse)
+async def apply_scene_operations_endpoint(
+    request: SceneOperationsRequest,
+) -> SceneOperationsResponse:
+    """Validate and apply structured scene operations to a SceneScript.
+
+    The white-model design mode's single application point: an agent (or a
+    future editor) emits ops, the service validates the batch against the
+    SceneScript schema (enum-checked, bbox-bounded, all-or-nothing) and
+    returns the new script. ``mcp_request`` ops execute against a Blender MCP
+    server when ``use_mcp`` is set; a batch containing them without a server
+    is rejected with a queryable ``mcp_unavailable`` code.
+    """
+    from app.services.scene3d.scene_script_tool_service import (
+        SceneOperationError,
+        SceneScriptToolService,
+    )
+
+    service = SceneScriptToolService()
+    mcp_client = None
+    if request.use_mcp:
+        from app.core.config import get_settings
+        from app.services.scene3d.blender_mcp_client import BlenderMcpClient
+
+        try:
+            mcp_client = BlenderMcpClient(get_settings())
+        except Exception as exc:  # noqa: BLE001 - spawn failure is a coded 503.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": f"Blender MCP server unavailable: {str(exc)[:200]}",
+                    "error_code": "mcp_unavailable",
+                },
+            ) from exc
+
+    try:
+        result = service.apply_operations(
+            request.scene_script,
+            request.operations,
+            mcp_client=mcp_client,
+        )
+        return SceneOperationsResponse(
+            success=True,
+            scene_script=result.scene_script.model_dump(mode="json"),
+            applied=result.applied,
+            warnings=result.warnings,
+            mcp_results=result.mcp_results,
+        )
+    except SceneOperationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(e),
+                "error_code": e.code,
+                "violations": e.violations,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Scene operations failed: {str(e)[:200]}",
+        )
+    finally:
+        if mcp_client is not None:
+            mcp_client.close()
+
+# ---------------------------------------------------------------------------
+# SceneScript consistency gate (Dramagic-style pre-render check)
+# ---------------------------------------------------------------------------
+
+
+class ConsistencyCheckRequest(BaseModel):
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+
+
+class ConsistencyCheckResponse(BaseModel):
+    success: bool
+    passed: bool = True
+    error_count: int = 0
+    warning_count: int = 0
+    issues: list[dict[str, Any]] = []
+    error: str | None = None
+
+
+@router.post("/consistency-check", response_model=ConsistencyCheckResponse)
+async def check_scene_consistency_endpoint(
+    request: ConsistencyCheckRequest,
+) -> ConsistencyCheckResponse:
+    """Run the Dramagic-style consistency checks against a SceneScript.
+
+    Warnings (never errors) for the ways a script can quietly lose identity:
+    unbound characters in multi-shot scenes, color collisions, dead cameras,
+    shot coverage gaps, empty scenes. The workbench's pre-render gate calls
+    this; the node executor also publishes the same report onto the node.
+    """
+    from app.schemas.scene_script import SceneScriptRoot
+    from app.services.scene3d.scene_consistency import check_scene_script_consistency
+
+    try:
+        scene_script = SceneScriptRoot.model_validate(request.scene_script)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"SceneScript failed schema validation: {str(e)[:300]}",
+                "error_code": "scene_script_invalid",
+            },
+        ) from e
+
+    report = check_scene_script_consistency(scene_script)
+    return ConsistencyCheckResponse(
+        success=True,
+        passed=report.passed,
+        error_count=len(report.errors),
+        warning_count=len(report.warnings),
+        issues=[issue.to_dict() for issue in report.issues],
+    )
+
+# ---------------------------------------------------------------------------
+# Speech forced alignment (bed audio -> per-line timings, C mode)
+# ---------------------------------------------------------------------------
+
+
+class AlignSpeechRequest(BaseModel):
+    audio_path: str | None = Field(
+        default=None,
+        description="Path to the audio take (the generated bed); omit to resolve by asset_id",
+    )
+    asset_id: str | None = Field(
+        default=None,
+        description="Project asset whose content is the audio take (resolved server-side)",
+    )
+    lines: list[dict[str, Any]] = Field(
+        ...,
+        description="Known script lines: [{character_id, text, start_time?}]",
+    )
+    speech_only: bool = Field(
+        True,
+        description="Hint: the take mixes dialogue with SFX/ambience/BGM",
+    )
+    regenerate_low_confidence: bool = Field(
+        True,
+        description=(
+            "Automatically re-measure low-confidence lines on their own "
+            "(B mode, V0.2 §14.3): the aligned start is kept, the duration is "
+            "re-measured and clamped against the next line. Set false to get "
+            "the raw alignment boundaries."
+        ),
+    )
+
+
+class AlignSpeechResponse(BaseModel):
+    success: bool
+    align_source: str = "estimated"
+    segments: list[dict[str, Any]] = []
+    low_confidence_ids: list[str] = []
+    regenerated_ids: list[str] = []
+    regeneration_duration_source: str | None = None
+    bed_duration_seconds: float | None = None
+    warnings: list[str] = []
+    error: str | None = None
+
+
+def _resolve_render_audio(
+    audio_path: str | None,
+    audio_asset_id: str | None,
+) -> tuple[str | None, list[str]]:
+    """Resolve the animatic bed, degrading to (None, [reason]) when it can't.
+
+    The bed is decoration on top of a successful render: a path that does not
+    exist must never fail the render — it must be reported so the author knows
+    why the previs is silent (engineering standard §4).
+    """
+
+    if not audio_path and not audio_asset_id:
+        return None, []
+    resolved = audio_path
+    if not resolved and audio_asset_id:
+        from app.core.config import get_settings
+
+        resolved = _resolve_asset_path(get_settings(), audio_asset_id)
+    if not resolved or not os.path.isfile(resolved):
+        return None, [
+            "音频床不可用（路径不存在或资产未解析），已输出无声预演。"
+        ]
+    return resolved, []
+
+
+def _resolve_asset_path(settings: Any, asset_id: str) -> str:
+    """Resolve a project asset id to a local file path (timeline pattern)."""
+
+    from app.persistence.asset_library_repository import V2AssetLibraryRepository
+    from app.persistence.database import create_v2_database
+    from app.services.scene3d.speech_alignment import SpeechAlignmentError
+    from app.services.v2_storage_adapter import StorageAdapter
+
+    database = create_v2_database(settings.media_data_dir)
+    try:
+        version = V2AssetLibraryRepository(database).find_version(asset_id=asset_id)
+    finally:
+        database.dispose()
+    if version is None:
+        raise SpeechAlignmentError("alignment_asset_not_found", f"Asset not found: {asset_id}")
+    path = StorageAdapter(settings.media_data_dir).resolve_local_path(version.storage_key)
+    return str(path)
+
+
+@router.post("/align-speech", response_model=AlignSpeechResponse)
+async def align_speech_endpoint(request: AlignSpeechRequest) -> AlignSpeechResponse:
+    """Recover per-line timings from one audio take (forced alignment).
+
+    The C-mode foundation: StepAudio 3 Gen returns no timestamps, so a
+    dialogue-driven pipeline must align the known script against the take.
+    ``align_source`` names the engine that actually ran (whisperx when
+    installed, else the deterministic estimated layout) and
+    ``low_confidence_ids`` marks segments too weak to drive lip-sync
+    silently — the caller decides whether to accept or regenerate.
+    """
+    from pathlib import Path
+
+    from app.core.config import get_settings
+    from app.services.scene3d.speech_alignment import (
+        SpeechAlignmentError,
+        build_speech_aligner,
+        low_confidence_ids,
+        probe_audio_duration_seconds,
+    )
+
+    settings = get_settings()
+    try:
+        audio_path = request.audio_path
+        if not audio_path:
+            if not request.asset_id:
+                raise SpeechAlignmentError(
+                    "alignment_audio_required",
+                    "Provide audio_path or asset_id for the audio take.",
+                )
+            audio_path = _resolve_asset_path(settings, request.asset_id)
+        if not Path(audio_path).is_file():
+            raise SpeechAlignmentError(
+                "alignment_audio_missing",
+                f"Audio file not found: {audio_path}",
+            )
+        aligner = build_speech_aligner(settings)
+        segments = aligner.align(
+            audio_path=audio_path,
+            lines=request.lines,
+            speech_only=request.speech_only,
+        )
+    except SpeechAlignmentError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(e), "error_code": e.code},
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech alignment failed: {str(e)[:200]}",
+        ) from e
+
+    low = low_confidence_ids(segments)
+    warnings: list[str] = []
+    if low:
+        warnings.append(
+            f"{len(low)} segment(s) below the lip-sync confidence threshold; "
+            "regenerate them per-line or accept the estimated band explicitly.",
+        )
+    if aligner.name == "estimated":
+        warnings.append(
+            "Alignment used the deterministic estimated layout (whisperX not "
+            "installed): order is right, boundaries are not measured."
+        )
+
+    # B-mode regeneration (V0.2 §14.3): a weak line is re-measured on its own
+    # instead of silently trusted. The aligned START is kept, the DURATION is
+    # re-measured (a real TTS engine when configured, the deterministic
+    # estimator otherwise — the report names which), and an overrun is clamped
+    # against the next line and said, never overlapped silently. Opt-out keeps
+    # the raw boundaries for callers that want to do their own repair.
+    regenerated_ids: list[str] = []
+    regeneration_duration_source: str | None = None
+    if request.regenerate_low_confidence and low:
+        import asyncio
+
+        from app.services.scene3d.speech_alignment import (
+            regenerate_low_confidence_segments,
+        )
+        from app.services.scene3d.tts_engine_factory import (
+            create_tts_engine_from_settings,
+        )
+
+        engine = create_tts_engine_from_settings(settings)
+        # A real engine measures; the placeholder estimates — the report must
+        # not pretend an estimate is a measurement (engineering standard §4).
+        duration_source = (
+            "estimated"
+            if type(engine).__name__ == "SimpleTTSEngine"
+            else "measured"
+        )
+        bed_duration = probe_audio_duration_seconds(audio_path, settings.ffprobe_path)
+        regenerated = await asyncio.to_thread(
+            regenerate_low_confidence_segments,
+            segments,
+            duration_estimator=engine.estimate_duration,
+            duration_source=duration_source,
+            bed_duration=bed_duration,
+        )
+        segments = regenerated.segments
+        regenerated_ids = regenerated.regenerated_ids
+        regeneration_duration_source = regenerated.duration_source
+        warnings.extend(regenerated.warnings)
+        if regenerated_ids:
+            warnings.append(
+                f"{len(regenerated_ids)} 句低置信台词已按 B 模式重测时长"
+                f"（来源：{duration_source}）；起句时间仍来自对齐，"
+                "置信度保持低位——长度可信不等于位置可信。"
+            )
+
+    return AlignSpeechResponse(
+        success=True,
+        align_source=aligner.name,
+        segments=[segment.to_dict() for segment in segments],
+        low_confidence_ids=low,
+        regenerated_ids=regenerated_ids,
+        regeneration_duration_source=regeneration_duration_source,
+        bed_duration_seconds=probe_audio_duration_seconds(
+            audio_path, settings.ffprobe_path
+        ),
+        warnings=warnings,
+    )
+
+# ---------------------------------------------------------------------------
+# Single-image depth map (white model) extraction
+# ---------------------------------------------------------------------------
+
+
+class DepthImageResponse(BaseModel):
+    success: bool
+    depth_url: str | None = None
+    width: int = 0
+    height: int = 0
+    model_type: str = ""
+    colormap: str = ""
+    warnings: list[str] = []
+    error: str | None = None
+
+
+@router.post("/extract-depth-image", response_model=DepthImageResponse)
+async def extract_depth_image_endpoint(
+    file: UploadFile = File(...),
+    model_type: str = "DPT_Hybrid",
+    colormap: str = "grayscale",
+) -> DepthImageResponse:
+    """Extract a depth map (white model) from a single uploaded image.
+
+    The panorama/照片 counterpart of ``/extract-depth``: the result is stored
+    under the media data dir and served from ``/media`` so the workbench can
+    show it (and a video node can bind it as a control reference). Missing
+    MiDaS dependencies surface as a 400 with the dependency report — never a
+    silent placeholder image.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from app.services.scene3d.depth_estimator import (
+        DepthEstimationError,
+        check_dependencies,
+        estimate_depth_from_image,
+    )
+
+    deps = check_dependencies()
+    if not (deps["torch"] and deps["opencv"] and deps["numpy"]):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Depth estimation dependencies are not installed "
+                "(need torch + opencv + numpy).",
+                "error_type": "missing_dependency",
+                "dependencies": deps,
+            },
+        )
+
+    suffix = Path(file.filename or "image.png").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+        suffix = ".png"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        result = await asyncio.to_thread(
+            estimate_depth_from_image,
+            input_image_path=tmp_path,
+            model_type=model_type,
+            colormap=colormap,
+        )
+    except DepthEstimationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(e), "error_type": e.error_type},
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Depth estimation failed: {str(e)[:200]}",
+        ) from e
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Serve the depth map from the mounted media dir so the workbench (and a
+    # video node) can fetch it.
+    from app.core.config import get_settings
+    from app.services.v2_data_boundary import validate_v2_data_path
+
+    settings = get_settings()
+    relative = (
+        Path("assets")
+        / "provider-output"
+        / "depth"
+        / f"{result.asset_id}.png"
+    )
+    target = settings.media_data_dir / relative
+    try:
+        validate_v2_data_path(settings.media_data_dir, target, operation="v2-depth-image-store")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(Path(result.output_video_path).read_bytes())
+    except OSError:
+        # The temp file is gone once this request returns; serving from the
+        # media dir is the durable path, so a failure is an error, not a
+        # silent degradation.
+        raise HTTPException(
+            status_code=500,
+            detail="Depth map could not be stored for serving.",
+        ) from None
+
+    return DepthImageResponse(
+        success=True,
+        depth_url=f"/media/{relative.as_posix()}",
+        width=result.output_width,
+        height=result.output_height,
+        model_type=result.model_type,
+        colormap=result.colormap,
+    )
+
+# ---------------------------------------------------------------------------
+# 2.5D depth-reprojection orbit render
+# ---------------------------------------------------------------------------
+
+
+class DepthOrbitResponse(BaseModel):
+    success: bool
+    video_url: str | None = None
+    frame_count: int = 0
+    keyframe_urls: list[str] = []
+    max_hole_fraction: float = 0.0
+    warnings: list[str] = []
+    error: str | None = None
+
+
+@router.post("/render-depth-orbit", response_model=DepthOrbitResponse)
+async def render_depth_orbit_endpoint(
+    file: UploadFile = File(..., description="Source image"),
+    depth_file: UploadFile | None = File(None, description="Optional grayscale depth map"),
+    num_frames: int = Form(60),
+    sweep_degrees: float = Form(40.0),
+    elevation_degrees: float = Form(6.0),
+    depth_near: float = Form(0.6),
+    depth_far: float = Form(5.0),
+    encode_video: bool = Form(True),
+) -> DepthOrbitResponse:
+    """Render an orbiting virtual camera over an image (2.5D reprojection).
+
+    The panorama's first-tier path: back-project the image onto its depth
+    map and swing a virtual camera. Disocclusion holes are inpainted and the
+    per-frame hole fraction is REPORTED (``max_hole_fraction`` + warnings) —
+    never silently presented as geometry. Output is served from ``/media``.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from app.core.config import get_settings
+    from app.services.scene3d.depth_reprojection import render_depth_orbit
+
+    settings = get_settings()
+    tmp_paths: list[str] = []
+    try:
+        suffix = Path(file.filename or "image.png").suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webm", ".bmp", ".webp"}:
+            suffix = ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(await file.read())
+            image_path = tmp.name
+        tmp_paths.append(image_path)
+
+        depth_path = None
+        if depth_file is not None and depth_file.filename:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(await depth_file.read())
+                depth_path = tmp.name
+            tmp_paths.append(depth_path)
+
+        result = await asyncio.to_thread(
+            render_depth_orbit,
+            image_path=image_path,
+            depth_path=depth_path,
+            num_frames=max(2, min(300, num_frames)),
+            sweep_degrees=max(-180.0, min(180.0, sweep_degrees)),
+            elevation_degrees=max(-60.0, min(60.0, elevation_degrees)),
+            depth_near=max(0.1, depth_near),
+            depth_far=max(depth_near + 0.5, depth_far),
+            encode_video=encode_video,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(e)[:200], "error_type": "orbit_render_failed"},
+        ) from e
+    finally:
+        for path in tmp_paths:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if not result.success:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": result.error or "orbit render failed", "error_type": "orbit_render_failed"},
+        )
+
+    # Serve artifacts from the mounted media dir.
+    from app.services.v2_data_boundary import validate_v2_data_path
+
+    keyframe_urls: list[str] = []
+    video_url: str | None = None
+    try:
+        if result.video_path:
+            relative = Path("assets") / "provider-output" / "orbit" / (Path(result.video_path).name)
+            target = settings.media_data_dir / relative
+            validate_v2_data_path(settings.media_data_dir, target, operation="v2-orbit-store")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(Path(result.video_path).read_bytes())
+            video_url = f"/media/{relative.as_posix()}"
+        for index, keyframe_path in enumerate(
+            sorted(Path(result.frames_dir or "").glob("keyframe_*.png"))
+        ):
+            relative = (
+                Path("assets") / "provider-output" / "orbit" / f"orbit_{index}_{keyframe_path.name}"
+            )
+            target = settings.media_data_dir / relative
+            validate_v2_data_path(settings.media_data_dir, target, operation="v2-orbit-store")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(keyframe_path.read_bytes())
+            keyframe_urls.append(f"/media/{relative.as_posix()}")
+    except OSError:
+        raise HTTPException(
+            status_code=500,
+            detail="Orbit artifacts could not be stored for serving.",
+        ) from None
+
+    return DepthOrbitResponse(
+        success=True,
+        video_url=video_url,
+        frame_count=result.frame_count,
+        keyframe_urls=keyframe_urls,
+        max_hole_fraction=result.max_hole_fraction,
+        warnings=result.warnings,
+    )
+
+
+@router.post("/transition-proposals", response_model=TransitionProposalsResponse)
+async def propose_shot_transitions(request: TransitionProposalsRequest) -> TransitionProposalsResponse:
+    """Propose ways to get from shot A to shot B (advisory, never applied).
+
+    The readings come from the V0.2 research (A 连续运动 / B 视线特写切换 /
+    声音桥 / 说完再切 / C 时间空间跳跃 / D 视角切换); each carries the
+    operations the front-end's motion presets can execute. The creator
+    chooses — nothing is auto-applied.
+    """
+    try:
+        scene_script = _validate_scene_script(request.scene_script)
+    except HTTPException:
+        raise
+
+    warnings: list[str] = []
+    shots_by_id = {shot.id: shot for shot in scene_script.shots}
+    shot_a = shots_by_id.get(request.shot_a_id)
+    shot_b = shots_by_id.get(request.shot_b_id)
+    if shot_a is None or shot_b is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Shot not found: "
+                f"{request.shot_a_id if shot_a is None else request.shot_b_id}"
+            ),
+        )
+
+    # Speech segments are best-effort: a malformed entry must not kill the
+    # proposals (silence-based readings simply degrade).
+    segments: list[SpeechSegment] = []
+    for index, raw_segment in enumerate(request.segments):
+        try:
+            segments.append(
+                SpeechSegment(
+                    segment_id=str(raw_segment.get("segment_id") or f"seg_{index}"),
+                    character_id=str(raw_segment.get("character_id") or ""),
+                    text=str(raw_segment.get("text") or ""),
+                    start_time=float(raw_segment.get("start_time") or 0.0),
+                    end_time=float(raw_segment.get("end_time") or 0.0),
+                )
+            )
+        except (AttributeError, TypeError, ValueError):
+            warnings.append(f"segments[{index}] 无法解析，已忽略（停顿类方案可能退化）。")
+
+    proposals = propose_transitions(
+        shot_a=shot_a,
+        shot_b=shot_b,
+        characters=list(scene_script.characters),
+        cameras=list(scene_script.cameras),
+        segments=segments,
+        frame_rate=scene_script.scene.frame_rate,
+        scene_duration=scene_script.scene.duration,
+        transition_frames=request.transition_frames,
+    )
+
+    # Optional LLM narrative layer (V0.2 §6.2/§15): the prose explaining each
+    # reading for THIS pair. Operations stay the rule layer's; an unavailable
+    # LLM degrades to rule narratives with a reported reason (never silent).
+    # The call is sync httpx, so it runs off the event loop (same discipline as
+    # the render endpoints).
+    narrative_source = "rules"
+    if request.polish_narratives:
+        import asyncio
+
+        from app.services.scene3d.transition_narratives import (
+            polish_transition_narratives,
+        )
+
+        polished = await asyncio.to_thread(
+            polish_transition_narratives,
+            shot_a_id=request.shot_a_id,
+            shot_b_id=request.shot_b_id,
+            proposals=proposals,
+        )
+        proposals = polished.proposals
+        narrative_source = polished.source
+        if polished.degraded_reason:
+            warnings.append(polished.degraded_reason)
+
+    # Optional LLM proposal layer (V0.2 §15 deepening): readings beyond the
+    # rule catalogue. Every proposed reading is validated against the operation
+    # vocabulary and this scene's ids before it reaches the response; drops are
+    # reported, never silent.
+    if request.propose_readings:
+        import asyncio
+
+        from app.services.scene3d.transition_narratives import (
+            SceneVocabulary,
+            propose_additional_readings,
+        )
+
+        vocabulary = SceneVocabulary.from_scene(
+            shots=list(scene_script.shots),
+            characters=list(scene_script.characters),
+            cameras=list(scene_script.cameras),
+            reserved_ids=[proposal.id for proposal in proposals],
+        )
+        additional = await asyncio.to_thread(
+            propose_additional_readings,
+            shot_a_id=request.shot_a_id,
+            shot_b_id=request.shot_b_id,
+            vocabulary=vocabulary,
+            existing_labels=[
+                proposal.label for proposal in proposals
+            ] + list(request.exclude_reading_ids),
+            exclude_ids=list(request.exclude_reading_ids),
+        )
+        proposals = [*proposals, *additional.readings]
+        if additional.degraded_reason:
+            warnings.append(additional.degraded_reason)
+        warnings.extend(additional.dropped)
+
+    # The declared entry reading, checked against the pair the picker is
+    # currently showing (V0.2 §13 第 5 问). Computed here because this is
+    # where the applied speech timeline arrives.
+    return TransitionProposalsResponse(
+        success=True,
+        proposals=[proposal.to_dict() for proposal in proposals],
+        warnings=warnings,
+        narrative_source=narrative_source,
+        intent_audit=audit_declared_intent(
+            declared_id=shot_b.transition_intent,
+            proposals=proposals,
+            shot_b_id=shot_b.id,
+        ),
+    )

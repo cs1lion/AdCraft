@@ -8,6 +8,7 @@ const NODE_ICON_ASSETS: Record<CanvasNodeTypeV2, string> = {
   audio: "/imgs/node-icons/audio.svg",
   editing: "/imgs/node-icons/video.svg",
   "scene-3d": "/imgs/node-icons/video.svg",
+  replica: "/imgs/node-icons/solar-star-outline.svg",
   "voice-cast": "/imgs/node-icons/audio.svg",
 };
 

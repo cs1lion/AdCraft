@@ -11,6 +11,8 @@
 
 import { useState, useRef, useCallback } from "react";
 
+import { ReplicaTeardown } from "./ReplicaTeardown.tsx";
+
 interface VideoMetadata {
   duration_seconds: number;
   width: number;
@@ -53,16 +55,21 @@ interface ReferenceVideoPanelProps {
   onVideoSelected?: (result: UploadResult | null) => void;
   onDepthExtracted?: (result: DepthEstimationResult | null) => void;
   height?: number;
+  /** 当前工作流：拉片复刻创建蓝图节点用。 */
+  workflowId?: string | null;
 }
 
 const MAX_FILE_SIZE_MB = 100;
-const MAX_DURATION_SECONDS = 10;
+// 60s：与后端 reference_upload 的上限对齐——拉片复刻面向 15-30s 广告片，
+// 10s 会把核心场景直接挡在上传关卡（后端同步放宽为 60s）。
+const MAX_DURATION_SECONDS = 60;
 const ALLOWED_EXTENSIONS = [".mp4", ".webm", ".mov", ".m4v"];
 
 export function ReferenceVideoPanel({
   onVideoSelected,
   onDepthExtracted,
   height = 320,
+  workflowId = null,
 }: ReferenceVideoPanelProps) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -462,6 +469,15 @@ export function ReferenceVideoPanel({
               </div>
             )}
           </div>
+
+          {/* 拉片复刻（hypit 理念 MVP 切片）：拆解参考片结构 → 复刻分镜草稿 */}
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #2a2a4a" }}>
+            <ReplicaTeardown
+              assetId={result.asset_id}
+              workflowId={workflowId}
+              height={height - 32}
+            />
+          </div>
         </div>
       )}
 
@@ -482,7 +498,9 @@ export function ReferenceVideoPanel({
           1. Upload a reference video with the camera movement and composition you want.<br />
           2. The system extracts evenly-spaced keyframes automatically.<br />
           3. Use the reference video (or keyframes) to condition the video model.<br />
-          4. For models that don't support reference video, keyframes are used as fallback.
+          4. For models that don't support reference video, keyframes are used as fallback.<br />
+          5. 想复刻这条片子的结构？上传后到下方「🎬 拉片复刻」拆解它 → 创建蓝图 →
+          在画布复刻蓝图节点里替换槽位并生成复刻工作流。
         </div>
       )}
     </div>

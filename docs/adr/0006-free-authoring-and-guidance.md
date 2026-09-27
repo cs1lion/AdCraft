@@ -16,6 +16,8 @@ Proposed → **P0/P1 implemented in the working tree (2026-09-15)**; P2 pending.
   - 未完成：`free_node_advisory` 的生成/消费路径（引导层何时对自由节点产出 advisory next_action）尚未接入 journey 状态机。
 - **P2 未做**：依赖拓扑排序执行；"卡住诊断"聚合面板（图 + journey + provider 健康）；`intent_hint` 驱动的 LLM 推荐话术。
 
+> **2026-09-26 复审**：以上结论仍成立——`enter_free_node_advisory` 仍无调用方（advisory 的生成/消费路径未接 journey 状态机）；P0 的 progress 端点仍在（`agent_canvas.py:2096`）。本文不因周边功能（时间线、3D 工作台）落地而改判。
+
 ## Context
 
 用户诉求：当前 Agent Canvas（V2）是"固定的广告生产引导流程"，新手想自由添加节点（哪怕不合逻辑）也会被卡住，且：

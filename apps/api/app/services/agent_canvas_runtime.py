@@ -358,6 +358,8 @@ class DynamicCanvasScheduler:
             "script": total_limit,
             "scene-3d": scene_3d_limit,
             "voice-cast": voice_cast_limit,
+            # 拉片复刻蓝图是规划节点：不进生成调度，给总量上限占位
+            "replica": total_limit,
         }
         self._total_limit = total_limit
         self._clock = clock

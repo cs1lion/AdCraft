@@ -7,129 +7,286 @@
  *
  * This is the frontend preview engine (ADR 0005 §3). The backend Blender
  * renderer produces production frames; this component gives instant feedback.
+ *
+ * Interactive editing (3D director workbench P1): with `editMode` enabled the
+ * same viewport becomes the editor — click to select, drag on the ground
+ * plane to move, and the drop commits through `onDragCommit` to the pure
+ * edit model (sceneScriptEditModel). Playback and editing are two modes of
+ * ONE scene state, so what the agent builds can be grabbed by hand without a
+ * second editor.
+ *
+ * Axis discipline: SceneScript is Blender Z-up ([x, y, z] = right, forward,
+ * up); three.js is Y-up. Every scene coordinate crosses `sceneScriptAxes`
+ * exactly once, in both directions, so drags land in the axis Blender means.
  */
 
-import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Grid } from "@react-three/drei";
-import { useRef, useMemo } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
+import { Grid, Html, OrbitControls } from "@react-three/drei";
+import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSceneScriptPlayback } from "./SceneScriptPlaybackContext";
+import { activeDialogueLineAtFrame } from "./activeDialogueLine.ts";
+import { audioTimeForFrame, shouldSeekAudio } from "./animaticAudio.ts";
+import { blockingPathLength, characterPathPoints, type BlockingPathPoint } from "./blockingPath";
+import { heldItemPositionAtFrame } from "./heldItems";
 import type {
   SceneScriptRoot,
   SceneCharacter,
   SceneProp,
   SceneCamera,
-  CharacterKeyframe,
+  SceneEnvironment,
+  CameraKeyframe,
 } from "../../../types/scene-script";
 import { PLACEHOLDER_ASSET_COLOR } from "../../../types/scene-script.generated";
+import { assetGeometryFor, unimplementedKinds } from "./sceneScriptGeometry";
 import {
-  assetGeometryFor,
-  unimplementedKinds,
-} from "./sceneScriptGeometry";
+  sceneToThreePosition,
+  sceneYawToThreeRotation,
+  type SceneVec3,
+} from "./sceneScriptAxes";
+import {
+  characterActionAtFrame,
+  characterStateAtFrame,
+  sceneObjectPositionAtFrame,
+  type SceneObjectRef,
+} from "./sceneScriptEditModel";
 
 // ---------------------------------------------------------------------------
-// Low-poly Human
+// Shared edit handlers (one contract for every selectable object)
 // ---------------------------------------------------------------------------
 
-interface LowPolyHumanProps {
-  character: SceneCharacter;
-  frame: number;
+interface EditHandlers {
+  editMode: boolean;
+  selected: boolean;
+  onSelect: (ref: SceneObjectRef) => void;
+  onDragStart: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  onDragMove: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  onDragEnd: () => void;
+  overridePosition?: SceneVec3;
 }
 
-function interpolateKeyframes(
-  keyframes: CharacterKeyframe[],
+function useEditHandlers(handlers: EditHandlers, ref: SceneObjectRef, scenePosition: SceneVec3) {
+  const { editMode, onSelect, onDragStart, onDragMove } = handlers;
+  const handlePointerDown = useCallback(
+    (event: { stopPropagation: () => void }) => {
+      if (!editMode) return;
+      // Do not let the canvas orbit the camera when grabbing an object.
+      event.stopPropagation();
+      onSelect(ref);
+      onDragStart(ref, scenePosition);
+    },
+    [editMode, onSelect, onDragStart, ref, scenePosition],
+  );
+  const handlePointerMove = useCallback(
+    (event: { buttons: number }) => {
+      if (!editMode || event.buttons === 0) return;
+      onDragMove(ref, scenePosition);
+    },
+    [editMode, onDragMove, ref, scenePosition],
+  );
+  return { handlePointerDown, handlePointerMove };
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe interpolation (characters + cameras share the shape)
+// ---------------------------------------------------------------------------
+
+
+function interpolateCameraKeyframes(
+  keyframes: CameraKeyframe[],
   frame: number,
-): { position: [number, number, number]; rotationY: number } {
-  if (keyframes.length === 0) {
-    return { position: [0, 0, 0], rotationY: 0 };
-  }
-  if (keyframes.length === 1 || frame <= keyframes[0].frame) {
-    return {
-      position: keyframes[0].position,
-      rotationY: (keyframes[0].rotation_y * Math.PI) / 180,
-    };
-  }
-  if (frame >= keyframes[keyframes.length - 1].frame) {
-    const last = keyframes[keyframes.length - 1];
-    return {
-      position: last.position,
-      rotationY: (last.rotation_y * Math.PI) / 180,
-    };
-  }
+): CameraKeyframe | null {
+  if (keyframes.length === 0) return null;
+  if (keyframes.length === 1 || frame <= keyframes[0].frame) return keyframes[0];
+  const last = keyframes[keyframes.length - 1];
+  if (frame >= last.frame) return last;
   for (let i = 0; i < keyframes.length - 1; i++) {
     const a = keyframes[i];
     const b = keyframes[i + 1];
     if (frame >= a.frame && frame <= b.frame) {
       const t = (frame - a.frame) / (b.frame - a.frame || 1);
       return {
+        frame,
         position: [
           a.position[0] + (b.position[0] - a.position[0]) * t,
           a.position[1] + (b.position[1] - a.position[1]) * t,
           a.position[2] + (b.position[2] - a.position[2]) * t,
         ],
-        rotationY:
-          ((a.rotation_y + (b.rotation_y - a.rotation_y) * t) * Math.PI) / 180,
+        look_at: [
+          a.look_at[0] + (b.look_at[0] - a.look_at[0]) * t,
+          a.look_at[1] + (b.look_at[1] - a.look_at[1]) * t,
+          a.look_at[2] + (b.look_at[2] - a.look_at[2]) * t,
+        ],
       };
     }
   }
-  return {
-    position: keyframes[0].position,
-    rotationY: (keyframes[0].rotation_y * Math.PI) / 180,
-  };
+  return keyframes[0];
 }
 
-function LowPolyHuman({ character, frame }: LowPolyHumanProps) {
-  const groupRef = useRef<THREE.Group>(null);
+// ---------------------------------------------------------------------------
+// Low-poly Human
+// ---------------------------------------------------------------------------
+
+function LowPolyHuman({
+  character,
+  frame,
+  dialogueLines,
+  frameRate,
+  handlers,
+}: {
+  character: SceneCharacter;
+  frame: number;
+  dialogueLines: readonly SpeechOverlayLine[];
+  frameRate: number;
+  handlers: EditHandlers;
+}) {
   const color = character.appearance.color ?? "#8B4513";
   const height = character.appearance.height ?? 1.7;
   const scale = character.appearance.scale ?? 1.0;
   const bodyHeight = height * 0.55 * scale;
   const headRadius = height * 0.18 * scale;
 
-  const { position, rotationY } = useMemo(
-    () => interpolateKeyframes(character.keyframes, frame),
-    [character.keyframes, frame],
-  );
-
+  const ref = useMemo<SceneObjectRef>(() => ({ kind: "character", id: character.id }), [character.id]);
+  const interpolated = useMemo(() => {
+    const state = characterStateAtFrame(character, frame);
+    return { position: state.position, rotationY: sceneYawToThreeRotation(state.rotationY) };
+  }, [character, frame]);
+  const scenePosition = handlers.overridePosition ?? interpolated.position;
+  const threePosition = sceneToThreePosition(scenePosition);
+  const { handlePointerDown, handlePointerMove } = useEditHandlers(handlers, ref, scenePosition);
+  // Lip-sync visibility: the talk keyframes the dialogue pipeline wrote are
+  // the same state the Blender render animates — the viewport must show the
+  // mouth open at exactly those frames, or "who speaks now" is invisible.
+  const isSpeaking = characterActionAtFrame(character, frame) === "talk";
+  const mouthOpen = isSpeaking ? headRadius * 0.5 : headRadius * 0.08;
+  // The line whose time window covers "now" for THIS speaker.
+  const activeLine = activeDialogueLineAtFrame(dialogueLines, character.id, frame, frameRate);
   return (
-    <group ref={groupRef} position={position} rotation={[0, rotationY, 0]}>
+    <group position={threePosition} rotation={[0, interpolated.rotationY, 0]}>
       {/* Body */}
       <mesh position={[0, bodyHeight / 2, 0]} castShadow>
-        <boxGeometry
-          args={[height * 0.35 * scale, bodyHeight, height * 0.35 * scale]}
+        <boxGeometry args={[height * 0.35 * scale, bodyHeight, height * 0.35 * scale]} />
+        <meshStandardMaterial
+          color={color}
+          emissive={handlers.selected ? "#FFD166" : "#000000"}
+          emissiveIntensity={handlers.selected ? 0.35 : 0}
         />
-        <meshStandardMaterial color={color} />
       </mesh>
       {/* Head */}
       <mesh position={[0, bodyHeight + headRadius * 0.8, 0]} castShadow>
         <sphereGeometry args={[headRadius, 8, 8]} />
         <meshStandardMaterial color="#E8D5C4" />
       </mesh>
+      {/* Mouth: opens on the talk keyframes the dialogue pipeline wrote.
+          Deterministic from the frame (no animation loop) so the preview,
+          the inspector and the Blender render agree. */}
+      <mesh
+        position={[0, bodyHeight + headRadius * 0.62, headRadius * 0.82]}
+        data-testid={`character-mouth-${character.id}`}
+        data-speaking={isSpeaking ? "true" : "false"}
+      >
+        <boxGeometry args={[headRadius * 0.5, mouthOpen, headRadius * 0.12]} />
+        <meshStandardMaterial color={isSpeaking ? "#3B2F2F" : "#C9A88F"} />
+      </mesh>
+      {/* Speech overlay: the current line floats above its speaker.
+          DOM (not troika text): the viewport already loads three.js and drei,
+          and a canvas-texture sprite would cost a texture upload per line. */}
+      {activeLine && (
+        <Html position={[0, bodyHeight + headRadius * 2.6, 0]} center distanceFactor={10}>
+          <div className="scene-script-speech-overlay" data-testid={`speech-overlay-${character.id}`}>
+            {activeLine.text}
+          </div>
+        </Html>
+      )}
       {/* ID label (small cone on top) */}
       <mesh position={[0, bodyHeight + headRadius * 2 + 0.1, 0]}>
         <coneGeometry args={[0.08, 0.15, 4]} />
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.3} />
       </mesh>
+      {/* Grab proxy: body/head meshes are small targets, so edit mode adds a
+          transparent cylinder covering the whole silhouette. (Invisible meshes
+          are NOT raycast by three.js — hence opacity 0, not visible={false}.) */}
+      {handlers.editMode && (
+        <mesh
+          position={[0, height * 0.5 * scale, 0]}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlers.onDragEnd}
+        >
+          <cylinderGeometry args={[height * 0.3 * scale, height * 0.3 * scale, height * scale, 8]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Prop / environment mesh
+// Blocking marks (per-keyframe floor marks + path length)
 // ---------------------------------------------------------------------------
 
 /**
- * Render one prop or environment object.
- *
- * Environment objects come through here too, which is why the geometry lookup
- * is a total map over both enums (see ``sceneScriptGeometry.tsx``). The old
- * version was a ``switch`` over prop kinds only, so 10 of the 13 environment
- * kinds fell through to the default box -- as did 11 of the 12 prop kinds.
+ * Dots on the selected character's keyframes with their frame numbers, plus
+ * the total blocking length. Pairs with the existing TrajectoryLine (which
+ * draws the path itself): this adds the READING — which frame, how far.
  */
-function PropMesh({ prop }: { prop: SceneProp }) {
+function BlockingMarks({
+  points,
+  characterId,
+}: {
+  points: BlockingPathPoint[];
+  characterId: string;
+}) {
+  const metres = blockingPathLength(points);
+  return (
+    <group>
+      {points.map((point) => (
+        <group key={`mark-${point.frame}`} position={point.threePosition}>
+          <mesh>
+            <sphereGeometry args={[0.06, 8, 8]} />
+            <meshBasicMaterial color="#FFD166" />
+          </mesh>
+          <Html position={[0, 0.3, 0]} center distanceFactor={9}>
+            <span className="blocking-mark" data-testid={`blocking-mark-${characterId}`}>
+              ◆{point.frame}
+            </span>
+          </Html>
+        </group>
+      ))}
+      <Html position={points[points.length - 1].threePosition} center distanceFactor={9}>
+        <span className="blocking-length" data-testid={`blocking-length-${characterId}`}>
+          走位 {metres.toFixed(1)}m
+        </span>
+      </Html>
+    </group>
+  );
+}
+
+// Prop / environment mesh
+// ---------------------------------------------------------------------------
+
+function PropMesh({
+  prop,
+  kind,
+  handlers,
+  heldPosition,
+}: {
+  prop: SceneProp | SceneEnvironment;
+  kind: "prop" | "environment";
+  handlers: EditHandlers;
+  /**
+   * Held-item follow (V0.2 §5): the holder's hand position at the current
+   * frame. Wins over the authored position (which is only the rest position
+   * once held) but loses to the drag ghost — the author is always right.
+   */
+  heldPosition?: [number, number, number] | null;
+}) {
   const scale = prop.scale ?? 1.0;
   const rotationY = ((prop.rotation_y ?? 0) * Math.PI) / 180;
-  const pos = prop.position;
+  const scenePosition = handlers.overridePosition ?? heldPosition ?? prop.position;
+  const pos = sceneToThreePosition(scenePosition);
+
+  const ref = useMemo<SceneObjectRef>(() => ({ kind, id: prop.id }), [kind, prop.id]);
 
   const geometry = useMemo(() => {
     const build = assetGeometryFor(prop.type);
@@ -156,33 +313,87 @@ function PropMesh({ prop }: { prop: SceneProp }) {
     );
   }, [prop.type, pos, rotationY, scale]);
 
-  return <>{geometry}</>;
+  const { handlePointerDown, handlePointerMove } = useEditHandlers(handlers, ref, scenePosition);
+
+  return (
+    // r3f pointer events bubble up the object graph, so one handler on the
+    // group covers every mesh the geometry builder produced.
+    <group onPointerDown={handlePointerDown}>
+      {geometry}
+      {handlers.editMode && (
+        <mesh
+          position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlers.onDragEnd}
+        >
+          <boxGeometry
+            args={[Math.max(0.6, scale), Math.max(0.6, scale), Math.max(0.6, scale)]}
+          />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
+    </group>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Camera Gizmo
 // ---------------------------------------------------------------------------
 
-function CameraGizmo({ camera, active }: { camera: SceneCamera; active: boolean }) {
-  const kf = camera.keyframes[0];
-  if (!kf) return null;
+function CameraGizmo({
+  camera,
+  active,
+  frame,
+  handlers,
+}: {
+  camera: SceneCamera;
+  active: boolean;
+  frame: number;
+  handlers: EditHandlers;
+}) {
+  const keyframe = useMemo(
+    () => interpolateCameraKeyframes(camera.keyframes, frame),
+    [camera.keyframes, frame],
+  );
+  const ref = useMemo<SceneObjectRef>(() => ({ kind: "camera", id: camera.id }), [camera.id]);
 
-  const direction = new THREE.Vector3(
-    kf.look_at[0] - kf.position[0],
-    kf.look_at[1] - kf.position[1],
-    kf.look_at[2] - kf.position[2],
-  ).normalize();
+  // All hooks run before any early return: a camera with zero keyframes
+  // renders nothing, but the hook order must stay stable across renders.
+  const position = useMemo(
+    () => (keyframe ? sceneToThreePosition(keyframe.position) : null),
+    [keyframe],
+  );
+  const lookAt = useMemo(
+    () => (keyframe ? sceneToThreePosition(keyframe.look_at) : null),
+    [keyframe],
+  );
+  const direction = useMemo(
+    () =>
+      position && lookAt
+        ? new THREE.Vector3(
+            lookAt[0] - position[0],
+            lookAt[1] - position[1],
+            lookAt[2] - position[2],
+          ).normalize()
+        : null,
+    [lookAt, position],
+  );
+  const { handlePointerDown, handlePointerMove } = useEditHandlers(
+    handlers,
+    ref,
+    keyframe?.position ?? [0, 0, 0],
+  );
+  if (!keyframe || !position || !lookAt || !direction) return null;
 
+  // The gizmo follows the camera's interpolated position at the current frame,
+  // so a multi-keyframe camera move is visible instead of frozen at frame 0.
+  const bodyColor = handlers.selected ? "#FFD166" : active ? "#00FF00" : "#4444FF";
   return (
-    <group position={kf.position}>
+    <group position={position} onPointerDown={handlePointerDown}>
       {/* Camera body */}
       <mesh>
         <boxGeometry args={[0.3, 0.2, 0.4]} />
-        <meshStandardMaterial
-          color={active ? "#00FF00" : "#4444FF"}
-          emissive={active ? "#00FF00" : "#4444FF"}
-          emissiveIntensity={0.3}
-        />
+        <meshStandardMaterial color={bodyColor} emissive={bodyColor} emissiveIntensity={0.3} />
       </mesh>
       {/* Lens (cone pointing toward look_at) */}
       <mesh
@@ -206,15 +417,358 @@ function CameraGizmo({ camera, active }: { camera: SceneCamera; active: boolean 
             ]}
           />
         </bufferGeometry>
-        <lineBasicMaterial color={active ? "#00FF00" : "#4444FF"} opacity={0.4} transparent />
+        <lineBasicMaterial color={bodyColor} opacity={0.4} transparent />
       </lineSegments>
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Animation controller
+// Selection ring + trajectory lines
 // ---------------------------------------------------------------------------
+
+function SelectionRing({ position }: { position: [number, number, number] }) {
+  return (
+    <mesh position={[position[0], 0.02, position[2]]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={999}>
+      <ringGeometry args={[0.45, 0.62, 32]} />
+      <meshBasicMaterial color="#FFD166" transparent opacity={0.95} depthTest={false} />
+    </mesh>
+  );
+}
+
+/** Polyline through converted scene positions (camera move / character path). */
+function TrajectoryLine({
+  points,
+  color,
+  opacity = 0.75,
+}: {
+  points: SceneVec3[];
+  color: string;
+  /** Emphasis knob: the selected object's path is drawn brighter. */
+  opacity?: number;
+}) {
+  const flat = useMemo(() => {
+    const values: number[] = [];
+    for (const point of points) {
+      const converted = sceneToThreePosition(point);
+      values.push(converted[0], 0.06, converted[2]);
+    }
+    return new Float32Array(values);
+  }, [points]);
+
+  if (points.length < 2) return null;
+  return (
+    <lineSegments>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[flat, 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial color={color} transparent opacity={opacity} />
+    </lineSegments>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ground-plane drag layer (lives inside the Canvas: needs useThree)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw-a-path camera motion (V0.2 §8.3): the author drags a trajectory on the
+ * ground and the system understands it as Camera Motion. Window-level
+ * pointer capture (the same modal-gesture pattern as placement) collects the
+ * raw polyline; the pure converter (cameraGesturePath) does the resampling.
+ * A drag with no travel commits nothing — a click is not a move.
+ */
+function CameraGestureLayer({
+  onCommit,
+  onCancel,
+}: {
+  onCommit: (points: SceneVec3[]) => void;
+  onCancel?: () => void;
+}) {
+  const { camera, gl, raycaster } = useThree();
+  const [drawing, setDrawing] = useState<SceneVec3[] | null>(null);
+  const drawingRef = useRef<SceneVec3[] | null>(null);
+  drawingRef.current = drawing;
+
+  const groundFromEvent = useCallback(
+    (event: PointerEvent): SceneVec3 | null => {
+      const rect = gl.domElement.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(ndc, camera);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      const hit = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(plane, hit)) return null;
+      return [Math.round(hit.x * 100) / 100, Math.round(hit.z * 100) / 100, 0];
+    },
+    [camera, gl, raycaster],
+  );
+
+  useEffect(() => {
+    const handleDown = (event: PointerEvent) => {
+      const ground = groundFromEvent(event);
+      if (!ground) return;
+      drawingRef.current = [ground];
+      setDrawing([ground]);
+    };
+    const handleMove = (event: PointerEvent) => {
+      if (!drawingRef.current) return;
+      const ground = groundFromEvent(event);
+      if (!ground) return;
+      const points = drawingRef.current;
+      const last = points[points.length - 1];
+      // Skip micro-movements: the converter resamples by arc length anyway,
+      // and a leaner polyline keeps the live preview cheap.
+      if (Math.hypot(ground[0] - last[0], ground[1] - last[1]) < 0.05) return;
+      drawingRef.current = [...points, ground];
+      setDrawing(drawingRef.current);
+    };
+    const handleUp = () => {
+      const points = drawingRef.current;
+      drawingRef.current = null;
+      setDrawing(null);
+      if (points && points.length > 1) onCommit(points);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel?.();
+    };
+    window.addEventListener("pointerdown", handleDown);
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("pointerdown", handleDown);
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [groundFromEvent, onCommit, onCancel]);
+
+  if (!drawing || drawing.length < 2) return null;
+  return (
+    <line>
+      <bufferGeometry>
+        <bufferAttribute
+          attach="attributes-position"
+          args={[
+            new Float32Array(
+              drawing.flatMap((point) => {
+                const three = sceneToThreePosition(point);
+                return [three[0], 0.06, three[2]];
+              }),
+            ),
+            3,
+          ]}
+        />
+      </bufferGeometry>
+      <lineBasicMaterial color="#FFD166" linewidth={2} />
+    </line>
+  );
+}
+
+interface GroundDrag {
+  start: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  active: boolean;
+}
+
+/**
+ * Owns the pointer once a drag starts: raycasts the pointer against the
+ * ground plane (y=0) on window move/up, so the drag survives leaving the
+ * object's mesh, and reports `active` so OrbitControls can stand down for
+ * the duration (orbiting and grabbing must not both respond to one drag).
+ *
+ * Height is preserved from the drag start: ground-plane dragging moves an
+ * object in x/y only, exactly like dragging a piece on a floor plan.
+ */
+function useGroundDrag(
+  onDragMove: (ref: SceneObjectRef, scenePosition: SceneVec3) => void,
+  onDragCommit: (ref: SceneObjectRef, scenePosition: SceneVec3) => void,
+): GroundDrag {
+  const { camera, gl, raycaster } = useThree();
+  const [active, setActive] = useState(false);
+  const dragRef = useRef<{ ref: SceneObjectRef; height: number } | null>(null);
+  const lastPositionRef = useRef<SceneVec3 | null>(null);
+
+  // Callbacks live in refs so a parent re-render mid-drag (ghost updates)
+  // never re-subscribes the window listeners.
+  const moveRef = useRef(onDragMove);
+  const commitRef = useRef(onDragCommit);
+  useEffect(() => {
+    moveRef.current = onDragMove;
+    commitRef.current = onDragCommit;
+  });
+
+  const start = useCallback((ref: SceneObjectRef, scenePosition: SceneVec3) => {
+    dragRef.current = { ref, height: scenePosition[2] };
+    lastPositionRef.current = scenePosition;
+    setActive(true);
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const ndc = new THREE.Vector2();
+    const hit = new THREE.Vector3();
+
+    const handleMove = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const rect = gl.domElement.getBoundingClientRect();
+      ndc.set(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(ndc, camera);
+      if (!raycaster.ray.intersectPlane(plane, hit)) return;
+      const position: SceneVec3 = [
+        Math.round(hit.x * 100) / 100,
+        Math.round(hit.z * 100) / 100,
+        drag.height,
+      ];
+      lastPositionRef.current = position;
+      moveRef.current(drag.ref, position);
+    };
+
+    const handleUp = () => {
+      const drag = dragRef.current;
+      const last = lastPositionRef.current;
+      if (drag && last) commitRef.current(drag.ref, last);
+      dragRef.current = null;
+      setActive(false);
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleUp);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleUp);
+    };
+  }, [active, camera, gl, raycaster]);
+
+  return { start, active };
+}
+
+function SceneDragLayer({
+  onDragMove,
+  onDragCommit,
+  children,
+}: {
+  onDragMove: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  onDragCommit: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  children: (drag: GroundDrag) => ReactNode;
+}) {
+  const drag = useGroundDrag(onDragMove, onDragCommit);
+  return <>{children(drag)}</>;
+}
+
+// ---------------------------------------------------------------------------
+// Camera placement layer (P2: click position -> click look-at)
+// ---------------------------------------------------------------------------
+
+interface CameraPlacementProps {
+  onCommit: (placement: { position: SceneVec3; lookAt: SceneVec3 }) => void;
+  onCancel?: () => void;
+}
+
+/**
+ * Click-to-place a camera on the ground plane: the first click fixes the
+ * camera position, the second fixes the look-at target (with a live preview
+ * line between them). Escape cancels; the caller owns the mode toggle.
+ */
+function CameraPlacementLayer({ onCommit, onCancel }: CameraPlacementProps) {
+  const { camera, gl, raycaster } = useThree();
+  const [stage, setStage] = useState<"position" | "look_at">("position");
+  const [anchor, setAnchor] = useState<SceneVec3 | null>(null);
+  const [cursor, setCursor] = useState<SceneVec3 | null>(null);
+  const stageRef = useRef(stage);
+  const anchorRef = useRef<SceneVec3 | null>(null);
+  stageRef.current = stage;
+  anchorRef.current = anchor;
+
+  const groundFromEvent = useCallback(
+    (event: PointerEvent): SceneVec3 | null => {
+      const rect = gl.domElement.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(ndc, camera);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      const hit = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(plane, hit)) return null;
+      // SceneScript ground coords: [right, forward]; height comes from the
+      // eye-level anchor gizmo, not from the click.
+      return [Math.round(hit.x * 100) / 100, Math.round(hit.z * 100) / 100, 0];
+    },
+    [camera, gl, raycaster],
+  );
+
+  // Window-level capture (same pattern as the drag controller): placement is
+  // a modal gesture, so every click in the viewport places the camera and
+  // never accidentally selects an object behind the ground plane.
+  useEffect(() => {
+    const handleMove = (event: PointerEvent) => {
+      const ground = groundFromEvent(event);
+      if (ground) setCursor(ground);
+    };
+    const handleDown = (event: PointerEvent) => {
+      const ground = groundFromEvent(event);
+      if (!ground) return;
+      if (stageRef.current === "position") {
+        setAnchor(ground);
+        setStage("look_at");
+        return;
+      }
+      onCommit({ position: anchorRef.current ?? ground, lookAt: ground });
+      setStage("position");
+      setAnchor(null);
+      setCursor(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel?.();
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerdown", handleDown);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerdown", handleDown);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [groundFromEvent, onCommit, onCancel]);
+
+  // The anchor gizmo sits at camera eye height (1.6 m) so the placed camera
+  // is visible in the scene rather than buried in the floor.
+  const anchorThree = anchor ? sceneToThreePosition([anchor[0], anchor[1], 1.6]) : null;
+  const linePoints = useMemo(() => {
+    if (!anchorThree || !cursor) return null;
+    const target = sceneToThreePosition([cursor[0], cursor[1], 1.6]);
+    return new Float32Array([...anchorThree, ...target]);
+  }, [anchorThree, cursor]);
+
+  return (
+    <group>
+      {anchorThree && (
+        <mesh position={anchorThree}>
+          <boxGeometry args={[0.3, 0.2, 0.4]} />
+          <meshStandardMaterial color="#FFD166" emissive="#FFD166" emissiveIntensity={0.5} />
+        </mesh>
+      )}
+      {linePoints && (
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[linePoints, 3]} />
+          </bufferGeometry>
+          <lineBasicMaterial color="#FFD166" transparent opacity={0.8} />
+        </lineSegments>
+      )}
+    </group>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Main Preview Component
@@ -223,14 +777,89 @@ function CameraGizmo({ camera, active }: { camera: SceneCamera; active: boolean 
 export interface SceneScript3DPreviewProps {
   sceneScript: SceneScriptRoot;
   height?: number;
+  /** Interactive editing mode (3D director workbench). Read-only when false. */
+  editMode?: boolean;
+  selectedObject?: SceneObjectRef | null;
+  onSelect?: (ref: SceneObjectRef | null) => void;
+  /** Live drag updates: local preview state only. */
+  onDragMove?: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  /** Drag drop: persisted by the caller through the pure edit model. */
+  onDragCommit?: (ref: SceneObjectRef, scenePosition: SceneVec3) => void;
+  /** Camera placement mode: first click sets position, second sets look-at. */
+  placementMode?: boolean;
+  onPlacementCommit?: (placement: { position: SceneVec3; lookAt: SceneVec3 }) => void;
+  /** Draw-a-path camera motion (V0.2 §8.3): drag a trajectory on the ground. */
+  gestureMode?: boolean;
+  onGestureCommit?: (points: SceneVec3[]) => void;
+  /**
+   * Animatic audio (V0.2 §7/§14.9): the scene's speech track plays with the
+   * playhead so the author can judge rhythm and performance, not just see the
+   * blocking. The voice is the real thing; only the picture is cheap.
+   */
+  speechAudioUrl?: string | null;
+  /**
+   * Dialogue lines (seconds) for the speech overlay: the current line floats
+   * above its speaker, so "who says what, when" is visible in the 3D
+   * viewport — the mouth opens on the same window (both ride the talk
+   * keyframes the lip-sync wrote).
+   */
+  dialogueLines?: readonly SpeechOverlayLine[];
+}
+
+/** One dialogue line as the live overlay consumes it. */
+export interface SpeechOverlayLine {
+  character_id: string;
+  text: string;
+  /** Seconds. */
+  start_time: number;
+  /** Seconds; may be missing (the caller only knows the start). */
+  end_time?: number | null;
 }
 
 export function SceneScript3DPreview({
   sceneScript,
   height = 400,
+  editMode = false,
+  selectedObject = null,
+  dialogueLines = [],
+  onSelect,
+  onDragMove,
+  onDragCommit,
+  placementMode = false,
+  gestureMode = false,
+  speechAudioUrl = null,
+  onPlacementCommit,
+  onGestureCommit,
 }: SceneScript3DPreviewProps) {
   const { currentFrame, isPlaying, totalFrames, toggle, seekToFrame, pause } =
     useSceneScriptPlayback();
+  // Animatic audio: the element follows the playhead both ways. While
+  // playing the audio IS the clock (no seeks — they would stutter the voice);
+  // while paused a drag re-seeks so scrubbing previews the dialogue.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !speechAudioUrl || !audioEnabled) return;
+    const target = audioTimeForFrame(currentFrame, sceneScript.scene.frame_rate);
+    if (isPlaying) {
+      if (shouldSeekAudio(currentFrame, sceneScript.scene.frame_rate, audio.currentTime)) {
+        audio.currentTime = target;
+      }
+      void audio.play().catch(() => {
+        // Autoplay rejection (or a missing codec) must not break the preview:
+        // the picture keeps playing, the author presses Play again.
+      });
+    } else {
+      audio.pause();
+      if (shouldSeekAudio(currentFrame, sceneScript.scene.frame_rate, audio.currentTime)) {
+        audio.currentTime = target;
+      }
+    }
+  }, [currentFrame, isPlaying, speechAudioUrl, audioEnabled, sceneScript.scene.frame_rate]);
+
+  const [ghost, setGhost] = useState<{ ref: SceneObjectRef; position: SceneVec3 } | null>(null);
+  const dragJustEndedRef = useRef(0);
 
   const activeCameraId = useMemo(() => {
     for (const shot of sceneScript.shots) {
@@ -254,21 +883,50 @@ export function SceneScript3DPreview({
     [sceneScript.environment, sceneScript.props],
   );
 
+  // Drag wiring: the ground layer owns the pointer; the ghost keeps the
+  // dragged object under the cursor between frames; commit goes straight to
+  // the caller's edit-model apply.
+  const handleDragMove = useCallback(
+    (ref: SceneObjectRef, position: SceneVec3) => {
+      setGhost({ ref, position });
+      onDragMove?.(ref, position);
+    },
+    [onDragMove],
+  );
+  const handleDragCommit = useCallback(
+    (ref: SceneObjectRef, position: SceneVec3) => {
+      setGhost(null);
+      dragJustEndedRef.current = Date.now();
+      onDragCommit?.(ref, position);
+    },
+    [onDragCommit],
+  );
+
+  const selectedPosition = useMemo(() => {
+    if (!selectedObject) return null;
+    if (ghost && ghost.ref.kind === selectedObject.kind && ghost.ref.id === selectedObject.id) {
+      return ghost.position;
+    }
+    return sceneObjectPositionAtFrame(sceneScript, selectedObject, currentFrame);
+  }, [selectedObject, ghost, sceneScript, currentFrame]);
+
   return (
     <div style={{ width: "100%", height, position: "relative", background: "#1a1a2e" }}>
       <Canvas
         shadows
         camera={{ position: [8, -12, 6], fov: 50 }}
         style={{ width: "100%", height: "100%" }}
+        onPointerMissed={() => {
+          if (!editMode) return;
+          // A committed drop ends over empty space: that is a drop, not a
+          // deselect click. Guard with a short window.
+          if (Date.now() - dragJustEndedRef.current < 150) return;
+          onSelect?.(null);
+        }}
       >
         <color attach="background" args={["#1a1a2e"]} />
         <ambientLight intensity={0.4} />
-        <directionalLight
-          position={[5, -5, 8]}
-          intensity={1.0}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
-        />
+        <directionalLight position={[5, -5, 8]} intensity={1.0} castShadow shadow-mapSize={[1024, 1024]} />
         <directionalLight position={[-5, -3, 5]} intensity={0.3} />
 
         {/* Ground grid */}
@@ -286,34 +944,167 @@ export function SceneScript3DPreview({
           infiniteGrid
         />
 
-        {/* Environment objects */}
-        {sceneScript.environment.map((env) => (
-          <PropMesh key={env.id} prop={env} />
-        ))}
+        <SceneDragLayer onDragMove={handleDragMove} onDragCommit={handleDragCommit}>
+          {(drag) => {
+            const handlersFor = (ref: SceneObjectRef, selected: boolean, overridePosition?: SceneVec3): EditHandlers => ({
+              // Object grabbing stands down while placing a camera: placement
+              // is a modal gesture owned by the placement layer.
+              editMode: editMode && !placementMode,
+              selected,
+              overridePosition,
+              onSelect: onSelect ?? (() => {}),
+              onDragStart: drag.start,
+              onDragMove: handleDragMove,
+              onDragEnd: () => setGhost(null),
+            });
 
-        {/* Props */}
-        {sceneScript.props.map((prop) => (
-          <PropMesh key={prop.id} prop={prop} />
-        ))}
+            return (              <>
+                {/* Environment objects */}
+                {sceneScript.environment.map((object) => (
+                  <PropMesh
+                    key={object.id}
+                    prop={object}
+                    kind="environment"
+                    handlers={handlersFor(
+                      { kind: "environment", id: object.id },
+                      selectedObject?.kind === "environment" && selectedObject.id === object.id,
+                      ghost && ghost.ref.kind === "environment" && ghost.ref.id === object.id
+                        ? ghost.position
+                        : undefined,
+                    )}
+                  />
+                ))}
 
-        {/* Characters */}
-        {sceneScript.characters.map((char) => (
-          <LowPolyHuman key={char.id} character={char} frame={currentFrame} />
-        ))}
+                {/* Props */}
+                {sceneScript.props.map((object) => (
+                  <PropMesh
+                    key={object.id}
+                    prop={object}
+                    kind="prop"
+                    heldPosition={heldItemPositionAtFrame(sceneScript, object, currentFrame)}
+                    handlers={handlersFor(
+                      { kind: "prop", id: object.id },
+                      selectedObject?.kind === "prop" && selectedObject.id === object.id,
+                      ghost && ghost.ref.kind === "prop" && ghost.ref.id === object.id
+                        ? ghost.position
+                        : undefined,
+                    )}
+                  />
+                ))}
 
-        {/* Cameras */}
-        {sceneScript.cameras.map((cam) => (
-          <CameraGizmo key={cam.id} camera={cam} active={cam.id === activeCameraId} />
-        ))}
+                {/* Characters */}
+                {sceneScript.characters.map((object) => (
+                  <LowPolyHuman
+                    key={object.id}
+                    character={object}
+                    frame={currentFrame}
+                    dialogueLines={dialogueLines}
+                    frameRate={sceneScript.scene.frame_rate}
+                    handlers={handlersFor(
+                      { kind: "character", id: object.id },
+                      selectedObject?.kind === "character" && selectedObject.id === object.id,
+                      ghost && ghost.ref.kind === "character" && ghost.ref.id === object.id
+                        ? ghost.position
+                        : undefined,
+                    )}
+                  />
 
-        <OrbitControls
-          makeDefault
-          enableDamping
-          dampingFactor={0.05}
-          minDistance={2}
-          maxDistance={30}
-          maxPolarAngle={Math.PI / 2 - 0.1}
-        />
+                ))}
+
+                {/* Cameras */}
+                {sceneScript.cameras.map((object) => (
+                  <CameraGizmo
+                    key={object.id}
+                    camera={object}
+                    active={object.id === activeCameraId}
+                    frame={currentFrame}
+                    handlers={handlersFor(
+                      { kind: "camera", id: object.id },
+                      selectedObject?.kind === "camera" && selectedObject.id === object.id,
+                      undefined,
+                    )}
+                  />
+                ))}
+
+                {/* Trajectories: only meaningful once a move exists; they are
+                    the difference between "the camera jumped" and "the camera
+                    tracked". */}
+                {sceneScript.cameras
+                  .filter((object) => object.keyframes.length >= 2)
+                  .map((object) => (
+                    <TrajectoryLine
+                      key={`traj-cam-${object.id}`}
+                      points={object.keyframes.map((keyframe) => keyframe.position)}
+                      color="#4FC3F7"
+                    />
+                  ))}
+                {sceneScript.characters
+                  .filter((object) => object.keyframes.length >= 2)
+                  .map((object) => (
+                    <TrajectoryLine
+                      key={`traj-char-${object.id}`}
+                      points={object.keyframes.map((keyframe) => keyframe.position)}
+                      // The selected character's blocking is the one being
+                      // authored: brighten it and drop floor marks on it.
+                      color={
+                        selectedObject?.kind === "character" && selectedObject.id === object.id
+                          ? "#FFD166"
+                          : "#B39DDB"
+                      }
+                      opacity={
+                        selectedObject?.kind === "character" && selectedObject.id === object.id
+                          ? 0.95
+                          : 0.45
+                      }
+                    />
+                  ))}
+                {/* Floor marks + path length for the selected character: the
+                    keyframes are the truth, and seeing them (with their frame
+                    numbers) is what makes a motion preset reviewable without
+                    scrubbing the playhead. */}
+                {editMode
+                  && selectedObject?.kind === "character"
+                  && characterPathPoints(
+                    sceneScript.characters.find((object) => object.id === selectedObject.id)
+                      ?.keyframes ?? [],
+                  ).length >= 2 && (
+                  <BlockingMarks
+                    points={characterPathPoints(
+                      sceneScript.characters.find((object) => object.id === selectedObject.id)!
+                        .keyframes,
+                    )}
+                    characterId={selectedObject.id}
+                  />
+                )}
+
+                {/* Selection ring follows the selected object's current position. */}
+                {editMode && selectedPosition && (
+                  <SelectionRing position={sceneToThreePosition(selectedPosition)} />
+                )}
+
+                {placementMode && onPlacementCommit && (
+                  <CameraPlacementLayer
+                    onCommit={onPlacementCommit}
+                    onCancel={() => onSelect?.(null)}
+                  />
+                )}
+                {gestureMode && onGestureCommit && (
+                  <CameraGestureLayer onCommit={onGestureCommit} />
+                )}
+
+                <OrbitControls
+                  makeDefault
+                  enabled={!drag.active}
+                  enableDamping
+                  dampingFactor={0.05}
+                  minDistance={2}
+                  maxDistance={30}
+                  maxPolarAngle={Math.PI / 2 - 0.1}
+                />
+              </>
+            );
+          }}
+        </SceneDragLayer>
       </Canvas>
 
       {/* HUD overlay */}
@@ -331,6 +1122,16 @@ export function SceneScript3DPreview({
         }}
       >
         Frame {currentFrame}/{totalFrames} | {sceneScript.scene.name}
+        {editMode && placementMode && (
+          <span style={{ color: "#FFD166", marginLeft: 8 }}>
+            放置相机：第一次点击设机位 · 第二次点击设注视点 · Esc 取消
+          </span>
+        )}
+        {editMode && !placementMode && (
+          <span style={{ color: "#FFD166", marginLeft: 8 }}>
+            编辑模式：点击选中 · 拖拽移动 · 点击空白取消
+          </span>
+        )}
         {unimplemented.length > 0 && (
           <span
             style={{ color: PLACEHOLDER_ASSET_COLOR, marginLeft: 8 }}
@@ -381,7 +1182,27 @@ export function SceneScript3DPreview({
           }}
           style={{ width: 150 }}
         />
+        {speechAudioUrl && (
+          <button
+            onClick={() => setAudioEnabled((current) => !current)}
+            aria-pressed={audioEnabled}
+            title={audioEnabled ? "关闭台词音频" : "开启台词音频（动画审片）"}
+            data-testid="animatic-audio-toggle"
+            style={{
+              background: "none",
+              border: "1px solid #666",
+              color: audioEnabled ? "#FFD166" : "#888",
+              padding: "2px 8px",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            {audioEnabled ? "🔊" : "🔇"}
+          </button>
+        )}
       </div>
+      {speechAudioUrl && <audio ref={audioRef} src={speechAudioUrl} preload="none" />}
     </div>
   );
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from app.schemas.agent_canvas import StorageAccessDescriptorV2
 from app.schemas.agent_canvas_prompt_assertion import ProviderPromptAssertionEvidenceV1
@@ -30,6 +30,7 @@ AdMediaSemanticRoleV2 = Literal[
     "editing",
     "scene_3d_previs",
     "voice_cast",
+    "replica_blueprint",
 ]
 VideoRepresentationModeV2 = Literal["illustrated", "illustration_to_live_action"]
 SemanticReferenceRoleV2 = Literal[
@@ -46,6 +47,20 @@ SemanticReferenceRoleV2 = Literal[
 ]
 GuidedReferenceKindV1 = Literal["character_main", "scene_main"]
 GuidedReferencePurposeV1 = Literal["identity_guidance", "environment_guidance"]
+
+
+#: Longest declared appearance palette (hex colours), shared with the
+#: SceneScript side so an asset and the previs that proxies it agree on the
+#: shape of the declaration (ADR 0011).
+MAX_APPEARANCE_PALETTE_COLORS = 4
+
+
+def _is_hex_color(value: str) -> bool:
+    try:
+        int(value[1:], 16)
+    except ValueError:
+        return False
+    return True
 
 
 class _AdMediaModel(BaseModel):
@@ -86,6 +101,16 @@ class CharacterDesignAssetContentV2(DesignAssetContentV2):
     wardrobe: str | None = Field(default=None, min_length=1, max_length=2_048)
     accessories: str | None = Field(default=None, max_length=1_024)
     gender_presentation: CharacterGenderPresentationV1 | None = None
+    # ADR 0011: the character's DECLARED wardrobe palette — the asset is the
+    # source of truth for how this person looks, and the 3D previs is a proxy
+    # that must not invent it. Optional and additive: an asset generated
+    # before this contract existed simply has nothing to declare, and the
+    # previs-side gate stays silent (nothing declared is not a drift).
+    appearance_palette: tuple[str, ...] | None = Field(
+        default=None,
+        max_length=MAX_APPEARANCE_PALETTE_COLORS,
+        description="Declared wardrobe palette (1-4 hex colors), ADR 0011",
+    )
     character_asset_kind: CharacterAssetKindV2 = "identity_master"
     reference_rendering_mode: CharacterReferenceRenderingModeV2 = (
         "detailed_semi_realistic_illustration"
@@ -98,6 +123,26 @@ class CharacterDesignAssetContentV2(DesignAssetContentV2):
         default=None,
         pattern=r"^sha256:[a-f0-9]{64}$",
     )
+
+    @field_validator("appearance_palette", mode="before")
+    @classmethod
+    def _coerce_appearance_palette(cls, value: object) -> object:
+        # Same tolerance as the SceneScript palette: a free-text description
+        # (an LLM writing "black coat" where hex belongs) is dropped rather
+        # than failing the whole character design, and an unparsable hex is
+        # NOT kept as a colour the drift gate would later compare against.
+        if not isinstance(value, (list, tuple)) or not value:
+            return None
+        kept: list[str] = []
+        for entry in value:
+            if (
+                isinstance(entry, str)
+                and entry.startswith("#")
+                and len(entry) in (4, 7)
+                and _is_hex_color(entry)
+            ):
+                kept.append(entry.upper())
+        return tuple(kept[:MAX_APPEARANCE_PALETTE_COLORS]) or None
 
 
 class SceneBoardPanelV2(_AdMediaModel):
@@ -216,9 +261,113 @@ class ReferenceRequirementV2(_AdMediaModel):
     maximum: int = Field(default=8, ge=1)
 
 
+class ReplicaSlotV2(_AdMediaModel):
+    """一个复刻槽位（hypit 组件化替换的"槽"）。
+
+    ``source_value`` 是原片值（拆解所得），``replace_with`` 是用户替换值
+    （资产 ID / 风格 skill ID / 自由文本）；``applied`` 由后端在填充
+    ``replace_with`` 时置位，前端只读写两个字符串字段。
+    """
+
+    kind: Literal["character", "product", "script", "style", "voice", "scene"]
+    label: str = Field(min_length=1, max_length=32)
+    source_value: str = Field(default="", max_length=2_048)
+    replace_with: str = Field(default="", max_length=2_048)
+    applied: bool = False
+
+
+class ReplicaAnchorEventV2(_AdMediaModel):
+    """锚点事件：hypit 词锚定的落地形态（P1 段落级 → P2 词级升级）。
+
+    ``trigger`` 是触发词/触发条件（拆解所得）；词级对齐（whisperX）可用时
+    ``word``/``word_start_seconds``/``word_end_seconds`` 记录锚点绑定的具体
+    词语与时间跨度——``.adreplica`` 里以行内 ``@{id}词@{/id}`` 表达。三个
+    字段默认空值 = 未绑定词（段落级锚点，旧节点内容向后兼容）。
+    """
+
+    event_id: str = Field(min_length=1, max_length=64)
+    trigger: str = Field(default="", max_length=256)
+    beat_id: str = Field(default="", max_length=64)
+    kind: Literal["broll", "caption", "sfx", "mg", "transition"]
+    hint: str = Field(default="", max_length=1_024)
+    keep: bool = True
+    word: str = Field(default="", max_length=128)
+    word_start_seconds: float = Field(default=0.0, ge=0)
+    word_end_seconds: float = Field(default=0.0, ge=0)
+    # 词锚窗口的端点亲和性（hypit 的 left/right 语义）：
+    # right = 窗口端点取后一词首（默认，间隙归前一事件所有）；
+    # left = 取前一词尾（间隙归后一事件所有）。
+    # 仅对词级锚点（word 非空）有实际影响；段落级锚点忽略。
+    affinity: Literal["left", "right"] = "right"
+
+
+class ReplicaBeatV2(_AdMediaModel):
+    beat_id: str = Field(min_length=1, max_length=64)
+    role: str = Field(default="body", max_length=32)
+    description: str = Field(default="", max_length=2_048)
+    # 段落台词原文（词级转录可用时来自转录）：词级锚定的文本载体
+    line: str = Field(default="", max_length=2_048)
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
+    anchor_event_ids: list[str] = Field(default_factory=list, max_length=64)
+
+
+class ReplicaShotV2(_AdMediaModel):
+    index: int = Field(ge=1)
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
+    shot_size: str = Field(default="medium", max_length=32)
+    camera_motion: str = Field(default="static", max_length=32)
+    subject_action: str = Field(default="", max_length=2_048)
+    on_screen_text: str = Field(default="", max_length=512)
+    transition_to_next: str = Field(default="cut", max_length=32)
+    recreate_hint: str = Field(default="", max_length=1_024)
+
+
+class ReplicaBlueprintContentV2(_AdMediaModel):
+    """拉片复刻蓝图：scene-3d 之外新增的 ``replica`` 节点的结构化内容。
+
+    单一真相源：蓝图即节点内容；实例化（蓝图 → script 节点）由
+    ``POST /api/v1/replica/instantiate`` 完成，执行仍走既有工作流引擎。
+    """
+
+    blueprint_version: Literal["replica-blueprint-v1"] = "replica-blueprint-v1"
+    source_video_asset_id: str = Field(default="", max_length=128)
+    duration_seconds: float = Field(default=0.0, ge=0)
+    aspect: str = Field(default="", max_length=16)
+    replica_goal: str = Field(default="", max_length=256)
+    whole_piece_reading: str = Field(default="", max_length=8_192)
+    format_name: str = Field(default="short-video", max_length=64)
+    slots: list[ReplicaSlotV2] = Field(default_factory=list, max_length=16)
+    beats: list[ReplicaBeatV2] = Field(default_factory=list, max_length=64)
+    anchor_events: list[ReplicaAnchorEventV2] = Field(
+        default_factory=list, max_length=256
+    )
+    shots: list[ReplicaShotV2] = Field(default_factory=list, max_length=128)
+    rhythm_avg_shot_seconds: float = Field(default=0.0, ge=0)
+    rhythm_cut_points_seconds: list[float] = Field(default_factory=list, max_length=256)
+    rhythm_energy_curve: str = Field(default="", max_length=512)
+    systems_captions: str = Field(default="", max_length=1_024)
+    systems_music: str = Field(default="", max_length=1_024)
+    systems_graphics: list[str] = Field(default_factory=list, max_length=32)
+    systems_sfx: list[str] = Field(default_factory=list, max_length=32)
+    constraints: list[str] = Field(default_factory=list, max_length=16)
+    instantiated_script_node_id: str | None = Field(default=None, max_length=128)
+
+
 class AdMediaRoleContractV2(_AdMediaModel):
     semantic_role: AdMediaSemanticRoleV2
-    node_type: Literal["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast"]
+    node_type: Literal[
+        "text",
+        "script",
+        "image",
+        "video",
+        "audio",
+        "editing",
+        "scene-3d",
+        "voice-cast",
+        "replica",
+    ]
     output_media_type: Literal["text", "image", "video", "audio"]
     role_contract_version: Literal["ad-media-role-v2"] = "ad-media-role-v2"
     content_schema_ref: str

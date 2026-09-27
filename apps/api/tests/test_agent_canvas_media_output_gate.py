@@ -430,3 +430,125 @@ class TestTheVerdictOutlivesTheRun:
             "height": 48,
         }
         assert "checks" not in merged["media_output_gate"]
+
+
+# ---------------------------------------------------------------------------
+# The QA registry, on the artifact the provider actually produced
+# ---------------------------------------------------------------------------
+
+
+class _StubMediaQaRegistry:
+    """A registry that answers with the statuses it was built with."""
+
+    def __init__(self, statuses: list[str]) -> None:
+        self._statuses = statuses
+
+    def report(self, subject: Any) -> dict[str, Any]:
+        outcomes = [
+            {
+                "check": f"stub_{index}",
+                "status": status,
+                "reason": "stub" if status == "pass" else f"stub {status}",
+                "details": {},
+            }
+            for index, status in enumerate(self._statuses)
+        ]
+        return {
+            "checks": [outcome["check"] for outcome in outcomes],
+            "outcomes": outcomes,
+            "failed": [o["check"] for o in outcomes if o["status"] == "fail"],
+            "warned": [o["check"] for o in outcomes if o["status"] == "warn"],
+            "passed": not any(o["status"] == "fail" for o in outcomes),
+        }
+
+
+class TestMediaQaGateBeforeTheNodeGoesReady:
+    """ADR 0003 §5's second half: the content checks run BEFORE the commit.
+
+    A flat image and a truncated render both pass the mime gate and the size
+    floor, which is why they are not the same gate. What these tests lock is
+    the pre-commit BEHAVIOUR the speech path established: a ``fail`` blocks the
+    node, a ``warn`` publishes with the report, and everything else stays silent.
+    """
+
+    def test_a_failed_check_blocks_the_node(self, tmp_path: Any) -> None:
+        provider = _ScriptedProvider(_completed(_png()))
+        executor = MediaNodeExecutor(
+            provider,  # type: ignore[arg-type]
+            data_dir=tmp_path,
+            settings=Settings(),
+            seedance_inputs=None,
+            qa_registry_factory=lambda: _StubMediaQaRegistry(["fail"]),
+        )
+        with pytest.raises(V2PersistenceError) as excinfo:
+            executor(_context())
+        assert excinfo.value.code == "media_qa_failed"
+        # The provider was already paid for; the node simply does not commit.
+        assert provider.calls == 1
+
+    def test_a_warned_check_publishes_the_report_with_the_payload(
+        self, tmp_path: Any
+    ) -> None:
+        provider = _ScriptedProvider(_completed(_png()))
+        executor = MediaNodeExecutor(
+            provider,  # type: ignore[arg-type]
+            data_dir=tmp_path,
+            settings=Settings(),
+            seedance_inputs=None,
+            qa_registry_factory=lambda: _StubMediaQaRegistry(["pass", "warn"]),
+        )
+        outcome = executor(_context())
+        assert outcome.media is not None
+        # Published as queryable provenance; the persistence layer merges it
+        # onto the node's own keys, so nothing else disappears.
+        assert outcome.structured_content == {
+            "media_qa_report": executor._qa_registry_factory().report(None)  # noqa: SLF001
+        }
+
+    def test_a_clean_run_stays_silent(self, tmp_path: Any) -> None:
+        provider = _ScriptedProvider(_completed(_png()))
+        executor = MediaNodeExecutor(
+            provider,  # type: ignore[arg-type]
+            data_dir=tmp_path,
+            settings=Settings(),
+            seedance_inputs=None,
+            qa_registry_factory=lambda: _StubMediaQaRegistry(["pass"]),
+        )
+        outcome = executor(_context())
+        assert outcome.structured_content is None
+
+    def test_an_undecodable_payload_warns_and_never_claims_a_pass(
+        self, tmp_path: Any
+    ) -> None:
+        """The real registry on a real (synthetic) PNG: not checked ≠ passed."""
+
+        provider = _ScriptedProvider(_completed(_png()))
+        executor = MediaNodeExecutor(
+            provider,  # type: ignore[arg-type]
+            data_dir=tmp_path,
+            settings=Settings(),
+            seedance_inputs=None,
+        )
+        outcome = executor(_context())
+        report = outcome.structured_content["media_qa_report"]  # type: ignore[index]
+        assert report["passed"] is True
+        assert report["warned"], "an undecodable image must warn, not pass"
+        assert all(outcome["reason"] for outcome in report["outcomes"])
+
+    def test_an_audio_payload_is_left_to_the_speech_registry(self, tmp_path: Any) -> None:
+        """An image check cannot run on audio, so it must not claim it did.
+
+        The media executor's ``media_type`` comes from the node (an image node
+        cannot publish audio — the mime gate refuses it first), so the audio
+        skip is a property of the GATE rather than of a reachable executor
+        path. Called directly: no registry is built at all.
+        """
+
+        executor = MediaNodeExecutor(
+            _ScriptedProvider(_completed(_png())),  # type: ignore[arg-type]
+            data_dir=tmp_path,
+            settings=Settings(),
+            seedance_inputs=None,
+            qa_registry_factory=lambda: pytest.fail("音频不应走媒体 QA 注册表"),
+        )
+        assert executor._media_qa_gate("audio", b"\x00" * 4096, {}) is None  # noqa: SLF001

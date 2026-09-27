@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-09-16）。Phase 1 待启动。
+Proposed（2026-09-16）→ **Phase 1–4 落地（2026-09-26 回填）**。扩展见 [ADR 0008](./0008-timeline-two-phase-directing-and-assembly.md)（双相：生成前指导 + 生成后组装）。本节回填与下方原「Phase 1 待启动」表述的关系：原决策逐条不变，落地证据列在文末「实施状态」。
 
 ## Context
 
@@ -407,3 +407,16 @@ voice轨道B:      │[说话 2-5s]│  ← 2-3秒重叠，红色高亮
 3. **大问题拆成小问题**：不让视频模型一次性理解复杂的时间关系，而是用时间线拆成独立的分镜逐个生成。
 4. **向后兼容优先**：所有现有节点不需要改动，时间线是增量的视图层+元数据层。
 5. **分阶段交付**：Phase 1 基础时间线 → Phase 2 时间线驱动分镜+混音 → Phase 3 专业剪辑 → Phase 4 3D同步 → Phase 5 高级工具。
+
+## 实施状态（2026-09-26 回填，对照上方 Phase 表）
+
+| Phase | 状态 | 证据 |
+|---|---|---|
+| Phase 1 多轨时间线 + 帧级精度 | ✅ | `alembic/versions/20260917_01_create_timelines.py`（timelines/tracks/clips 三表）+ `app/services/timeline_editing_integration.py` + `GlobalTimelinePanel`；节点产出经 auto-creator 自动建 clip |
+| Phase 2 混音 / 闪避 | ✅ | `20260917_02_add_timeline_ducking.py` + ffmpeg 侧链闪避混音（sidechain ducking） |
+| Phase 3 专业剪辑 | ✅ | 源链接边缘裁剪、可吸附网格 + 同轨重叠拒绝、跨轨拖拽、keyframed 音量包络、clip 转场编辑器（dissolve/wipe/slide，xfade 渲染）、手动/孤儿 clip 提升为视频节点、字幕 clip（SRT/ASS 导出 + ASS 烧录入成片） |
+| Phase 4 3D 同步 / 语音绑定 / 节拍 | ✅ | 播放头同步（3D 视口 ↔ 时间线）、`bound_character_id` 语音→角色绑定、BGM 节拍检测（`timeline_beat_analysis.py`）；对话唇形关键帧与台词上字幕轨由 scene-3d 侧闭环（ADR 0003/0005 线） |
+| 双栈收敛（§5.1 方案 A） | ✅ | `app/api/v2/endpoints/final_composition.py` 作为 ADR-0007 时间线的兼容投影（8 路由），v2 final-composition 路由不再 404 |
+| 场景操作批次 / 白模模式 | ✅（另一线） | `scene_script_tool_service.py` + 白模设计模式（见 `docs/plans/blender-mcp-white-model-mode-and-audio-collaboration.md`） |
+
+仍开放：§4.3 camera 轨从 scene-3d 导入运镜关键帧的**拖拽源**（自动映射已在）、ADR 0008 之后的声音事件→必要镜头检查（QA registry 形态，未建）。

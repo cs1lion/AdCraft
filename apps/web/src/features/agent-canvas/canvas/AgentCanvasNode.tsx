@@ -22,6 +22,17 @@ import { AgentCanvasNodeContent } from "./AgentCanvasNodeContent.tsx";
 import { AgentCanvasNodeHeader } from "./AgentCanvasNodeHeader.tsx";
 import { EditingNodeSurface } from "./EditingNodeSurface.tsx";
 import { SceneScriptPanel } from "./SceneScriptPanel.tsx";
+import { ReplicaBlueprintPanel } from "./ReplicaBlueprintPanel.tsx";
+import {
+  TIMELINE_DROP_MIME,
+  serializeTimelineDrop,
+} from "../timeline/timelineDropPayload.ts";
+import {
+  CANVAS_DROP_MIME,
+  cardAcceptsCanvasDrop,
+  canvasDropMimeFor,
+  parseCanvasDropPayload,
+} from "./canvasDrop.ts";
 import { extractSceneScriptFromNode } from "../model/sceneScriptUtils.ts";
 import { creativeRoleDisplayName } from "./creativeRoleDisplayName.ts";
 import { areAgentCanvasNodePropsEqual } from "./agentCanvasNodeRenderModel.ts";
@@ -46,6 +57,7 @@ export const NODE_TYPE_LABELS: Record<CanvasNodeTypeV2, string> = {
   editing: "Editing",
   "scene-3d": "3D Previs",
   "voice-cast": "Voice Cast",
+  replica: "Replica",
 };
 
 const NODE_STATUS_LABELS: Record<CanvasNodeStatusV2, string> = {
@@ -56,6 +68,12 @@ const NODE_STATUS_LABELS: Record<CanvasNodeStatusV2, string> = {
 };
 
 export interface AgentCanvasNodeCallbacks {
+  /** An image asset dropped on this card: bind it as the node's reference. */
+  onAssetDroppedAsReference?: (
+    nodeId: string,
+    assetId: string,
+    displayName: string,
+  ) => void;
   onRun?: (nodeId: string) => void;
   onRetry?: (nodeId: string) => void;
   onExport?: (nodeId: string) => void;
@@ -82,6 +100,74 @@ export interface AgentCanvasNodeData extends Record<string, unknown>, AgentCanva
 export type AgentCanvasFlowNode = Node<AgentCanvasNodeData, "agentCanvas">;
 
 type AgentCanvasNodeRendererProps = NodeProps<AgentCanvasFlowNode>;
+
+/**
+ * Speaker names declared by a voice-cast node's audio bed, in first-appearance
+ * order. A bed is ONE take with every speaker mixed in, so the timeline clip
+ * it produces is deliberately NOT bound to a single character — the names
+ * travel in the clip label instead (the director-phase intent signal).
+ */
+function voiceBedSpeakerNames(node: CanvasNodeV2): string[] {
+  const bed = node.structured_content?.audio_bed;
+  const scripts =
+    bed && typeof bed === "object" ? (bed as { scripts?: unknown }).scripts : null;
+  if (!Array.isArray(scripts)) return [];
+  const names: string[] = [];
+  for (const entry of scripts) {
+    if (!entry || typeof entry !== "object") continue;
+    const speaker = String((entry as { speaker?: unknown }).speaker ?? "").trim();
+    if (speaker && !names.includes(speaker)) names.push(speaker);
+  }
+  return names;
+}
+
+function VoiceCastAudioSurface({
+  node,
+  status,
+  asset,
+}: {
+  node: CanvasNodeV2;
+  status: CanvasNodeV2["status"];
+  asset?: ProjectAssetSummaryV2 | null;
+}) {
+  const speakers = voiceBedSpeakerNames(node);
+  const outputAssetId = node.output_asset_id;
+  // Nothing to drag before the bed exists: the card stays inert rather than
+  // offering a drop the timeline would reject as a missing asset.
+  if (!outputAssetId) {
+    return <AgentCanvasAudioPlayer node={node} status={status} asset={asset} />;
+  }
+  return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Drag SOURCE surface (HTML5 drag-and-drop, no click semantics); the player keeps its own controls.
+    <div
+      draggable
+      data-testid={`voice-cast-drag-source-${node.node_id}`}
+      title={
+        speakers.length > 0
+          ? `拖入时间线的 voice 轨：音频床（说话人：${speakers.join("、")}）`
+          : "拖入时间线的 voice 轨：音频床"
+      }
+      onDragStart={(event) => {
+        event.dataTransfer.setData(
+          TIMELINE_DROP_MIME,
+          serializeTimelineDrop({
+            kind: "asset",
+            asset_id: outputAssetId,
+            media_type: "audio",
+            label:
+              speakers.length > 0
+                ? `音频床 · ${speakers.join(" / ")}`
+                : node.title || "音频床",
+            source_node_id: node.node_id,
+          }),
+        );
+        event.dataTransfer.effectAllowed = "copy";
+      }}
+    >
+      <AgentCanvasAudioPlayer node={node} status={status} asset={asset} />
+    </div>
+  );
+}
 
 interface AgentCanvasNodeCardProps extends AgentCanvasNodeCallbacks {
   node: CanvasNodeV2;
@@ -181,6 +267,9 @@ function NodeSurface({
   onScriptContentHeightResolved,
   label,
 }: Pick<AgentCanvasNodeCardProps, "node" | "asset" | "onOpenVideoPreview" | "onOpenEditing" | "onMediaDimensionsResolved" | "onScriptContentHeightResolved"> & { status: CanvasNodeStatusV2; label: string }) {
+  if (node.node_type === "replica") {
+    return <ReplicaBlueprintPanel node={node} height={320} />;
+  }
   const sceneScript = extractSceneScriptFromNode(node);
   if (sceneScript) {
     const narration = typeof node.structured_content?.narration === "string"
@@ -190,12 +279,36 @@ function NodeSurface({
       ? node.structured_content.narration_voice
       : "default";
     return (
-      <SceneScriptPanel
-        sceneScript={sceneScript}
-        narration={narration}
-        narrationVoice={narrationVoice}
-        height={320}
-      />
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Drag SOURCE surface: the gesture is HTML5 drag-and-drop (no click semantics); the panel below keeps its own interactive affordances, and the wrapper exists only to start the camera-move drag.
+      <div
+        draggable
+        data-testid={`scene-3d-drag-source-${node.node_id}`}
+        title="拖入时间线的 camera 轨以引用该场景的运镜"
+        onDragStart={(event) => {
+          // Camera drop: the timeline resolves it to the camera track and
+          // links the clip back to this scene-3d node.
+          event.dataTransfer.setData(
+            TIMELINE_DROP_MIME,
+            serializeTimelineDrop({
+              kind: "camera",
+              asset_id: node.node_id,
+              media_type: "camera",
+              label: node.title || "scene-3d camera move",
+              camera_node_id: node.node_id,
+              source_node_id: node.node_id,
+            }),
+          );
+          event.dataTransfer.effectAllowed = "copy";
+        }}
+      >
+        <SceneScriptPanel
+          sceneScript={sceneScript}
+          narration={narration}
+          narrationVoice={narrationVoice}
+          height={320}
+          workflowId={node.workflow_id}
+        />
+      </div>
     );
   }
   if (node.node_type === "text" || node.node_type === "script") {
@@ -206,7 +319,10 @@ function NodeSurface({
       />
     );
   }
-  if (node.node_type === "audio" || node.node_type === "voice-cast") {
+  if (node.node_type === "voice-cast") {
+    return <VoiceCastAudioSurface node={node} status={status} asset={asset} />;
+  }
+  if (node.node_type === "audio") {
     return <AgentCanvasAudioPlayer node={node} status={status} asset={asset} />;
   }
   if (node.node_type === "editing") {
@@ -236,6 +352,7 @@ export function AgentCanvasNodeCard({
   onRetry,
   onOpenConnectedNodeMenu,
   onRun,
+  onAssetDroppedAsReference,
 }: AgentCanvasNodeCardProps) {
   const status = runtime?.visible_status ?? node.status;
   const label = creativeRoleDisplayName(node.creative_role);
@@ -249,7 +366,39 @@ export function AgentCanvasNodeCard({
     ? runtime.omitted_optional_inputs.length
     : 0;
 
+  // A library asset dropped ON the card (V0.2 §2.2: 卡片内部 = 素材归属):
+  // an image lands as this node's reference input. The typed MIME is checked
+  // in dragover (the payload is unreadable before the drop), and the drop
+  // re-validates rather than trusting the cursor. React Flow's own node drag
+  // carries a different MIME, so this never fires while moving cards.
+  const handleCardDragOver = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      if (!event.dataTransfer.types.includes(canvasDropMimeFor("image"))) return;
+      if (!cardAcceptsCanvasDrop("image", node.node_type)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [node.node_type],
+  );
+
+  const handleCardDrop = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      const raw = event.dataTransfer.getData(canvasDropMimeFor("image"));
+      if (!raw) return;
+      // Stop the pane's handler: a drop on a card belongs to the card, not
+      // to "create a new node here".
+      event.preventDefault();
+      event.stopPropagation();
+      const payload = parseCanvasDropPayload(raw);
+      if (!payload || payload.media_type !== "image") return;
+      if (!cardAcceptsCanvasDrop(payload.media_type, node.node_type)) return;
+      onAssetDroppedAsReference?.(node.node_id, payload.asset_id, payload.display_name);
+    },
+    [node.node_id, node.node_type, onAssetDroppedAsReference],
+  );
+
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Drop TARGET surface: the gesture is HTML5 drag-and-drop (no click semantics); the card's own interactive affordances are inside and keep their handlers.
     <article
       className={[
         "agent-canvas-node",
@@ -261,6 +410,8 @@ export function AgentCanvasNodeCard({
       data-node-type={node.node_type}
       data-node-status={status}
       aria-label={`${label} node, ${NODE_STATUS_LABELS[status]}`}
+      onDragOver={handleCardDragOver}
+      onDrop={handleCardDrop}
     >
       <AgentCanvasNodeHeader node={node} status={status} runtime={runtime} dimensions={resolvedMediaDimensions} onOpenConnectedNodeMenu={onOpenConnectedNodeMenu} />
       <div className="agent-canvas-node__surface">

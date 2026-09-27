@@ -25,6 +25,16 @@ import {
   toSourceNodeSelection,
 } from "./assetSelection.ts";
 import { useAgentCanvasAssets } from "./useAgentCanvasAssets.ts";
+import {
+  TIMELINE_DROP_MIME,
+  serializeTimelineDrop,
+  type TimelineDropMediaType,
+} from "../timeline/timelineDropPayload.ts";
+import {
+  CANVAS_DROP_MIME,
+  canvasDropMimeFor,
+  canvasDropPayloadFor,
+} from "../canvas/canvasDrop.ts";
 import { StableMediaPreview } from "../../../workflow/StableMediaPreview.tsx";
 import "./AgentAssetBrowser.css";
 
@@ -103,6 +113,25 @@ function emptyLabel(scope: AgentAssetScope, hasQuery: boolean): string {
   if (scope === "project") return "No project assets yet";
   if (scope === "my") return "No saved images";
   return "No recommended images";
+}
+
+/**
+ * Build the timeline drag-in payload for a browser item.
+ *
+ * Only "ready" items are draggable: a dropped clip references an asset the
+ * timeline renderer must be able to resolve, and dragging an unavailable
+ * asset would create exactly the orphan clips the panel already flags.
+ */
+function timelineDropPayloadFor(item: AgentAssetBrowserItem) {
+  const mediaType: TimelineDropMediaType =
+    item.mediaType === "audio" ? "audio" : item.mediaType === "video" ? "video" : "image";
+  return serializeTimelineDrop({
+    kind: "asset",
+    asset_id: item.assetId || item.id,
+    media_type: mediaType,
+    label: item.displayName,
+    source_node_id: item.projectAsset?.source_node_id ?? null,
+  });
 }
 
 export function AgentAssetBrowser({
@@ -320,6 +349,44 @@ export function AgentAssetBrowser({
                   className={`agent-asset-card${selected ? " is-selected" : ""}`}
                   data-testid={`agent-asset-${item.id}`}
                   data-media-type={item.mediaType}
+                  draggable={item.status === "ready"}
+                  onDragStart={
+                    item.status === "ready"
+                      ? (event) => {
+                          // Custom MIME (checked in dragover via
+                          // dataTransfer.types) plus a text/plain mirror for
+                          // debugging; drop handlers only read the custom one.
+                          event.dataTransfer.setData(
+                            TIMELINE_DROP_MIME,
+                            timelineDropPayloadFor(item),
+                          );
+                          // The canvas payload (V0.2 §2.1: 素材 → 拖到画布 →
+                          // 创建镜头) plus the per-media-type one a CARD
+                          // reads (V0.2 §2.2: 卡片内部 = 素材归属). All three
+                          // MIMEs ride the same drag: the timeline pane, the
+                          // canvas pane and each card read the one they own,
+                          // so one gesture can land on any of them. The typed
+                          // MIME exists because dragover cannot read the
+                          // payload — only the type list — so the media type
+                          // must be visible before the release.
+                          const canvasPayload = canvasDropPayloadFor({
+                            assetId: item.identity.assetId,
+                            mediaType: item.mediaType,
+                            displayName: item.displayName,
+                          });
+                          event.dataTransfer.setData(CANVAS_DROP_MIME, canvasPayload);
+                          event.dataTransfer.setData(
+                            canvasDropMimeFor(item.mediaType),
+                            canvasPayload,
+                          );
+                          event.dataTransfer.setData(
+                            "text/plain",
+                            item.displayName,
+                          );
+                          event.dataTransfer.effectAllowed = "copy";
+                        }
+                      : undefined
+                  }
                 >
                   <div className="agent-asset-card__preview">
                     <AssetPreview item={item} />

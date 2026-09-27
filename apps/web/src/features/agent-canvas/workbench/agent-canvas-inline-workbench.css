@@ -1128,3 +1128,185 @@
   color: var(--agent-canvas-success, #22c55e);
   white-space: nowrap;
 }
+
+/* The ADR 0009 scope note: what the last edit affected (including "nothing").
+   Lives here (not scene-3d-workbench.css) because the note mounts in the
+   shared inline workbench shell every node type loads. */
+.patch-scope-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 10px;
+  color: #9fb4d8;
+}
+
+.patch-scope-note strong {
+  color: #91d5ff;
+}
+
+.patch-scope-note[data-affected="true"] strong {
+  color: #ffd666;
+}
+
+.patch-scope-note__detail {
+  color: #9fb4d8;
+}
+
+/* Layer ownership (V0.2 §14.13): the two locks, made visible. */
+.layer-ownership {
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(145, 213, 255, 0.35);
+  font-size: 10px;
+  color: #9fb4d8;
+}
+
+.layer-ownership__title {
+  display: block;
+  color: #91d5ff;
+}
+
+.layer-ownership ul {
+  margin: 2px 0 0;
+  padding-left: 14px;
+}
+
+.layer-ownership li {
+  line-height: 1.5;
+}
+
+.layer-ownership strong {
+  color: #d6e4ff;
+}
+
+/* Shot strip (V0.2 §2.2 镜间插入 / §2.3 故事结构可见). */
+.shot-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.shot-strip__title {
+  font-size: 10px;
+  color: #91d5ff;
+}
+
+.shot-strip__track {
+  position: relative;
+  height: 22px;
+  border: 1px solid rgb(145 213 255 / 20%);
+  border-radius: 3px;
+  background: rgb(20 24 33 / 60%);
+}
+
+.shot-strip__bar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  overflow: hidden;
+  padding: 0 4px;
+  border: 1px solid rgb(145 213 255 / 45%);
+  border-radius: 2px;
+  background: rgb(145 213 255 / 12%);
+  color: #d6e4ff;
+  font-size: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The declared entry reading sits ON the boundary: a wedge at the bar's
+   leading edge plus its name when the bar is wide enough to carry it. */
+.shot-strip__bar.has-intent {
+  border-left-color: #ffd666;
+}
+
+.shot-strip__intent {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 2px 0 3px;
+  border-left: 2px solid #ffd666;
+  background: rgb(255 214 102 / 18%);
+  color: #ffe9a8;
+  font-size: 8px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.shot-strip__bar.is-current {
+  border-color: #91d5ff;
+  background: rgb(145 213 255 / 30%);
+}
+
+.shot-strip__bar-label {
+  pointer-events: none;
+}
+
+.shot-strip__playhead {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: #ffd666;
+  pointer-events: none;
+}
+
+.shot-strip__inserts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.shot-strip__insert-group {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+/* The boundary's relation (§13 第 5 问): the label answers "哪一镜以何种读法
+   接入" on the gap itself. Amber = a reading is claimed; the muted grey = the
+   boundary is unclaimed — which is a fact worth seeing, so it stays listed. */
+.shot-strip__relation {
+  padding: 1px 5px;
+  border: 1px solid rgb(255 214 102 / 30%);
+  border-radius: 3px;
+  background: rgb(255 214 102 / 10%);
+  color: #ffe9a8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.shot-strip__relation.is-unclaimed {
+  border-color: rgb(255 255 255 / 12%);
+  background: transparent;
+  color: #7d8ba6;
+}
+
+.shot-strip__insert {
+  padding: 1px 6px;
+  border: 1px solid rgb(145 213 255 / 35%);
+  border-radius: 3px;
+  background: transparent;
+  color: #91d5ff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+/* Revoking a declaration must not look like a destructive action: the shot
+   itself is untouched, only the recorded relation goes away. */
+.shot-strip__clear-intent {
+  padding: 1px 5px;
+  border: 1px solid rgb(255 214 102 / 40%);
+  border-radius: 3px;
+  background: transparent;
+  color: #ffe9a8;
+  font-size: 10px;
+  cursor: pointer;
+}

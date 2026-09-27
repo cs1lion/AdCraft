@@ -1,0 +1,1192 @@
+/* 3D director workbench (P1): viewport + inspector + save bar.
+   Follows the existing workbench surface idiom (dark panels, brand hover). */
+
+.scene-3d-workbench {
+  margin: 10px 0 4px;
+  border-top: 1px solid rgb(255 255 255 / 8%);
+  padding-top: 10px;
+}
+
+.scene-3d-workbench__hint {
+  margin: 10px 0 4px;
+  color: rgb(232 235 246 / 60%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scene-script-3d-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 10px;
+  align-items: start;
+}
+
+.scene-script-3d-editor__stage {
+  min-width: 0;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.scene-script-3d-editor__inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scene-script-3d-editor__empty {
+  color: rgb(232 235 246 / 65%);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px;
+  border: 1px dashed rgb(255 255 255 / 15%);
+  border-radius: 8px;
+}
+
+.scene-script-3d-editor__empty p {
+  margin: 0 0 6px;
+}
+
+.scene-script-3d-editor__hint {
+  color: rgb(232 235 246 / 45%);
+  font-size: 11px;
+}
+
+.scene-script-3d-editor__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+}
+
+.scene-script-3d-editor__panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.scene-script-3d-editor__kind {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--brand) 30%, transparent);
+  color: #fff;
+  font-size: 11px;
+}
+
+.scene-script-3d-editor__panel-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 110px;
+}
+
+.scene-script-3d-editor__frame {
+  margin-left: auto;
+  color: rgb(232 235 246 / 55%);
+  font-size: 11px;
+}
+
+.scene-script-3d-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: rgb(232 235 246 / 70%);
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.scene-script-3d-editor__field > span {
+  padding: 0;
+}
+
+.scene-script-3d-editor__field input,
+.scene-script-3d-editor__field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 5px;
+  background: rgb(0 0 0 / 25%);
+  color: #edf0f8;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.scene-script-3d-editor__field input:focus,
+.scene-script-3d-editor__field select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--brand) 60%, transparent);
+}
+
+.scene-script-3d-editor__field--vec3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.scene-script-3d-editor__field--vec3 legend {
+  grid-column: 1 / -1;
+  padding: 0;
+  font-size: 11px;
+  color: rgb(232 235 246 / 70%);
+}
+
+.scene-script-3d-editor__field--compact span {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.scene-script-3d-editor__keyframes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: rgb(232 235 246 / 60%);
+}
+
+.scene-script-3d-editor__keyframe-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.scene-script-3d-editor__keyframe {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 7%);
+  font-size: 10px;
+}
+
+.scene-script-3d-editor__keyframe.is-current {
+  background: color-mix(in srgb, #FFD166 30%, transparent);
+  color: #FFD166;
+}
+
+.scene-script-3d-editor__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scene-script-3d-editor__dirty {
+  font-size: 11px;
+  color: rgb(232 235 246 / 45%);
+}
+
+.scene-script-3d-editor__dirty.is-dirty {
+  color: #FFD166;
+}
+
+.scene-script-3d-editor__footer button {
+  padding: 4px 10px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: rgb(232 235 246 / 80%);
+  font-size: 11px;
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.scene-script-3d-editor__footer button:hover:not(:disabled) {
+  color: #fff;
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+  transform: translateY(-1px);
+}
+
+.scene-script-3d-editor__footer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.scene-script-3d-editor__save {
+  margin-left: auto;
+}
+
+.scene-script-3d-editor__error {
+  margin: 0;
+  font-size: 11px;
+  color: #ff8a8a;
+}
+
+@media (max-width: 720px) {
+  .scene-script-3d-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Cross-node character drift (V0.2 §5 服装维度). */
+.scene-script-3d-editor__drift {
+  margin: 0;
+  font-size: 10px;
+  color: #ffd666;
+}
+
+/* A consistency ERROR (unbound character, dead camera) outranks the cosmetic
+   warnings, so it gets the red the reader already associates with "stop". */
+.scene-script-3d-editor__drift.is-error {
+  color: #ffa39e;
+}
+
+/* The declared reading, reconciled with the continuity findings (§13 第 4 问).
+   Amber for "the reading explains this" (informational), red for "the reading
+   contradicts this" — a declaration that lies is the one worth stopping for. */
+.scene-script-3d-editor__intent {
+  margin: 0;
+  font-size: 10px;
+  color: #b7e3c0;
+}
+
+.scene-script-3d-editor__intent.is-stale {
+  color: #ffa39e;
+}
+
+.scene-script-3d-editor__drift-remedy {
+  display: block;
+  padding-left: 8px;
+  border-left: 2px solid rgba(255, 214, 102, 0.4);
+  color: #9fb4d8;
+}
+
+/* Animatic provenance (V0.2 §14.9 成片侧): whether the last render carries
+   the dialogue bed, and why not when it doesn't. */
+.scene-script-3d-editor__animatic {
+  margin: 0;
+  font-size: 10px;
+  color: #9fb4d8;
+}
+
+.scene-script-3d-editor__animatic[data-muxed="true"] {
+  color: #91d5ff;
+}
+
+.scene-script-3d-editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.scene-script-3d-editor__toolbar button {
+  padding: 3px 10px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: rgb(232 235 246 / 80%);
+  font-size: 11px;
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.scene-script-3d-editor__toolbar button:hover:not(:disabled) {
+  color: #fff;
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+  transform: translateY(-1px);
+}
+
+.scene-script-3d-editor__toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scene-script-3d-editor__toolbar button.is-active {
+  color: #FFD166;
+  border-color: color-mix(in srgb, #FFD166 45%, transparent);
+  background: color-mix(in srgb, #FFD166 14%, transparent);
+}
+
+.scene-script-3d-editor__placement-hint {
+  font-size: 11px;
+  color: #FFD166;
+}
+
+/* Consistency gate banner (Dramagic-style live warnings). */
+
+.scene-script-3d-editor__consistency {
+  margin: 0 0 8px;
+  padding: 6px 8px 6px 22px;
+  border: 1px solid rgb(255 209 102 / 35%);
+  border-radius: 6px;
+  background: rgb(255 209 102 / 8%);
+  color: #ffd666;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.scene-script-3d-editor__consistency li {
+  margin: 0;
+}
+
+.scene-script-3d-editor__consistency button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.scene-script-3d-editor__consistency button:hover {
+  color: #fff;
+}
+
+/* Asset tray (low-poly vocabulary palette). */
+
+.scene-script-3d-editor--with-tray {
+  grid-template-columns: 104px minmax(0, 1fr) 190px;
+}
+
+.scene-asset-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 430px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.scene-asset-tray__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgb(232 235 246 / 80%);
+}
+
+.scene-asset-tray__group-toggle {
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: rgb(232 235 246 / 65%);
+  font-size: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.scene-asset-tray__items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scene-asset-tray__item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: rgb(232 235 246 / 80%);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.scene-asset-tray__item:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--brand) 40%, transparent);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+}
+
+.scene-asset-tray__item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scene-asset-tray__swatch {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.scene-asset-tray__hint {
+  margin: 2px 0 0;
+  font-size: 10px;
+  color: rgb(232 235 246 / 40%);
+  line-height: 1.4;
+}
+
+/* Bound character reference (the Dramagic lock made visible). */
+
+.scene-script-3d-editor__reference {
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgb(0 0 0 / 25%);
+}
+
+.scene-script-3d-editor__reference img {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+}
+
+.scene-script-3d-editor__reference figcaption {
+  padding: 3px 6px;
+  font-size: 10px;
+  color: rgb(232 235 246 / 65%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scene-script-3d-editor__reference-empty {
+  display: block;
+  padding: 14px 6px;
+  font-size: 10px;
+  color: rgb(232 235 246 / 40%);
+  text-align: center;
+}
+
+/* White-model design mode entry. */
+
+.scene-3d-workbench__mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+.scene-3d-workbench__mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #edf0f8;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scene-3d-workbench__mode-hint {
+  color: rgb(232 235 246 / 55%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* White-model op log (the agent's modeling process, visible). */
+
+.white-model-op-log {
+  margin: 0 0 8px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 3%);
+  font-size: 11px;
+}
+
+.white-model-op-log > summary {
+  padding: 4px 8px;
+  color: rgb(232 235 246 / 70%);
+  cursor: pointer;
+  user-select: none;
+}
+
+.white-model-op-log[open] > summary {
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+}
+
+.white-model-op-log__ops,
+.white-model-op-log__mcp {
+  margin: 0;
+  padding: 6px 8px 6px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.white-model-op-log__ops li,
+.white-model-op-log__mcp li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.white-model-op-log__op {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--brand) 25%, transparent);
+  color: #fff;
+  font-size: 10px;
+}
+
+.white-model-op-log__target {
+  color: rgb(232 235 246 / 75%);
+  font-family: monospace;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.white-model-op-log__status {
+  margin-left: auto;
+  color: #52c41a;
+  font-size: 10px;
+}
+
+.white-model-op-log__status.is-error {
+  color: #ff8a8a;
+}
+
+/* Scene image intake (drop an image -> editable blockout). */
+
+.scene-image-intake {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.scene-image-intake__drop {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px dashed rgb(255 255 255 / 18%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.scene-image-intake__drop.is-dragover {
+  border-color: color-mix(in srgb, var(--brand) 60%, transparent);
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+.scene-image-intake__button {
+  align-self: flex-start;
+  padding: 4px 12px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: #edf0f8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-image-intake__button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.scene-image-intake__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scene-image-intake__hint {
+  font-size: 10px;
+  color: rgb(232 235 246 / 50%);
+  line-height: 1.4;
+}
+
+.scene-image-intake__result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid rgb(82 196 26 / 30%);
+  border-radius: 6px;
+  background: rgb(82 196 26 / 8%);
+  font-size: 11px;
+  color: #b7eb8f;
+}
+
+.scene-image-intake__warnings {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  font-size: 10px;
+  color: #ffd666;
+}
+
+.scene-image-intake__error {
+  margin: 0;
+  font-size: 11px;
+  color: #ff8a8a;
+}
+
+.scene-image-intake__depth-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: rgb(232 235 246 / 70%);
+  cursor: pointer;
+}
+
+.scene-image-intake__depth {
+  width: 100%;
+  max-height: 110px;
+  border-radius: 4px;
+  object-fit: cover;
+  filter: saturate(0.2);
+}
+
+.scene-image-intake__orbit {
+  width: 100%;
+  border-radius: 4px;
+  background: #000;
+}
+
+/* Full-screen director workbench. */
+
+.scene-3d-workbench__fullscreen-toggle {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: #edf0f8;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scene-3d-workbench__fullscreen-toggle:hover {
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.scene-3d-workbench--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  box-sizing: border-box;
+  max-height: none;
+  margin: 0;
+  padding: 20px;
+  overflow-y: auto;
+  background: #141414f5;
+  backdrop-filter: blur(6px);
+}
+
+.scene-3d-workbench--fullscreen .scene-script-3d-editor--with-tray {
+  grid-template-columns: 200px minmax(0, 1fr) 280px;
+  gap: 14px;
+}
+
+.scene-3d-workbench--fullscreen .scene-asset-tray {
+  max-height: 700px;
+}
+
+/* Dialogue lip-sync panel (scene side of 台词驱动). */
+
+.dialogue-lipsync {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding: 8px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.dialogue-lipsync__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.dialogue-lipsync__hint {
+  font-size: 10px;
+  color: rgb(232 235 246 / 50%);
+}
+
+.dialogue-lipsync__row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dialogue-lipsync__row select {
+  flex: 0 0 84px;
+}
+
+/* Reorder (V0.2 §14.7 结构层) and delivery (表演层) affordances. */
+.dialogue-lipsync__reorder {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.dialogue-lipsync__reorder button {
+  padding: 0 4px;
+  border: 1px solid rgb(145 213 255 / 25%);
+  border-radius: 3px;
+  background: transparent;
+  color: #91d5ff;
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.dialogue-lipsync__reorder button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.dialogue-lipsync__emotion {
+  flex: 0 0 96px !important;
+  min-width: 0 !important;
+}
+
+.dialogue-lipsync__row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialogue-lipsync__row select,
+.dialogue-lipsync__row input {
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 5px;
+  background: rgb(0 0 0 / 25%);
+  color: #edf0f8;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.dialogue-lipsync__row button {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 6%);
+  color: rgb(232 235 246 / 70%);
+  cursor: pointer;
+}
+
+.dialogue-lipsync__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dialogue-lipsync__actions button {
+  padding: 4px 10px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: rgb(232 235 246 / 80%);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dialogue-lipsync__actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.dialogue-lipsync__actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dialogue-lipsync__apply {
+  margin-left: auto;
+}
+
+/* 3D viewport blocking marks (selected character's keyframe floor marks). */
+.blocking-mark {
+  font-size: 10px;
+  color: #ffd166;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.blocking-length {
+  font-size: 10px;
+  color: #b7eb8f;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 3D viewport speech overlay: the current dialogue line above its speaker. */
+.scene-script-speech-overlay {
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(13, 13, 13, 0.78);
+  color: #ffe9a8;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+
+.dialogue-lipsync__summary {
+  margin: 0;
+  font-size: 10px;
+  color: #b7eb8f;
+}
+
+/* Preset rows (camera moves / character actions) share one layout. */
+.scene-script-3d-editor__preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.scene-script-3d-editor__preset-row select,
+.scene-script-3d-editor__preset-row input {
+  font-size: 11px;
+  background: #1a1a1a;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 2px 4px;
+  max-width: 190px;
+}
+
+.scene-script-3d-editor__preset-row input[type="number"] {
+  width: 58px;
+}
+
+.scene-script-3d-editor__preset-row button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid #4a5a7a;
+  border-radius: 3px;
+  background: #22304d;
+  color: #d6e4ff;
+  cursor: pointer;
+}
+
+.dialogue-lipsync__publish {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 3px 10px;
+  border: 1px solid #4a5a7a;
+  border-radius: 4px;
+  background: #22304d;
+  color: #d6e4ff;
+  cursor: pointer;
+}
+
+.dialogue-lipsync__publish:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Transition Intent proposals (Scene A -> B 衔接方案). */
+.transition-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #333;
+}
+
+.transition-proposals__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #ccc;
+}
+
+.transition-proposals__head button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid #4a5a7a;
+  border-radius: 3px;
+  background: #22304d;
+  color: #d6e4ff;
+  cursor: pointer;
+}
+
+.transition-proposals__head button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.transition-proposals__hint {
+  margin: 0;
+  font-size: 10px;
+  color: #8a8a8a;
+}
+
+.transition-proposals__item {
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.transition-proposals__item[data-feasible="false"] {
+  opacity: 0.65;
+}
+
+.transition-proposals__item header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.transition-proposals__item header button {
+  font-size: 10px;
+  padding: 1px 8px;
+  border: 1px solid #4a5a7a;
+  border-radius: 3px;
+  background: #22304d;
+  color: #d6e4ff;
+  cursor: pointer;
+}
+
+.transition-proposals__narrative {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #b7eb8f;
+}
+
+.transition-proposals__infeasible {
+  margin: 4px 0 0;
+  font-size: 10px;
+  color: #ffa39e;
+}
+
+/* A reading with zero operations (声音桥): nothing to apply, say so. */
+.transition-proposals__noop {
+  margin: 4px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid rgba(145, 213, 255, 0.4);
+  font-size: 10px;
+  color: #9fb4d8;
+}
+
+/* The LLM narrative layer opt-in (V0.2 §6.2/§15): off by default. */
+.transition-proposals__polish {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 10px;
+  color: #9fb4d8;
+  cursor: pointer;
+}
+
+/* The dismiss affordance on a machine reading (multi-round memory, V0.2 §15). */
+.transition-proposals__dismiss {
+  margin-left: auto;
+  padding: 0 6px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #9fb4d8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.transition-proposals__dismiss:hover {
+  background: rgba(255, 138, 138, 0.16);
+  color: #ff8a8a;
+}
+
+/* Variant save/compare (V0.2 §9 局部分叉). */
+.transition-proposals__save-variant {
+  margin-top: 4px;
+  padding: 1px 8px;
+  border: 1px solid rgb(145 213 255 / 35%);
+  border-radius: 3px;
+  background: transparent;
+  color: #91d5ff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.transition-proposals__variants {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgb(145 213 255 / 25%);
+}
+
+.transition-proposals__variant {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #d6e4ff;
+}
+
+/* The origin badge on a machine-invented reading (V0.2 §6.3). */
+.transition-proposals__origin {
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(255, 197, 61, 0.16);
+  color: #ffc53d;
+  font-size: 10px;
+}
+
+.transition-proposals__ops {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 10px;
+  color: #9fb4d8;
+}
+
+.transition-proposals__error {
+  margin: 0;
+  font-size: 11px;
+  color: #ff7875;
+}
+
+.transition-proposals__note {
+  margin: 0;
+  font-size: 10px;
+  color: #91d5ff;
+}
+
+/* The declared entry reading, checked against the pair on screen
+   (V0.2 §13 第 5 问). Amber when it no longer holds — a stale declaration
+   is worse than no declaration, so it must not read as a confirmation. */
+.transition-proposals__intent-audit {
+  margin: 4px 0 0;
+  padding: 3px 6px;
+  border: 1px solid rgb(255 214 102 / 35%);
+  border-radius: 3px;
+  font-size: 10px;
+  color: #ffe9a8;
+}
+
+.transition-proposals__intent-audit.is-stale {
+  border-color: rgb(255 161 158 / 55%);
+  color: #ffa39e;
+}
+
+.transition-proposals__intent {
+  margin-left: 4px;
+  padding: 1px 6px;
+  border: 1px solid rgb(255 214 102 / 40%);
+  border-radius: 3px;
+  background: transparent;
+  color: #ffe9a8;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.transition-proposals__intent:disabled {
+  border-color: rgb(145 213 255 / 20%);
+  color: #6b7a99;
+  cursor: default;
+}
+
+.dialogue-lipsync__advisories {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px dashed #4a5a7a;
+  border-radius: 4px;
+  background: rgba(34, 48, 77, 0.25);
+}
+
+.dialogue-lipsync__advisories-title {
+  font-size: 10px;
+  color: #91d5ff;
+}
+
+.dialogue-lipsync__advisory {
+  margin: 0;
+  font-size: 11px;
+  color: #d6e4ff;
+  line-height: 1.45;
+}
+
+.dialogue-lipsync__advisory-code {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(145, 213, 255, 0.15);
+  color: #91d5ff;
+  font-size: 10px;
+}
+
+.dialogue-lipsync__advisory-remedy {
+  display: block;
+  margin-top: 2px;
+  padding-left: 8px;
+  border-left: 2px solid rgba(145, 213, 255, 0.4);
+  color: #9fb4d8;
+  font-size: 10px;
+}
+
+/* Advisory → picker jump: the remedy gains an executable landing (V0.2 §15). */
+.dialogue-lipsync__advisory-jump {
+  display: inline-block;
+  margin-top: 4px;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid rgba(145, 213, 255, 0.45);
+  border-radius: 3px;
+  background: rgba(145, 213, 255, 0.12);
+  color: #91d5ff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.dialogue-lipsync__advisory-jump:hover {
+  background: rgba(145, 213, 255, 0.22);
+}
+
+/* QA registry findings (ADR 0003 §5): advisory, never blocking. */
+.dialogue-lipsync__qa {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dialogue-lipsync__qa-item {
+  margin: 0;
+  font-size: 10px;
+  color: #d6e4ff;
+  line-height: 1.45;
+}
+
+.dialogue-lipsync__publish-result {
+  margin: 0;
+  font-size: 10px;
+  color: #91d5ff;
+}
+
+.dialogue-lipsync__empty,
+.dialogue-lipsync__error {
+  margin: 0;
+  font-size: 11px;
+  color: rgb(232 235 246 / 55%);
+}
+
+.dialogue-lipsync__error {
+  color: #ff8a8a;
+}

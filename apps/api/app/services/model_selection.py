@@ -73,7 +73,10 @@ class ModelSelectionService:
     ) -> SelectedModelV1 | None:
         """Validate a persisted selection without requiring a complete Canvas Node."""
 
-        if node_type in {"editing", "scene-3d"}:
+        # 无生成模型的纯结构节点：编辑组装 / 3D 预演 / 复刻蓝图。
+        # replica 此前被默认模型解析卡死（model_defaults 表永远不会有
+        # replica 键）——端到端首跑发现。
+        if node_type in {"editing", "scene-3d", "replica"}:
             if model_selection_mode != "default" or model_ref is not None:
                 raise _model_error(
                     "model_capability_mismatch",

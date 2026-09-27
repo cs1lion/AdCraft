@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import {
   applyNodeChanges,
   Controls,
@@ -28,6 +29,7 @@ import { agentCanvasApi } from "../../api/agentCanvasApi.ts";
 import { useApp } from "../../AppContextValue.ts";
 import { createOperationKey } from "../../api/operationKey.ts";
 import { timelineRefreshNonce } from "./timeline/timelineRefresh.ts";
+import { timelineMutationRefreshStore } from "./timeline/timelineMutationRefresh.ts";
 import type { TimelineClipV1 } from "./timeline/timelineTypes.ts";
 import {
   AssetsIcon,
@@ -36,6 +38,12 @@ import {
   PlayIcon,
   PlusIcon,
 } from "../../icons.tsx";
+import { canvasCardDropIntent } from "./canvas/canvasDrop.ts";
+import { addCharacterFromAsset } from "./canvas/sceneScriptEditModel.ts";
+import {
+  SCENE_SCRIPT_CONTENT_KEY,
+  extractSceneScriptFromNode,
+} from "./model/sceneScriptUtils.ts";
 import type {
   AgentCanvasWorkflowV2,
   CanvasBindingInputRoleV2,
@@ -61,6 +69,7 @@ import {
   type AgentCanvasNodeCallbacks,
 } from "./canvas/AgentCanvasNode.tsx";
 import { AgentCanvasConnectedNodeMenu } from "./canvas/AgentCanvasConnectedNodeMenu.tsx";
+import type { AlignedLine } from "./canvas/DialogueAlignmentPanel.tsx";
 import { PlayheadSyncProvider } from "./PlayheadSyncContext.tsx";
 import { CreationFlowGuidance } from "./canvas/CreationFlowGuidance.tsx";
 import { AgentCanvasContextMenu } from "./canvas/AgentCanvasContextMenu.tsx";
@@ -118,6 +127,18 @@ import {
   toAgentCanvasFlowEdgesForNodeIds,
   toAgentCanvasFlowNodes,
 } from "./canvas/canvasGraphModel.ts";
+import {
+  CANVAS_DROP_MIME,
+  canvasDropCreateRequest,
+  canvasNodeTypeForMedia,
+  parseCanvasDropPayload,
+} from "./canvas/canvasDrop.ts";
+import {
+  planRowGapInsert,
+  snapCanvasDropPosition,
+  snapDraggedNode,
+  type SnapBox,
+} from "./canvas/canvasSnap.ts";
 import {
   AGENT_CANVAS_NODE_HORIZONTAL_GAP,
   agentCanvasNodePlacementSize,
@@ -204,6 +225,50 @@ function readSceneCharacterIds(node: unknown): string[] {
     .filter((id): id is string => typeof id === "string");
 }
 
+/** A node's placement box for snapping (its rendered size, from the same
+ * geometry the auto-layout uses). */
+function canvasSnapBoxFor(
+  flowNode: AgentCanvasFlowNode,
+  assets: readonly ProjectAssetSummaryV2[],
+): SnapBox {
+  const node = flowNode.data.node;
+  const asset = node.output_asset_id
+    ? assets.find((candidate) => candidate.asset_id === node.output_asset_id) ?? null
+    : null;
+  const size = agentCanvasNodePlacementSize(
+    node.node_type,
+    asset ? { width: asset.width, height: asset.height } : null,
+  );
+  return { id: node.node_id, position: flowNode.position, size };
+}
+
+/**
+ * Snap every node that was just dragged against the nodes that were not.
+ * Returns the adjusted flow nodes plus the position overrides to persist
+ * (only the snapped ones); unsnapped drags come back untouched.
+ */
+function applyCanvasDragSnap(
+  flowNodes: readonly AgentCanvasFlowNode[],
+  draggedIds: ReadonlySet<string>,
+  assets: readonly ProjectAssetSummaryV2[],
+): {
+  nodes: AgentCanvasFlowNode[];
+  positionOverrides: Record<string, { x: number; y: number }>;
+} {
+  const still = flowNodes.filter((flowNode) => !draggedIds.has(flowNode.data.node.node_id));
+  const siblings = still.map((flowNode) => canvasSnapBoxFor(flowNode, assets));
+  const overrides: Record<string, { x: number; y: number }> = {};
+  const nodes = flowNodes.map((flowNode) => {
+    if (!draggedIds.has(flowNode.data.node.node_id)) return flowNode;
+    const dragged = canvasSnapBoxFor(flowNode, assets);
+    const result = snapDraggedNode(dragged, siblings);
+    if (!result.snap) return flowNode;
+    overrides[dragged.id] = result.position;
+    return { ...flowNode, position: result.position };
+  });
+  return { nodes, positionOverrides: overrides };
+}
+
 export function AgentCanvasPage() {
   const { refreshProjects } = useApp();
   const session = useAgentCanvasSession();
@@ -282,6 +347,11 @@ export function AgentCanvasPage() {
     }
   ) | null>(null);
   const [surfaceError, setSurfaceError] = useState<string | null>(null);
+  // C-mode handoff (ADR 0005): lines recovered from whichever voice-cast bed
+  // was last aligned. Lives at the surface because the alignment panel and
+  // the lip-sync editor render in DIFFERENT node workbenches, selected one
+  // at a time — the state must survive the selection switch.
+  const [alignedSpeechLines, setAlignedSpeechLines] = useState<AlignedLine[] | null>(null);
   const { displayEdges, submit: submitOptimisticConnection, cancelForNodes: cancelPendingNodeConnections, nextOrder: nextConnectionOrder } = useOptimisticCanvasConnections({
     workflow,
     edges,
@@ -503,6 +573,14 @@ export function AgentCanvasPage() {
       workflow?.workflow_id,
     ],
   );
+  // Client-side timeline mutations (subtitle publish, ...) emit no SSE event:
+  // fold in their signal so an open panel resyncs immediately. The sum of two
+  // non-decreasing counters strictly grows whenever either source moves.
+  const timelineMutationSignal = useSyncExternalStore(
+    timelineMutationRefreshStore.subscribe,
+    timelineMutationRefreshStore.getSnapshot,
+  );
+  const timelineExternalRefreshSignal = timelineRefreshSignal + timelineMutationSignal;
   const workflowNodeIdSet = useMemo(
     () => new Set((workflow?.nodes ?? []).map((node) => node.node_id)),
     [workflow?.nodes],
@@ -689,10 +767,12 @@ export function AgentCanvasPage() {
           onOpenAssets={() => setAssetsOpen(true)}
           onUploadReferences={() => referenceUploadInputRef.current?.click()}
           onClose={() => setSelectedNodeId(null)}
+          alignedSpeechLines={alignedSpeechLines}
+          onSpeechLinesAligned={setAlignedSpeechLines}
         />
       </Suspense>
     );
-  }, [connectionPolicy, deleteBinding, deleteNode, live.state.inputManifestsByNodeId, live.state.inputReadinessIssue, live.state.modelResolutionsByNodeId, openEditing, patchBinding, patchNode, providerModels.defaultModelRef, providerModels.error, providerModels.loading, providerModels.models, refreshWorkflow, runNode, saveImageToLibrary, session.state.selectedNodeId, setSelectedNodeId, workflow]);
+  }, [connectionPolicy, deleteBinding, deleteNode, live.state.inputManifestsByNodeId, live.state.inputReadinessIssue, live.state.modelResolutionsByNodeId, openEditing, patchBinding, patchNode, providerModels.defaultModelRef, providerModels.error, providerModels.loading, providerModels.models, refreshWorkflow, runNode, saveImageToLibrary, session.state.selectedNodeId, setSelectedNodeId, workflow, alignedSpeechLines]);
 
   const openNodeVideoPreview = useCallback((nodeId: string, asset: ProjectAssetSummaryV2) => {
     const node = workflowNodesRef.current.find((candidate) => candidate.node_id === nodeId);
@@ -701,6 +781,91 @@ export function AgentCanvasPage() {
       title: asset.display_name || node?.title || "Video preview",
     });
   }, []);
+
+  /**
+   * V0.2 §2.2: 卡片内部 = 素材归属. An image asset dropped on a card becomes
+   * that node's reference input — the same binding the reference strip adds,
+   * reached by a gesture instead of a menu. The asset is resolved against the
+   * workflow so the binding carries a real immutable version (the same
+   * requirement the reference strip has); an asset the workflow doesn't know
+   * is reported, not silently dropped.
+   */
+  const dropAssetAsReference = useCallback(
+    async (nodeId: string, assetId: string, displayName: string) => {
+      if (!workflow) return;
+      const target = workflow.nodes.find((candidate) => candidate.node_id === nodeId);
+      if (!target) return;
+      const asset = workflow.assets.find((candidate) => candidate.asset_id === assetId);
+      if (!asset) {
+        setSurfaceError(`资产「${displayName}」不在当前工作流中，无法作为参考。`);
+        return;
+      }
+      // V0.2 §2.1: 人物 → 拖到镜头：成为该镜头的角色. A character asset
+      // landing on the previs card joins the scene's cast (bound to that
+      // asset) instead of becoming one more image reference.
+      const intent = canvasCardDropIntent(
+        asset.media_type,
+        target.node_type,
+        asset.semantic_type,
+      );
+      if (intent === "add_character") {
+        const existing = extractSceneScriptFromNode(target);
+        if (!existing) {
+          setSurfaceError(
+            `场景「${target.title}」还没有 SceneScript：先运行节点或从图片生成，再拖入角色。`,
+          );
+          return;
+        }
+        try {
+          await patchNode(nodeId, {
+            // Merge: the narration and every other key survive.
+            structured_content: {
+              ...target.structured_content,
+              [SCENE_SCRIPT_CONTENT_KEY]: addCharacterFromAsset(existing, {
+                assetId,
+                displayName,
+              }),
+            },
+          });
+          setSurfaceError(null);
+        } catch (error) {
+          setSurfaceError(
+            error instanceof Error ? error.message : "拖入角色失败，请重试。",
+          );
+        }
+        return;
+      }
+      const selection: AgentAssetReferenceSelection = {
+        source: "project",
+        assetId,
+        entityId: null,
+        versionId: asset.version_id ?? null,
+        mediaType: "image",
+        displayName,
+      };
+      if (!selection.versionId) {
+        setSurfaceError(`资产「${displayName}」没有可用的版本，无法作为参考。`);
+        return;
+      }
+      try {
+        await createBinding({
+          source: toImageBindingSource(selection),
+          target_node_id: target.node_id,
+          input_role: "image_reference",
+          enabled: true,
+          order: workflow.bindings.filter(
+            (binding) => binding.target_node_id === target.node_id,
+          ).length,
+        });
+        setSurfaceError(null);
+      } catch (error) {
+        setSurfaceError(
+          error instanceof Error ? error.message : "拖入参考失败，请重试。",
+        );
+      }
+    },
+    [createBinding, patchNode, setSurfaceError, workflow],
+  );
 
   const nodeCallbacks = useMemo<AgentCanvasNodeCallbacks>(() => ({
     onRun: (nodeId) => runNodeById(nodeId, false),
@@ -713,7 +878,10 @@ export function AgentCanvasPage() {
       setSelectedNodeId(nodeId);
       setConnectedNodeMenu({ anchorNodeId: nodeId, direction, point });
     },
-  }), [openEditing, openNodeVideoPreview, renderWorkbench, runNodeById, setSelectedNodeId]);
+    onAssetDroppedAsReference: (nodeId, assetId, displayName) => {
+      void dropAssetAsReference(nodeId, assetId, displayName);
+    },
+  }), [dropAssetAsReference, openEditing, openNodeVideoPreview, renderWorkbench, runNodeById, setSelectedNodeId]);
 
   const canonicalNodes = useMemo(() => {
     if (!workflow) {
@@ -1171,6 +1339,109 @@ export function AgentCanvasPage() {
     }
   }, [createBinding, session.state.selectedNode, workflow]);
 
+
+
+  /**
+   * V0.2 §2.1's retained feature #1: 素材 → 拖到画布 → 创建镜头. The asset
+   * browser emits the canvas payload on drag; the pane turns a drop into the
+   * same asset-backed create the connected-node menu uses (the backend
+   * requires node type == asset media type).
+   */
+  const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes(CANVAS_DROP_MIME)) return;
+    // Prevent the default so the drop is accepted; the browser otherwise
+    // treats the pane as a non-target and swallows the gesture.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleCanvasDrop = useCallback(
+    async (event: React.DragEvent<HTMLDivElement>) => {
+      if (!workflow) return;
+      const raw = event.dataTransfer.getData(CANVAS_DROP_MIME);
+      if (!raw) return;
+      event.preventDefault();
+      const payload = parseCanvasDropPayload(raw);
+      if (!payload) {
+        // A malformed payload degrades to "nothing happens" — never a thrown
+        // error inside React's event loop.
+        return;
+      }
+      const instance = flowRef.current;
+      const preferred = instance
+        ? instance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+        : { x: 120, y: 120 };
+      const nodeType = canvasNodeTypeForMedia(payload.media_type);
+      if (!nodeType) return;
+      const droppedAsset = workflow.assets.find(
+        (candidate) => candidate.asset_id === payload.asset_id,
+      );
+      // Semantic landing first (V0.2 §2.2: 两个镜头之间 = 新镜头插入): the
+      // drop point is treated as the would-be card, so releasing an asset
+      // between two cards inserts it in that row at the canonical gap. Only
+      // a fruitless snap falls back to "first free spot".
+      const siblings = flowNodesRef.current.map((flowNode) =>
+        canvasSnapBoxFor(flowNode, workflow.assets),
+      );
+      const snapped = snapCanvasDropPosition(
+        preferred,
+        siblings,
+        agentCanvasNodePlacementSize(
+          nodeType,
+          droppedAsset
+            ? { width: droppedAsset.width, height: droppedAsset.height }
+            : null,
+        ),
+      );
+      const dropSize = agentCanvasNodePlacementSize(
+        nodeType,
+        droppedAsset
+          ? { width: droppedAsset.width, height: droppedAsset.height }
+          : null,
+      );
+      // No semantic snap? Then a real INSERT: the release sits in a row gap
+      // too narrow for the card, so the neighbours make room (V0.2 §2.2).
+      // The plain snap is tried first — a gap with room never reflows.
+      const insertPlan = snapped.snap
+        ? null
+        : planRowGapInsert(preferred, siblings, dropSize);
+      const position = snapped.snap
+        ? snapped.position
+        : insertPlan
+          ? insertPlan.insertAt
+          : findAvailableCanvasPosition(workflow.nodes, preferred, {
+              assets: workflow.assets,
+              candidateNodeType: nodeType,
+              candidateDimensions: droppedAsset
+                ? { width: droppedAsset.width, height: droppedAsset.height }
+                : null,
+            });
+      const request = canvasDropCreateRequest(payload, position);
+      if (!request) return;
+      try {
+        await createCanvasNode(request);
+        if (insertPlan && insertPlan.shifts.length > 0) {
+          // The neighbours the insert pushed over: persisted so the reflow
+          // survives a reload (a layout that silently springs back would
+          // read as the insert having failed).
+          await updateNodePositions(
+            insertPlan.shifts.map((shift) => ({
+              node_id: shift.id,
+              x: shift.x,
+              y: shift.y,
+            })),
+          );
+        }
+      } catch (error) {
+        // Surfaced on the same banner every other authoring failure uses.
+        setSurfaceError(
+          error instanceof Error ? error.message : "拖入画布失败，请重试。",
+        );
+      }
+    },
+    [createCanvasNode, setSurfaceError, updateNodePositions, workflow],
+  );
+
   const createReadySourceNode = useCallback(async (selection: AgentAssetSourceNodeSelection) => {
     if (!workflow) return;
     const instance = flowRef.current;
@@ -1436,6 +1707,8 @@ export function AgentCanvasPage() {
           onlyRenderVisibleElements={true}
           nodesDraggable={!layoutPreview.active}
           onInit={initializeFlow}
+          onDragOver={handleCanvasDragOver}
+          onDrop={(event) => void handleCanvasDrop(event)}
           onMove={(_event, viewport) => {
             edgeZoomControllerRef.current?.setZoom(viewport.zoom);
             previewPrefetchRef.current?.setViewport(viewport);
@@ -1502,10 +1775,25 @@ export function AgentCanvasPage() {
               changed,
             );
             pendingPresentedNodesRef.current = null;
-            flowNodesRef.current = dragResult.nodes;
-            setNodes(dragResult.nodes);
-            if (dragResult.positions.length) {
-              void updateNodePositions(dragResult.positions).catch(() => {
+            // Semantic snap (V0.2 §2.2): a released node lands on the MEANING
+            // of where it was dropped — the sibling's row (same stage), the
+            // canonical gap beside it (next/previous in the sequence), or the
+            // sibling's column (parallel/alternative). A snap is refused when
+            // it would overlap, so alignment can never stack cards.
+            const snapped = applyCanvasDragSnap(
+              dragResult.nodes,
+              activeDraggedNodeIdsRef.current,
+              workflow.assets,
+            );
+            flowNodesRef.current = snapped.nodes;
+            setNodes(snapped.nodes);
+            const positions = dragResult.positions.map((item) =>
+              item.node_id in snapped.positionOverrides
+                ? { ...item, ...snapped.positionOverrides[item.node_id] }
+                : item,
+            );
+            if (positions.length) {
+              void updateNodePositions(positions).catch(() => {
                 void refreshWorkflow().catch(() => {});
               });
             }
@@ -1937,7 +2225,7 @@ export function AgentCanvasPage() {
           <Suspense fallback={null}>
             <GlobalTimelinePanel
               workflowId={workflow?.workflow_id}
-              externalRefreshNonce={timelineRefreshSignal}
+              externalRefreshNonce={timelineExternalRefreshSignal}
               workflowNodeIds={workflowNodeIdSet}
               availableCharacters={availableTimelineCharacters}
               highlightedSourceNodeId={session.state.selectedNodeId}

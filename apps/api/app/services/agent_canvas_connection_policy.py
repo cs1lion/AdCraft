@@ -65,6 +65,7 @@ class AgentCanvasConnectionPolicyService:
         "editing": ("video", "audio", "editing"),
         "scene-3d": ("text", "script", "image", "video"),
         "voice-cast": ("text", "script"),
+        "replica": ("script",),
     }
     _binding_kinds: dict[CanvasNodeTypeV2, CanvasBindingKindV2] = {
         "text": "text_context",
@@ -75,6 +76,7 @@ class AgentCanvasConnectionPolicyService:
         "editing": "video_reference",
         "scene-3d": "video_reference",
         "voice-cast": "audio_reference",
+        "replica": "text_context",
     }
     _input_types = {
         "text": "text",
@@ -85,6 +87,7 @@ class AgentCanvasConnectionPolicyService:
         "editing": "video",
         "scene-3d": "video",
         "voice-cast": "audio",
+        "replica": "text",
     }
     _roles: dict[tuple[CanvasNodeTypeV2, CanvasNodeTypeV2], tuple[CanvasInputRoleV2, ...]] = {
         ("text", "text"): ("text_context",),
@@ -114,6 +117,8 @@ class AgentCanvasConnectionPolicyService:
         ("script", "voice-cast"): ("text_context",),
         ("voice-cast", "video"): ("audio_reference",),
         ("voice-cast", "editing"): ("audio_reference",),
+        # 拉片复刻蓝图是规划文档：只能作为 text 上下文流向 script（实例化产物）
+        ("replica", "script"): ("text_context",),
     }
 
     def public_policy(self) -> CanvasConnectionPolicyV2:

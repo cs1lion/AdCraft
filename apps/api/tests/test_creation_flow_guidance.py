@@ -279,3 +279,76 @@ class TestWorldSettingExtension:
                 visual_continuity=("Style 1",),
                 owned_scene_ids=too_many,
             )
+
+
+# ---------------------------------------------------------------------------
+# Speaker ↔ character orchestration warnings (dialogue-driven chain)
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakerOrchestrationWarnings:
+    """The bed's speaker names must equal the scene's character ids.
+
+    apply_dialogue_lip_sync fails closed on unknown speakers; the flow
+    guidance must say so BEFORE the author writes the whole bed.
+    """
+
+    @staticmethod
+    def _scene_node(character_ids):
+        node = _make_node(node_type="scene-3d", creative_role="scene_3d_previs")
+        node.structured_content = {
+            "scene_script": {
+                "scene": {"name": "lab", "duration": 6, "frame_rate": 30},
+                "characters": [
+                    {"id": cid, "type": "lowpoly_human", "keyframes": []}
+                    for cid in character_ids
+                ],
+            }
+        }
+        return node
+
+    @staticmethod
+    def _voice_node(speakers):
+        node = _make_node(node_type="voice-cast", creative_role="voice_cast")
+        node.structured_content = {
+            "audio_bed": {
+                "roles": [{"name": s} for s in speakers],
+                "scripts": [{"speaker": s, "text": "台词"} for s in speakers],
+            }
+        }
+        return node
+
+    def test_unmatched_speaker_names_the_message_and_lists_valid_ids(self):
+        service = CreationFlowGuidanceService()
+        assessment = service.assess_flow(
+            nodes=[self._scene_node(["lin", "su"]), self._voice_node(["lin", "旁白"])],
+        )
+
+        matched = [w for w in assessment.warnings if "do not match any scene-3d" in w]
+        assert len(matched) == 1
+        assert "旁白" in matched[0]
+        assert "lin" not in matched[0].split("speaker(s)")[1].split(" do not match")[0]
+        assert "Available character ids: lin, su." in matched[0]
+
+    def test_matched_speakers_produce_no_warning(self):
+        service = CreationFlowGuidanceService()
+        assessment = service.assess_flow(
+            nodes=[self._scene_node(["lin", "su"]), self._voice_node(["lin", "su"])],
+        )
+
+        assert not [w for w in assessment.warnings if "do not match any scene-3d" in w]
+
+    def test_voice_node_without_bed_is_silent(self):
+        service = CreationFlowGuidanceService()
+        assessment = service.assess_flow(
+            nodes=[self._scene_node(["lin"]), _make_node(node_type="voice-cast")],
+        )
+
+        assert not [w for w in assessment.warnings if "do not match any scene-3d" in w]
+
+    def test_bed_without_scene_says_no_character_exists_yet(self):
+        service = CreationFlowGuidanceService()
+        assessment = service.assess_flow(nodes=[self._voice_node(["lin"])])
+
+        warning = next(w for w in assessment.warnings if "do not match any scene-3d" in w)
+        assert "No scene-3d character exists yet" in warning

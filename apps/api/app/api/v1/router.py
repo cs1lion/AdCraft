@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     providers,
     provider_certifications,
     provider_settings,
+    replica,
     scene_3d,
     video_editing,
     workflow_graph,
@@ -26,6 +27,7 @@ api_router.include_router(ad_workflows.router)
 api_router.include_router(provider_certifications.router)
 api_router.include_router(providers.router)
 api_router.include_router(provider_settings.router)
+api_router.include_router(replica.router)
 api_router.include_router(video_editing.router)
 api_router.include_router(workflow_graph.router)
 api_router.include_router(workflow_nodes.router)

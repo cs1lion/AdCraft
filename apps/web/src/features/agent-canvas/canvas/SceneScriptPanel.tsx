@@ -29,6 +29,8 @@ interface SceneScriptPanelProps {
   narrationVoice?: string;
   height?: number;
   onPromptChange?: (prompt: PromptBundle | null) => void;
+  /** 当前工作流：拉片复刻创建蓝图节点用。 */
+  workflowId?: string | null;
 }
 
 type TabKey = "3d" | "info" | "prompt" | "reference" | "narration" | "json";
@@ -58,6 +60,7 @@ export function SceneScriptPanel({
   narrationVoice = "default",
   height = 360,
   onPromptChange,
+  workflowId = null,
 }: SceneScriptPanelProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("3d");
 
@@ -163,7 +166,7 @@ export function SceneScriptPanel({
         )}
 
         {activeTab === "reference" && (
-          <ReferenceVideoPanel height={height - 32} />
+          <ReferenceVideoPanel height={height - 32} workflowId={workflowId} />
         )}
 
         {activeTab === "narration" && (

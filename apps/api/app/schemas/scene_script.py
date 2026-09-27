@@ -42,6 +42,10 @@ PropType = Literal[
     "cup",
 ]
 
+# Which hand carries a held prop (Continuity State's prop dimension, V0.2 §5:
+# "Scene 01 里女孩右手拿伞，Scene 02 变成左手" is the failure this declares).
+HeldSide = Literal["left", "right"]
+
 EnvironmentType = Literal[
     "wall",
     "pillar",
@@ -99,6 +103,20 @@ def _validate_rotation_y(value: float, field_name: str) -> float:
 # ---------------------------------------------------------------------------
 
 
+MAX_APPEARANCE_PALETTE_COLORS = 4
+
+#: Longest declared transition reading id (§13 第 5 问).
+MAX_TRANSITION_INTENT_LENGTH = 64
+
+
+def _is_hex_color(value: str) -> bool:
+    try:
+        int(value[1:], 16)
+    except ValueError:
+        return False
+    return True
+
+
 class CharacterAppearance(BaseModel):
     """Visual appearance of a low-poly character."""
 
@@ -107,6 +125,22 @@ class CharacterAppearance(BaseModel):
     color: str = Field(default="#8B4513", description="Hex color for the character body")
     height: float = Field(default=1.7, ge=0.5, le=3.0, description="Height in meters")
     scale: float = Field(default=1.0, gt=0, le=5.0, description="Uniform scale multiplier")
+    #: The declared wardrobe palette (V0.2 §5 服装). ``color`` is what the
+    #: proxy body renders; ``palette`` is what the character's LOOK is
+    #: declared to be, which is what the next scene must inherit. Within one
+    #: script a character has one appearance so it cannot self-contradict;
+    #: ACROSS the workflow's scene-3d nodes it can, and
+    #: ``wardrobe_drift.check_cross_node_character_drift`` refuses to guess
+    #: which is right. Optional: an author who never declares one keeps the
+    #: old behaviour exactly.
+    palette: tuple[str, ...] | None = Field(
+        default=None,
+        max_length=MAX_APPEARANCE_PALETTE_COLORS,
+        description=(
+            "Declared wardrobe palette (1-4 hex colors, e.g. '#2C3E50'). "
+            "Cross-node consistency for the same bound asset is checked."
+        ),
+    )
 
     @field_validator("color", mode="before")
     @classmethod
@@ -117,6 +151,26 @@ class CharacterAppearance(BaseModel):
         if isinstance(value, str) and value.startswith("#") and len(value) in (4, 7):
             return value
         return "#8B4513"
+
+    @field_validator("palette", mode="before")
+    @classmethod
+    def _coerce_palette(cls, value: object) -> object:
+        # Same tolerance as ``color``: a free-text description in the palette
+        # slot is dropped rather than failing the whole scene, but an
+        # unparsable hex is NOT silently kept as a colour the drift gate
+        # would later compare against.
+        if not isinstance(value, (list, tuple)) or not value:
+            return None
+        kept: list[str] = []
+        for entry in value:
+            if (
+                isinstance(entry, str)
+                and entry.startswith("#")
+                and len(entry) in (4, 7)
+                and _is_hex_color(entry)
+            ):
+                kept.append(entry.upper())
+        return tuple(kept[:MAX_APPEARANCE_PALETTE_COLORS]) if kept else None
 
 
 class CharacterKeyframe(BaseModel):
@@ -184,6 +238,19 @@ class SceneProp(BaseModel):
     position: list[float] = Field(description="[x, y, z] in meters")
     scale: float = Field(default=1.0, gt=0, le=10.0)
     rotation_y: float = Field(default=0.0, description="Y-axis rotation in degrees")
+    # Held items (V0.2 §5 Continuity State): a prop declared held follows its
+    # holder's hand across every shot, so the item cannot vanish or switch
+    # hands at a cut. The authored position becomes the prop's rest position
+    # (used when unheld); renderers derive the live position from the holder.
+    held_by: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Character id carrying this prop (held items follow the holder)",
+    )
+    held_side: HeldSide | None = Field(
+        default=None,
+        description="Which hand carries it (defaults to the right when held)",
+    )
 
     @field_validator("position")
     @classmethod
@@ -256,6 +323,41 @@ class SceneShot(BaseModel):
     start_frame: int = Field(ge=0)
     end_frame: int = Field(description="Must be > start_frame")
     description: str = Field(default="", max_length=500)
+    #: How this shot ENTERS (V0.2 §13 第 5 问): the id of the transition
+    #: reading the author chose for the cut into this shot ("sound_bridge",
+    #: "cut_after_line", an LLM-proposed id, ...).
+    #:
+    #: §13 asks whether the relation needs a connector LINE or suits a label,
+    #: a status, a hint, or hiding. Answer here: a LABEL on the shot — the
+    #: transitions are already authored as keyframes inside the script (a
+    #: reading IS camera and character motion), so a line would be a second,
+    #: disagreeing copy of the same information. What was missing is that the
+    #: CHOICE was not recorded: "哪一镜以何种读法接入" had no answer that outlived
+    #: the moment the author picked it. A label makes the relation queryable
+    #: (and therefore checkable — see
+    #: ``transition_intents.check_declared_intents``) without inventing a
+    #: competing source of truth.
+    #:
+    #: Optional and additive: a script that never declares one renders and
+    #: behaves exactly as before.
+    transition_intent: str | None = Field(
+        default=None,
+        max_length=MAX_TRANSITION_INTENT_LENGTH,
+        description="Reading id this shot enters with (V0.2 §13 第5问)",
+    )
+
+    @field_validator("transition_intent", mode="before")
+    @classmethod
+    def _coerce_transition_intent(cls, value: object) -> object:
+        # Same tolerance as the colour fields: an LLM that emits a sentence
+        # where an id belongs would otherwise reject the whole scene, and a
+        # declaration the author cannot read is not a declaration.
+        if not isinstance(value, str):
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        return trimmed[:MAX_TRANSITION_INTENT_LENGTH]
 
     @model_validator(mode="after")
     def _check_frame_range(self) -> SceneShot:
@@ -362,6 +464,24 @@ class SceneScriptRoot(BaseModel):
                 raise ValueError(
                     f"speech_binding references character '{binding.character}' which does not exist; "
                     f"available: {sorted(self.character_ids)}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_held_references(self) -> SceneScriptRoot:
+        """Every held prop's holder must reference an existing character.
+
+        Fail closed like speech_bindings: a held item whose holder does not
+        exist would silently stop following anyone, and "the prop is in her
+        hand" is exactly the claim the Continuity State layer must not drop.
+        """
+        for prop in self.props:
+            if prop.held_by is None:
+                continue
+            if prop.held_by not in self.character_ids:
+                raise ValueError(
+                    f"prop '{prop.id}' is held by character '{prop.held_by}' which does "
+                    f"not exist; available: {sorted(self.character_ids)}"
                 )
         return self
 

@@ -13,6 +13,7 @@ from app.schemas.front_desk import FrontDeskIntentOutput
 from app.schemas.agent_runtime import (
     AgentActionEnvelopeV2,
     AgentCanvasScene3DOutput,
+    AgentCanvasWhiteModelOutput,
     AgentCanvasScriptOutput,
     AgentCanvasTextOutput,
     AgentCommandPlanDraftV2,
@@ -151,6 +152,7 @@ _EXPLICIT_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     V2QuickMediaPromptPlan,
     V2ProductMainPromptPlan,
     AgentCanvasScene3DOutput,
+    AgentCanvasWhiteModelOutput,
     V2ProductMultiViewPromptPlan,
     V2ProductPromptPlan,
     V2CharacterMainPromptPlan,

@@ -291,6 +291,15 @@ describe("Agent Canvas client", () => {
             nodes: [patchedNode],
           },
           node: patchedNode,
+          // ADR 0009 决策 2: the backend answers "what did this edit affect?"
+          // on every patch; the client must survive (and carry) the answer.
+          scope_report: {
+            edited_keys: ["generation_prompt"],
+            content_areas: ["生成提示词"],
+            affected_neighbours: [],
+            dirty_reasons: ["生成提示词有未提交的作者修改"],
+            notes: ["本次编辑不影响任何已绑定节点（下游只消费本节点的产物，不读取作者态）。"],
+          },
         }, { etag: '"workflow:workflow-1:revision:8"' });
       }
       if (url.endsWith("/runs")) {

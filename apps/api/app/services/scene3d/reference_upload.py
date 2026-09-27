@@ -25,7 +25,9 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 MAX_FILE_SIZE_MB = 100
-MAX_DURATION_SECONDS = 10
+# 60s 与拉片拆解（replica teardown）的时长上界对齐：参考片上传是拉片复刻的
+# 共用入口，15-30s 的广告片必须传得上来；3D 读片成本由抽帧数决定而非时长。
+MAX_DURATION_SECONDS = 60
 MIN_DURATION_SECONDS = 0.5
 ALLOWED_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
 ALLOWED_MIME_TYPES = {

@@ -20,6 +20,7 @@ count and duration, not just on the manifest text.
 
 from __future__ import annotations
 
+import json
 import shutil
 import struct
 import subprocess
@@ -392,3 +393,82 @@ class TestKeyframeDraftDurations:
         frames, _duration = _ffprobe(out)
         assert frames == expected
         assert frames > len(numbers) * 10
+
+
+# ---------------------------------------------------------------------------
+# Animatic mux: a rendered previs plus the dialogue bed (V0.2 §14.9)
+# ---------------------------------------------------------------------------
+
+
+def _silent_video(tmp_path, seconds: float = 1.0) -> str:
+    """A tiny silent clip through the real encoder."""
+    from PIL import Image
+
+    frames = tmp_path / "frames"
+    frames.mkdir(exist_ok=True)
+    for index in range(30):
+        Image.new("RGB", (64, 48), (index * 4 % 255, 90, 140)).save(frames / f"frame_{index:04d}.png")
+    video = str(tmp_path / "previs.mp4")
+    encoded = encode_png_sequence(str(frames), video, fps=30)
+    assert encoded.success, encoded.error
+    return video
+
+
+def _tone(tmp_path, seconds: float = 1.0) -> str:
+    """A real WAV tone so the mux has a decodable audio input."""
+    import math
+    import struct
+    import wave
+
+    path = tmp_path / "bed.wav"
+    rate = 8000
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        frames = b"".join(
+            struct.pack("<h", int(12000 * math.sin(2 * math.pi * 220 * index / rate)))
+            for index in range(int(rate * seconds))
+        )
+        handle.writeframes(frames)
+    return str(path)
+
+
+@pytest.mark.media
+@requires_ffmpeg
+def test_the_animatic_mux_carries_the_bed_into_the_render(tmp_path) -> None:
+    """The real mux: video copied untouched, audio added, duration honoured."""
+    from app.services.scene3d.encoder import mux_audio_to_video
+
+    video = _silent_video(tmp_path)
+    audio = _tone(tmp_path, seconds=1.0)
+    muxed_path = str(tmp_path / "previs_animatic.mp4")
+
+    result = mux_audio_to_video(video, audio, muxed_path)
+    assert result.success, result.error
+
+    frames, duration = _ffprobe(Path(muxed_path))
+    # The video pass is copied, not re-encoded; -shortest may trim the last
+    # frame when both inputs are exactly 1.0s, so the honest bound is a frame
+    # or two of slack rather than a fragile exact count.
+    assert 29 <= frames <= 30
+    assert 0.9 <= duration <= 1.2
+    # And the audio is really there: a stream exists beyond the video one.
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", muxed_path],
+        capture_output=True,
+        text=True,
+    )
+    streams = json.loads(probe.stdout)["streams"]
+    assert any(stream.get("codec_type") == "audio" for stream in streams)
+
+
+@pytest.mark.media
+@requires_ffmpeg
+def test_the_mux_reports_a_missing_audio_file_instead_of_failing_loud(tmp_path) -> None:
+    from app.services.scene3d.encoder import mux_audio_to_video
+
+    video = _silent_video(tmp_path)
+    result = mux_audio_to_video(video, str(tmp_path / "nope.wav"), str(tmp_path / "out.mp4"))
+    assert result.success is False
+    assert "not found" in (result.error or "")

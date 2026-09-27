@@ -131,6 +131,11 @@ metadata.set("execute_canvas_scene_3d", {
   result_contract_name: "AgentCanvasScene3DOutput",
   required_skill: "video_agent_3d_storyboard",
 });
+metadata.set("execute_canvas_white_model", {
+  context_contract_name: "AgentRunContext",
+  result_contract_name: "AgentCanvasWhiteModelOutput",
+  required_skill: "video_agent_3d_white_model",
+});
 metadata.set("compile_video_parameters", creativeMetadata(
   "video_direction", "VideoParameterIntentV3", "video_agent_video_direction", "video", "Video Director", "VideoParameterIntentContextV3",
 ));

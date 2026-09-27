@@ -116,3 +116,7 @@ apps/api/agent/validate_request.cjs
 apps/api/scripts/replicate_*.py
 .zcode/
 /玫瑰与白桦-微电影剧本.html
+# Local scratch: big binaries and work-in-progress snapshots live outside git
+/local-bin/
+/*.exe
+/WIP.patch

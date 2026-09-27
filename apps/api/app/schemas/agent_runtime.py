@@ -179,6 +179,20 @@ class AgentCanvasTextOutput(BaseModel):
     content: str = Field(min_length=1, max_length=32_768)
 
 
+class AgentCanvasWhiteModelOutput(BaseModel):
+    """Validated white-model design output from the 3D White-Model skill.
+
+    The skill returns an operations batch (``{"operations": [...]}``) wrapped
+    in a ```json fence per the skill contract. ``raw_output`` carries the full
+    LLM text; the caller parses it and applies the batch through
+    ``scene3d.scene_script_tool_service.SceneScriptToolService`` — never by
+    hand, so the same validation gates the agent and a human editor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    raw_output: str = Field(min_length=1, max_length=128_000)
+
+
 class AgentCanvasScene3DOutput(BaseModel):
     """Validated scene-3d previs output from the 3D Storyboard skill.
 

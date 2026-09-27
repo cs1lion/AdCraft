@@ -143,8 +143,14 @@ def _call_multimodal_llm(
     user_text: str,
     image_path: Path | None = None,
     max_tokens: int = 1000,
+    extra_payload: dict[str, Any] | None = None,
 ) -> str:
-    """Call a multimodal LLM with optional image input. Returns text content."""
+    """Call a multimodal LLM with optional image input. Returns text content.
+
+    ``extra_payload``: 额外的请求体选项（OpenAI 兼容参数，如
+    ``reasoning_effort``）——推理型模型默认会把 max_tokens 花在思考上，
+    导致 content 为空；调用方按需降推理档位。
+    """
     content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
     if image_path is not None:
         content.append({
@@ -163,6 +169,7 @@ def _call_multimodal_llm(
             ],
             "max_tokens": max_tokens,
             "temperature": 0.3,
+            **(extra_payload or {}),
         },
     )
     if resp.status_code != 200:
@@ -176,7 +183,15 @@ def _call_multimodal_llm(
             f"LLM returned no choices: {json.dumps(data, ensure_ascii=False)[:200]}",
             error_type="llm_error",
         )
-    return data["choices"][0]["message"]["content"]
+    text = data["choices"][0]["message"]["content"] or ""
+    if not text.strip():
+        # 推理型模型可能把预算花光在思考上（content 为空）：显式失败并提示
+        raise AnalysisError(
+            "LLM returned empty content (reasoning consumed the token budget; "
+            "lower reasoning_effort or raise max_tokens)",
+            error_type="llm_error",
+        )
+    return text
 
 
 def _extract_json_from_response(text: str) -> dict[str, Any]:

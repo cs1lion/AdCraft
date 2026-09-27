@@ -49,6 +49,8 @@ import type {
   CanvasPostReadyEffectSummaryV2,
   CanvasPostReadyEffectTypeV2,
   CanvasMutationResponseV2,
+  CanvasNodeScopeReportV2,
+  CanvasScopeNeighbourV2,
   CanvasLayoutPatchResponseV2,
   CanvasNodeErrorV2,
   CanvasNodeLatestAttemptV2,
@@ -167,7 +169,7 @@ import { V2ContractValidationError } from "../../../api/v2ContractValidationErro
 
 type JsonRecord = Record<string, unknown>;
 
-const CANVAS_NODE_TYPES = new Set<CanvasNodeTypeV2>(["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast"]);
+const CANVAS_NODE_TYPES = new Set<CanvasNodeTypeV2>(["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast", "replica"]);
 const COMMAND_NODE_TYPES = new Set<Exclude<CanvasNodeTypeV2, "editing">>(["text", "script", "image", "video", "audio"]);
 const CANVAS_NODE_STATUSES = new Set<CanvasNodeStatusV2>(["draft", "working", "ready", "failed"]);
 const CANVAS_NODE_EXECUTION_MODES = new Set<CanvasNodeExecutionModeV2>(["generative", "source_only"]);
@@ -4733,7 +4735,10 @@ export function normalizeCanvasMutationResponseV2(
   path = "mutation",
 ): CanvasMutationResponseV2 {
   const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow", "node", "binding"], path);
+  // scope_report is part of the contract (ADR 0009 决策 2): the mutation
+  // response TELLS the author what the edit affected. Rejecting it as an
+  // unknown field is how the answer used to die in the API client.
+  forbidUnknownFields(record, ["workflow", "node", "binding", "scope_report"], path);
   return {
     workflow: normalizeAgentCanvasWorkflowV2(record.workflow, `${path}.workflow`),
     node: record.node === null || record.node === undefined
@@ -4742,7 +4747,60 @@ export function normalizeCanvasMutationResponseV2(
     binding: record.binding === null || record.binding === undefined
       ? null
       : normalizeCanvasBindingV2(record.binding, `${path}.binding`),
+    scope_report: normalizeCanvasNodeScopeReportV2(
+      record.scope_report,
+      `${path}.scope_report`,
+    ),
   };
+}
+
+/**
+ * The scope report is a free-form diagnostic dict: normalize its known keys
+ * and keep unknown ones as-is (the backend may add detail; the surface shows
+ * the documented fields). A malformed value degrades to null rather than
+ * failing the whole mutation response.
+ */
+function normalizeCanvasNodeScopeReportV2(
+  value: unknown,
+  path: string,
+): CanvasNodeScopeReportV2 | null {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) {
+    fail(path, "expected object or null");
+  }
+  const record = value as JsonRecord;
+  const report: CanvasNodeScopeReportV2 = {};
+  if (Array.isArray(record.edited_keys)) {
+    report.edited_keys = record.edited_keys.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+  }
+  if (Array.isArray(record.content_areas)) {
+    report.content_areas = record.content_areas.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+  }
+  if (Array.isArray(record.dirty_reasons)) {
+    report.dirty_reasons = record.dirty_reasons.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+  }
+  if (Array.isArray(record.notes)) {
+    report.notes = record.notes.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+  }
+  if (Array.isArray(record.affected_neighbours)) {
+    report.affected_neighbours = record.affected_neighbours.flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const neighbour: CanvasScopeNeighbourV2 = {};
+      if (typeof entry.node_id === "string") neighbour.node_id = entry.node_id;
+      if (typeof entry.relation === "string") neighbour.relation = entry.relation;
+      if (typeof entry.reason === "string") neighbour.reason = entry.reason;
+      return [neighbour];
+    });
+  }
+  return report;
 }
 
 export function normalizeCanvasEditingExportImportResponseV2(

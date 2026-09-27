@@ -19,6 +19,7 @@ import type {
   ProjectAssetSummaryV2,
 } from "../../../types-v2.ts";
 import { buildAgentCanvasPreRevealLayout } from "../canvas/agentCanvasPreRevealLayout.ts";
+import { publishPatchScopeReport } from "../canvas/patchScopeReport.ts";
 import { AgentCanvasAuthoringQueue } from "./authoringQueue.ts";
 import { assertValidCanvasBindingWrite } from "./bindingWriteValidation.ts";
 import { persistAgentCanvasLayout } from "./layoutPersistence.ts";
@@ -187,6 +188,9 @@ export function useAgentCanvasSession() {
       async () => {
         const response = await agentCanvasApi.patchAgentCanvasNode(workflowId, nodeId, patch);
         applyWorkflow(response.value.workflow);
+        // ADR 0009 决策 2: the answer to "what did I just affect?" must be
+        // SAID, not left to silence — publish it for the scope surface.
+        publishPatchScopeReport(nodeId, response.value.scope_report);
         setAuthoringError(null);
       },
       { coalesce: options.coalesce },

@@ -242,6 +242,13 @@ _DEFINITIONS: tuple[VideoAgentOperationDefinitionV1, ...] = (
         display_name="3D Storyboard",
     ),
     _definition(
+        "execute_canvas_white_model",
+        "AgentRunContext",
+        "AgentCanvasWhiteModelOutput",
+        internal_skill_id="video_agent_3d_white_model",
+        display_name="3D White-Model",
+    ),
+    _definition(
         "compile_video_parameters",
         "VideoParameterIntentContextV3",
         "VideoParameterIntentV3",

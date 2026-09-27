@@ -47,7 +47,10 @@ from app.schemas.seedance_inputs import (
 from app.services.agent_canvas_resolved_inputs import apply_provider_reference_limits
 from app.tools.seedance_adapter import VolcengineSeedanceAdapter
 
-AGNES_MODEL = "agnes-video-2.5-flash"
+# The SKU that accepts ``videos``.  ``-flash`` refuses the parameter outright
+# (HTTP 400 "当前模型不支持 videos"), so a channel test against that SKU would
+# only ever prove the refusal.
+AGNES_MODEL = "agnes-video-2.5"
 
 
 def _adapter() -> VolcengineSeedanceAdapter:
@@ -351,3 +354,192 @@ class TestTheVideoBudgetIsEnforcedBeforeTheAdapterRuns:
         payload = _adapter().payload_for_manifest(seedance)
         assert len(payload["videos"]) == 1
         assert payload["videos"][0]["url"] == "https://cdn.example.com/previs_wide.mp4"
+
+
+MOTION_URL = "https://origin.example.com/previs/previs-shot1.mp4"
+MOTION_INSTRUCTION = (
+    "3D previs camera motion for this beat: framing, path and pace."
+)
+
+
+def _segment(
+    *assets: dict,
+    prompt: str = "She stands outside the aquarium, one rose in hand.",
+    duration: int = 6,
+) -> dict:
+    return {
+        "prompt": prompt,
+        "duration_seconds": duration,
+        "ratio": "16:9",
+        "input_assets": list(assets),
+    }
+
+
+def _picture(asset_id: str, role: str, semantic_type: str) -> dict:
+    """A legacy segment's picture reference, which carries its bytes inline."""
+
+    data_url = "data:image/png;base64,iVBORw0KGgo="
+    return {
+        "asset_id": asset_id,
+        "role": role,
+        "model_input_type": "data_url",
+        "model_input_value": data_url,
+        "url": data_url,
+        "semantic_type": semantic_type,
+    }
+
+
+def _motion(asset_id: str = "previs-shot1-motion", **overrides) -> dict:
+    motion = {
+        "asset_id": asset_id,
+        "role": "motion_reference",
+        "model_input_type": "video_url",
+        "model_input_value": MOTION_URL,
+        "url": MOTION_URL,
+        "semantic_type": "previs_camera_motion",
+        "description": MOTION_INSTRUCTION,
+    }
+    motion.update(overrides)
+    return motion
+
+
+class TestALegacySegmentCarriesItsMotionClip:
+    """The film path -- 22 segments, each one beat still plus its shot's clip.
+
+    The canvas fix above is not the only place the channel was missing.  The
+    production film is driven by ``RealMediaProvider._submit_storyboard_video_segment``
+    → ``payload_for_segment``, whose Agnes branch built ``images`` from the same
+    list and had no notion of a clip at all.  So a run that bound the 3D previs
+    camera-motion video to its segments would have shipped without it, in a
+    request that was billed and never questioned -- the identical failure, one
+    layer down, on the path that actually produces the 成片.
+    """
+
+    def test_the_clip_rides_videos_and_costs_no_picture_slot(self) -> None:
+        payload = _adapter().payload_for_segment(
+            _segment(
+                _picture("still", "storyboard", "storyboard_image"),
+                _picture("board", "scene_reference", "scene_design_board"),
+                _motion(),
+            ),
+            ratio="16:9",
+            resolution="720p",
+        )
+        assert payload["mode"] == "reference"
+        assert payload["videos"] == [{"url": MOTION_URL}]
+        # Two pictures in, two pictures out: the clip took a slot of its own.
+        assert len(payload["images"]) == 2
+
+    def test_the_clip_is_described_in_the_prompt(self) -> None:
+        """"Follow this camera" has to be said out loud, or it is only a file."""
+
+        payload = _adapter().payload_for_segment(
+            _segment(_motion()), ratio="16:9", resolution="720p"
+        )
+        assert "<Video 1>: 3D previs camera motion for this beat" in payload["prompt"]
+        assert payload["prompt"].startswith("She stands outside the aquarium")
+
+    def test_a_clip_only_segment_is_reference_mode(self) -> None:
+        payload = _adapter().payload_for_segment(
+            _segment(_motion()), ratio="16:9", resolution="720p"
+        )
+        assert payload["mode"] == "reference"
+        assert "images" not in payload
+
+    def test_an_unreferenced_segment_still_ships_as_text(self) -> None:
+        payload = _adapter().payload_for_segment(
+            _segment(), ratio="16:9", resolution="720p"
+        )
+        assert payload["mode"] == "text"
+        assert "videos" not in payload
+        assert payload["prompt"] == "She stands outside the aquarium, one rose in hand."
+
+    def test_the_semantic_type_stands_in_when_no_description_was_written(self) -> None:
+        motion = _motion()
+        del motion["description"]
+        payload = _adapter().payload_for_segment(
+            _segment(motion), ratio="16:9", resolution="720p"
+        )
+        assert "<Video 1>: previs_camera_motion" in payload["prompt"]
+
+    def test_an_unknown_role_is_ignored_rather_than_guessed_at(self) -> None:
+        payload = _adapter().payload_for_segment(
+            _segment(
+                _picture("still", "storyboard", "storyboard_image"),
+                {"asset_id": "x", "role": "some_future_role", "url": MOTION_URL},
+            ),
+            ratio="16:9",
+            resolution="720p",
+        )
+        assert "videos" not in payload
+        assert payload["mode"] == "reference"
+        assert len(payload["images"]) == 1
+
+
+class TestALocalClipIsRefusedNotSilentlyDropped:
+    """The failure this channel exists to end, in its segment-path form.
+
+    A previs clip has no public address until someone publishes one: the library
+    records ``/media/<path>`` and the app has never been told its own internet
+    address.  Sending that string to the provider is a refusal, but *dropping*
+    it is worse -- the segment generates, the request is billed, and the camera
+    the operator asked for is simply absent with nothing in the log to say so.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://origin.example.com/previs/previs-shot1.mp4",  # not https
+            "https://127.0.0.1:8000/media/previs-shot1.mp4",  # loopback
+            "https://10.0.0.5:8000/media/previs-shot1.mp4",  # private
+            "/media/assets/objects/sha256/06/67/06670eb9.mp4",  # a local path
+            "assets/objects/sha256/06/67/06670eb9.mp4",  # a relative path
+            "",
+        ],
+    )
+    def test_a_clip_the_provider_cannot_fetch_raises(self, url: str) -> None:
+        with pytest.raises(ValueError, match="provider_reference_delivery_unavailable"):
+            _adapter().payload_for_segment(
+                _segment(_motion(model_input_value=url)), ratio="16:9", resolution="720p"
+            )
+
+    def test_an_inline_clip_cannot_be_sent_as_a_url_either(self) -> None:
+        """The bytes are the file, and the provider has to stream it.
+
+        An image can be a ``data:`` URL because Agnes accepts it inline; a video
+        reference is fetched, so an inline clip is not a smaller version of the
+        same thing -- it is a different request that will be refused, after the
+        quota is spent.
+        """
+
+        with pytest.raises(ValueError, match="provider_reference_delivery_unavailable"):
+            _adapter().payload_for_segment(
+                _segment(_motion(model_input_value="data:video/mp4;base64,AAAA")),
+                ratio="16:9",
+                resolution="720p",
+            )
+
+
+class TestTheMotionRoleDoesNotDisturbTheOtherBranch:
+    def test_the_legacy_content_walk_ignores_a_clip_it_cannot_express(self) -> None:
+        """The non-Agnes branch puts media in ``content`` and has no clip slot.
+
+        It must skip the motion reference rather than raise, because this list is
+        shared: a film that carries a clip for the Agnes endpoint still has to be
+        renderable by a provider that has no such parameter.
+        """
+
+        adapter = VolcengineSeedanceAdapter(
+            Settings(video_generation_model="doubao-seedance-1-0")
+        )
+        payload = adapter.payload_for_segment(
+            _segment(
+                _picture("still", "storyboard", "storyboard_image"),
+                _motion(),
+            ),
+            ratio="16:9",
+            resolution="720p",
+        )
+        types = [item["type"] for item in payload["content"]]
+        assert types == ["text", "image_url"]
+        assert "videos" not in payload

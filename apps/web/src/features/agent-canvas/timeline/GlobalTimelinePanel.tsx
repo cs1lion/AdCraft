@@ -59,6 +59,15 @@ import {
   type ClipDragMode,
   type SnapGridId,
 } from "./timelineDrag.ts";
+import {
+  TIMELINE_DROP_MIME,
+  computeDropStartTime,
+  isDropCompatibleWithTrack,
+  parseTimelineDrop,
+  resolveDropDuration,
+  resolveDropTrack,
+  type TimelineDropPayload,
+} from "./timelineDropPayload.ts";
 
 const TRACK_COLORS: Record<TimelineTrackTypeV1, string> = {
   video: "#4f8cff",
@@ -535,10 +544,21 @@ export function GlobalTimelinePanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  // ADR 0008 §4: one timeline, two faces. "editor" (default) is the existing
+  // media surface; "director" annotates each clip with its shot intent (the
+  // window and its speaker) — the pre-generation face of the same clip.
+  const [phase, setPhase] = useState<"editor" | "director">("editor");
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [dragInteraction, setDragInteraction] = useState<DragInteractionState | null>(
     null,
   );
+  // External drag-in (asset library -> track) state, kept separate from the
+  // internal clip-move interaction above: different gesture, different rules.
+  const [externalDrop, setExternalDrop] = useState<{
+    trackId: string;
+    valid: boolean;
+  } | null>(null);
+  const [dropError, setDropError] = useState<string | null>(null);
   const [snapGridId, setSnapGridId] = useState<SnapGridId>("frame");
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -817,6 +837,79 @@ export function GlobalTimelinePanel({
       setTimeline(await getTimeline(workflowId));
     } catch (resyncError) {
       console.error("Failed to resync timeline:", resyncError);
+    }
+  };
+
+  // --- External drag-in: assets / camera moves dropped onto tracks ---------
+
+  const readDropPayload = (transfer: DataTransfer | null): TimelineDropPayload | null => {
+    if (!transfer) return null;
+    if (!Array.from(transfer.types).includes(TIMELINE_DROP_MIME)) return null;
+    return parseTimelineDrop(transfer.getData(TIMELINE_DROP_MIME));
+  };
+
+  const handleTrackDragOver = (
+    event: React.DragEvent<HTMLDivElement>,
+    track: TimelineTrackV1,
+  ) => {
+    const payload = readDropPayload(event.dataTransfer);
+    if (!payload) return; // not our drag: leave it to the browser/panel
+    // Required for the drop event to fire at all.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropError(null);
+    setExternalDrop({
+      trackId: track.track_id,
+      valid: isDropCompatibleWithTrack(payload, track.type),
+    });
+  };
+
+  const handleTrackDragLeave = (track: TimelineTrackV1) => {
+    setExternalDrop((current) =>
+      current && current.trackId === track.track_id ? null : current,
+    );
+  };
+
+  const handleTrackDrop = async (
+    event: React.DragEvent<HTMLDivElement>,
+    track: TimelineTrackV1,
+  ) => {
+    const payload = readDropPayload(event.dataTransfer);
+    setExternalDrop(null);
+    if (!payload) return;
+    event.preventDefault();
+    if (!timeline) return;
+
+    const target = resolveDropTrack(payload, timeline.tracks, track.track_id);
+    if (!target) {
+      setDropError(
+        `时间线没有可放置「${payload.label || payload.media_type}」的轨道。`,
+      );
+      return;
+    }
+    const contentElement = event.currentTarget;
+    const startTime = computeDropStartTime(event.clientX, contentElement, {
+      pixelsPerSecond: PIXELS_PER_SECOND,
+      snapSeconds: snapGridSeconds(snapGridId, timeline.fps),
+    });
+    try {
+      await createClip(workflowId, {
+        track_id: target.trackId,
+        start_time: startTime,
+        duration: resolveDropDuration(payload),
+        asset_id: payload.kind === "camera" ? null : payload.asset_id,
+        asset_version_id: payload.asset_version_id ?? null,
+        source_node_id: payload.source_node_id ?? payload.camera_node_id ?? null,
+        label: payload.label ?? null,
+      });
+      setDropError(null);
+      await resyncTimeline();
+    } catch (createError) {
+      setDropError(
+        createError instanceof Error
+          ? `拖入失败：${createError.message}`
+          : "拖入失败，请重试。",
+      );
     }
   };
 
@@ -1631,7 +1724,7 @@ export function GlobalTimelinePanel({
           position: "relative",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>🎬 Timeline</span>
           {timeline && (
             <span style={{ fontSize: 12, color: "#cccccc" }}>
@@ -1639,8 +1732,54 @@ export function GlobalTimelinePanel({
               {timeline.tracks.reduce((sum, t) => sum + t.clips.length, 0)} clips
             </span>
           )}
+          {dropError && (
+            <span
+              role="alert"
+              data-testid="timeline-drop-error"
+              style={{
+                fontSize: 11,
+                color: "#ff7875",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {dropError}
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <div
+            style={{ display: "flex", gap: 2, marginRight: 8 }}
+            role="group"
+            aria-label="时间线相位"
+            data-testid="timeline-phase-switch"
+          >
+            <button
+              onClick={() => setPhase("editor")}
+              title="剪辑态：生成后的素材裁剪/转场/混音"
+              aria-pressed={phase === "editor"}
+              style={{
+                ...smallBtnStyle,
+                background: phase === "editor" ? "#1a5fb4" : smallBtnStyle.background,
+                color: phase === "editor" ? "#fff" : smallBtnStyle.color,
+              }}
+            >
+              剪辑态
+            </button>
+            <button
+              onClick={() => setPhase("director")}
+              title="导演态：生成前的镜头意图（时间窗 + 说话人）"
+              aria-pressed={phase === "director"}
+              style={{
+                ...smallBtnStyle,
+                background: phase === "director" ? "#1a5fb4" : smallBtnStyle.background,
+                color: phase === "director" ? "#fff" : smallBtnStyle.color,
+              }}
+            >
+              导演态
+            </button>
+          </div>
           <button
             onClick={stepFrame.bind(null, -1)}
             title="Prev frame"
@@ -2151,6 +2290,22 @@ export function GlobalTimelinePanel({
               </div>
             </div>
 
+            {/* ADR 0008 director face: explain what the annotation means,
+                once, instead of leaving users to guess the extra numbers. */}
+            {phase === "director" && (
+              <div
+                data-testid="timeline-director-hint"
+                style={{
+                  fontSize: 11,
+                  color: "#8c8c8c",
+                  padding: "2px 16px 6px",
+                }}
+              >
+                导演态：每个 clip 显示其镜头意图（时间窗与说话人）——生成前指导面相；
+                切回剪辑态查看素材裁剪与混音参数。
+              </div>
+            )}
+
             {/* Tracks */}
             {sortedTracks.map((track) => {
               const isAudioRole = AUDIO_ROLES.has(track.type);
@@ -2311,8 +2466,16 @@ export function GlobalTimelinePanel({
                   </div>
 
                   {/* Track content */}
+                  {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Drop ZONE surface: HTML5 drag-and-drop only (drop has no click/keyboard semantics); dropping external assets creates a clip, while all click/keyboard editing stays on the clip and row elements below. */}
                   <div
                     data-track-id={track.track_id}
+                    data-drop-hover={
+                      externalDrop?.trackId === track.track_id
+                        ? externalDrop.valid
+                          ? "valid"
+                          : "invalid"
+                        : undefined
+                    }
                     ref={(node) => {
                       if (node) {
                         trackContentRefs.current.set(track.track_id, node);
@@ -2320,6 +2483,9 @@ export function GlobalTimelinePanel({
                         trackContentRefs.current.delete(track.track_id);
                       }
                     }}
+                    onDragOver={(event) => handleTrackDragOver(event, track)}
+                    onDragLeave={() => handleTrackDragLeave(track)}
+                    onDrop={(event) => void handleTrackDrop(event, track)}
                     style={{
                       position: "relative",
                       flex: 1,
@@ -2327,12 +2493,20 @@ export function GlobalTimelinePanel({
                         ? dragInteraction?.dropValid
                           ? "#1d2a1a"
                           : "#2e1a1a"
-                        : "#1a1a1a",
+                        : externalDrop?.trackId === track.track_id
+                          ? externalDrop.valid
+                            ? "#16240f"
+                            : "#2e1a1a"
+                          : "#1a1a1a",
                       boxShadow: isDropHover
                         ? dragInteraction?.dropValid
                           ? "inset 0 0 0 2px rgba(82,196,26,0.9)"
                           : "inset 0 0 0 2px rgba(245,34,45,0.9)"
-                        : undefined,
+                        : externalDrop?.trackId === track.track_id
+                          ? externalDrop.valid
+                            ? "inset 0 0 0 2px rgba(82,196,26,0.7)"
+                            : "inset 0 0 0 2px dashed rgba(245,34,45,0.9)"
+                          : undefined,
                     }}
                   >
                     {/* Edge-snap guide */}
@@ -2453,6 +2627,7 @@ export function GlobalTimelinePanel({
                             e.stopPropagation();
                             handleClipClick(clip);
                           }}
+                          data-phase={phase}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
@@ -2542,6 +2717,28 @@ export function GlobalTimelinePanel({
                               ? clip.subtitle_text
                               : clip.label || `${clip.duration.toFixed(2)}s`}
                           </span>
+                          {/* ADR 0008 director face: the clip's shot intent —
+                              its exact window on the timeline plus its
+                              speaker. The same clip in editor face shows the
+                              media label instead. */}
+                          {phase === "director"
+                            && (track.type === "video" || track.type === "voice") && (
+                            <span
+                              data-testid="timeline-clip-intent"
+                              style={{
+                                position: "absolute",
+                                left: 4,
+                                bottom: 2,
+                                fontSize: 9,
+                                fontFamily: "monospace",
+                                color: "rgba(0,0,0,0.7)",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {clip.start_time.toFixed(1)}–{(clip.start_time + clip.duration).toFixed(1)}s
+                              {clip.bound_character_id ? ` · ${clip.bound_character_id}` : ""}
+                            </span>
+                          )}
                           {clip.bound_character_id && (
                             <span
                               aria-label={`Bound to character ${clip.bound_character_id}`}
@@ -2668,6 +2865,7 @@ export function GlobalTimelinePanel({
           draft={inspectorDraft}
           saving={inspectorSaving}
           errorMessage={inspectorError}
+          phase={phase}
           orphan={clipIsOrphan(selectedClip.clip, workflowNodeIds)}
           videoNodePromotable={
             onCreateVideoNode != null
@@ -2736,6 +2934,8 @@ interface SelectedClipInspectorProps {
   draft: ClipInspectorDraft;
   saving: boolean;
   errorMessage: string | null;
+  /** ADR 0008 phase: director face adds the shot-intent summary. */
+  phase: "editor" | "director";
   /** Clip's source node was deleted from the canvas. */
   orphan: boolean;
   onChange: (patch: Partial<ClipInspectorDraft>) => void;
@@ -2759,6 +2959,7 @@ function SelectedClipInspector({
   draft,
   saving,
   errorMessage,
+  phase,
   orphan,
   onChange,
   onSave,
@@ -2823,6 +3024,33 @@ function SelectedClipInspector({
         <span style={{ fontSize: 11, fontWeight: 600, color: "#ccc" }}>
           {TRACK_ICONS[track.type]} {track.name} clip
         </span>
+        {/* ADR 0008 P2: the director face's shot-intent summary — what the
+            generation step consumes from this clip. Read-only on purpose: the
+            window and speaker are edited in the fields below, and this block
+            exists so the author sees the pre-generation contract, not a second
+            copy of the same inputs. */}
+        {phase === "director" && (isVideo || isVoice) && (
+          <span
+            data-testid="timeline-clip-director-summary"
+            style={{
+              fontSize: 11,
+              color: "#ffd666",
+              background: "rgba(255,214,102,0.08)",
+              border: "1px solid rgba(255,214,102,0.25)",
+              borderRadius: 4,
+              padding: "1px 8px",
+            }}
+          >
+            镜头意图：{draft.start_time || "0"}–{(
+              Number(draft.start_time || 0) + Number(draft.duration || 0)
+            ).toFixed(1)}s
+            {draft.bound_character_id ? ` · 说话人 ${draft.bound_character_id}` : ""}
+            {" · "}
+            {isVoice
+              ? "该窗台词音频驱动 3D 唇形关键帧"
+              : "该窗预演/语音参考切片驱动视频生成（ADR 0008）"}
+          </span>
+        )}
         <label style={labelStyle}>
           Start (s)
           <input

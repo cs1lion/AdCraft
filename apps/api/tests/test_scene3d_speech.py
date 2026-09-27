@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from app.schemas.scene_script import (
@@ -337,3 +339,120 @@ class TestBuildTimelineFromScript:
         tl = build_timeline_from_script([])
         assert len(tl.segments) == 0
         assert tl.total_duration == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Word-level lip-sync: the mouth moves WITH the words (V0.2 §14.9)
+# ---------------------------------------------------------------------------
+
+
+def _line_with_words(
+    words: list[tuple[str, float, float]],
+    *,
+    start_time: float = 2.0,
+    segment_id: str = "seg_0",
+) -> dict[str, Any]:
+    end = words[-1][2] if words else start_time + 1.0
+    return {
+        "character_id": "lin",
+        "text": "".join(word[0] for word in words),
+        "start_time": start_time,
+        "end_time": end,
+        "word_timings": [
+            {"text": text, "start": start, "end": end} for text, start, end in words
+        ],
+    }
+
+
+class TestWordMouthFrames:
+    def test_each_word_opens_and_closes_the_mouth(self) -> None:
+        from app.services.scene3d.speech_orchestration import (
+            SpeechSegment,
+            word_mouth_frames,
+        )
+
+        segment = SpeechSegment(
+            segment_id="seg_0",
+            character_id="lin",
+            text="你终于来了",
+            start_time=2.0,
+            end_time=4.0,
+            word_timings=(
+                {"text": "你", "start": 2.0, "end": 2.4},
+                {"text": "终于", "start": 2.5, "end": 3.2},
+                {"text": "来了", "start": 3.3, "end": 3.9},
+            ),
+        )
+        frames = word_mouth_frames(segment, frame_rate=10, line_frame_start=20)
+        # 2.0s -> frame 20 opens; 2.4s -> frame 24 closes; and so on per word.
+        assert frames == [
+            (20, "talk"),
+            (24, "stand"),
+            (25, "talk"),
+            (32, "stand"),
+            (33, "talk"),
+            (39, "stand"),
+        ]
+
+    def test_missing_word_timings_yield_no_frames(self) -> None:
+        from app.services.scene3d.speech_orchestration import (
+            SpeechSegment,
+            word_mouth_frames,
+        )
+
+        segment = SpeechSegment(
+            segment_id="seg_0",
+            character_id="lin",
+            text="你终于来了",
+            start_time=2.0,
+            end_time=4.0,
+        )
+        assert word_mouth_frames(segment, frame_rate=30, line_frame_start=60) == []
+
+    def test_degenerate_words_are_skipped_not_crashed(self) -> None:
+        from app.services.scene3d.speech_orchestration import (
+            SpeechSegment,
+            word_mouth_frames,
+        )
+
+        segment = SpeechSegment(
+            segment_id="seg_0",
+            character_id="lin",
+            text="x",
+            start_time=2.0,
+            end_time=4.0,
+            word_timings=(
+                {"text": "backwards", "start": 3.0, "end": 2.0},
+                {"text": "no-times"},
+                {"text": "outside", "start": 9.0, "end": 9.5},
+                {"text": "good", "start": 2.2, "end": 2.6},
+            ),
+        )
+        frames = word_mouth_frames(segment, frame_rate=10, line_frame_start=20)
+        assert frames == [(22, "talk"), (26, "stand")]
+
+
+class TestTimelineCarriesWordTimings:
+    def test_the_timeline_keeps_the_line_word_timings(self) -> None:
+        from app.services.scene3d.speech_orchestration import build_timeline_from_script
+
+        timeline = build_timeline_from_script(
+            [
+                _line_with_words(
+                    [("你", 2.0, 2.4), ("来了", 2.5, 2.9)],
+                )
+            ],
+            frame_rate=30,
+        )
+        segment = timeline.segments[0]
+        assert segment.word_timings is not None
+        assert [word["text"] for word in segment.word_timings] == ["你", "来了"]
+
+    def test_a_line_without_word_timings_stays_none(self) -> None:
+        from app.services.scene3d.speech_orchestration import build_timeline_from_script
+
+        timeline = build_timeline_from_script(
+            [{"character_id": "lin", "text": "就是这里", "start_time": 0.5}],
+            frame_rate=30,
+        )
+        assert timeline.segments[0].word_timings is None

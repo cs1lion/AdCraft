@@ -16,6 +16,9 @@ export interface CharacterAppearance {
   color?: string;
   height?: number;
   scale?: number;
+  /** Declared wardrobe palette (1-4 hex). Cross-node consistency for the
+   *  same bound character asset is checked (V0.2 §5 服装). */
+  palette?: string[] | null;
 }
 
 export interface CharacterKeyframe {
@@ -28,6 +31,8 @@ export interface CharacterKeyframe {
 export interface SceneCharacter {
   id: string;
   type: "lowpoly_human" | string;
+  /** Bound character asset for identity consistency (mirrors SceneCharacter.character_asset_id). */
+  character_asset_id?: string | null;
   appearance: CharacterAppearance;
   keyframes: CharacterKeyframe[];
 }
@@ -38,6 +43,12 @@ export interface SceneProp {
   position: [number, number, number];
   scale?: number;
   rotation_y?: number;
+  /** Character id carrying this prop: it follows the holder's hand every shot. */
+  held_by?: string | null;
+  /** Which hand carries it (defaults to the right when held). */
+  held_side?: "left" | "right" | null;
+  /** Bound prop asset (P0, 2026-09-15): the identity this prop is derived from. */
+  prop_asset_id?: string | null;
 }
 
 export interface SceneEnvironment {
@@ -46,6 +57,8 @@ export interface SceneEnvironment {
   position: [number, number, number];
   scale?: number;
   rotation_y?: number;
+  /** Bound scene asset (P0, 2026-09-15): which design this environment is from. */
+  scene_asset_id?: string | null;
 }
 
 export interface CameraKeyframe {
@@ -66,6 +79,8 @@ export interface SceneShot {
   start_frame: number;
   end_frame: number;
   description?: string;
+  /** Reading id this shot enters with (V0.2 §13 第 5 问). */
+  transition_intent?: string | null;
 }
 
 export interface SpeechBinding {

@@ -66,6 +66,9 @@ def deterministic_role_brief(
             "silhouette_and_proportions": "Preserve silhouette and proportions.",
             "wardrobe": "Preserve the accepted wardrobe and palette.",
             "accessories": "Preserve accepted accessories.",
+            # No palette is invented for a fixture: an undeclared palette is
+            # "not decided yet" (ADR 0011), not a colour to be made up.
+            "appearance_palette": None,
             **({"views": ["front", "side", "back"]} if variant == "character_turnaround" else {}),
         }
     elif variant == "scene_board":

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GlobalTimelinePanel } from "./GlobalTimelinePanel.tsx";
+import { TIMELINE_DROP_MIME } from "./timelineDropPayload.ts";
 import {
   PlayheadSyncProvider,
   usePlayheadSync,
@@ -2076,5 +2077,370 @@ describe("GlobalTimelinePanel — 3D preview playhead sync", () => {
     // Stop the loop so RAF does not outlive the test.
     fireEvent.click(screen.getByTitle("Pause"));
     expect(screen.getByTitle("Play")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// External drag-in (ADR 0007 Phase 3.6): assets / camera moves -> tracks
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal DataTransfer stand-in: jsdom does not implement the interface, and
+ * the panel reads only `types`/`getData` while writing nothing on drop.
+ */
+function makeDataTransfer(entries: Record<string, string>) {
+  return {
+    types: Object.keys(entries),
+    getData: (type: string) => entries[type] ?? "",
+    setData: () => {},
+  };
+}
+
+function dropPayload(payload: Record<string, unknown>): Record<string, string> {
+  return { [TIMELINE_DROP_MIME]: JSON.stringify(payload) };
+}
+
+describe("GlobalTimelinePanel — external drag-in", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({
+        tracks: [
+          videoTrack,
+          voiceTrack,
+          bgmTrack,
+          makeTrack({ track_id: "track_camera", type: "camera", name: "Camera", display_order: 3 }),
+        ],
+      }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(createClip).mockImplementation(async (_workflowId, payload) =>
+      makeClip({
+        clip_id: "clip_dropped",
+        track_id: payload.track_id,
+        start_time: payload.start_time ?? 0,
+        duration: payload.duration ?? 2,
+        asset_id: payload.asset_id ?? null,
+        source_node_id: payload.source_node_id ?? null,
+        label: payload.label ?? null,
+      }),
+    );
+  });
+
+  function videoTrackContent(): HTMLElement {
+    return document.querySelector(
+      '[data-track-id="track_video"]',
+    ) as HTMLElement;
+  }
+
+  it("drops a video asset onto the video track at the snapped position", async () => {
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+    const content = videoTrackContent();
+
+    fireEvent.dragOver(content, {
+      dataTransfer: makeDataTransfer(
+        dropPayload({
+          kind: "asset",
+          asset_id: "asset_video_1",
+          media_type: "video",
+          label: "赌场内部",
+          duration_seconds: 5.5,
+        }),
+      ),
+    });
+    expect(content.getAttribute("data-drop-hover")).toBe("valid");
+
+    fireEvent.drop(content, {
+      clientX: 150,
+      dataTransfer: makeDataTransfer(
+        dropPayload({
+          kind: "asset",
+          asset_id: "asset_video_1",
+          media_type: "video",
+          label: "赌场内部",
+          duration_seconds: 5.5,
+        }),
+      ),
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(createClip)).toHaveBeenCalledTimes(1);
+    });
+    const [workflowId, payload] = vi.mocked(createClip).mock.calls[0];
+    expect(workflowId).toBe(WORKFLOW_ID);
+    expect(payload.track_id).toBe("track_video");
+    expect(payload.duration).toBe(5.5);
+    expect(payload.asset_id).toBe("asset_video_1");
+    expect(payload.label).toBe("赌场内部");
+    // jsdom returns a zero rect for getBoundingClientRect -> start 0; the
+    // quantization itself is unit-tested in timelineDropPayload.test.ts.
+    expect(payload.start_time).toBeGreaterThanOrEqual(0);
+  });
+
+  it("marks incompatible tracks invalid on hover and still resolves a compatible one on drop", async () => {
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+    const cameraContent = document.querySelector(
+      '[data-track-id="track_camera"]',
+    ) as HTMLElement;
+
+    fireEvent.dragOver(cameraContent, {
+      dataTransfer: makeDataTransfer(
+        dropPayload({ kind: "asset", asset_id: "a", media_type: "audio" }),
+      ),
+    });
+    expect(cameraContent.getAttribute("data-drop-hover")).toBe("invalid");
+
+    fireEvent.drop(cameraContent, {
+      clientX: 150,
+      dataTransfer: makeDataTransfer(
+        dropPayload({ kind: "asset", asset_id: "a", media_type: "audio" }),
+      ),
+    });
+    await waitFor(() => {
+      expect(vi.mocked(createClip)).toHaveBeenCalledTimes(1);
+    });
+    // audio cannot land on camera: falls back to the first audio track.
+    expect(vi.mocked(createClip).mock.calls[0][1].track_id).toBe("track_voice");
+  });
+
+  it("drops a camera payload onto the camera track with the scene-3d node link", async () => {
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+    const cameraContent = document.querySelector(
+      '[data-track-id="track_camera"]',
+    ) as HTMLElement;
+
+    fireEvent.drop(cameraContent, {
+      clientX: 150,
+      dataTransfer: makeDataTransfer(
+        dropPayload({
+          kind: "camera",
+          asset_id: "node_scene3d_1",
+          media_type: "camera",
+          camera_node_id: "node_scene3d_1",
+          label: "B2 运镜",
+        }),
+      ),
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(createClip)).toHaveBeenCalledTimes(1);
+    });
+    const payload = vi.mocked(createClip).mock.calls[0][1];
+    expect(payload.track_id).toBe("track_camera");
+    expect(payload.asset_id).toBeNull(); // camera clips have no media asset
+    expect(payload.source_node_id).toBe("node_scene3d_1");
+  });
+
+  it("surfaces an error when no compatible track exists", async () => {
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({ tracks: [videoTrack] }),
+    );
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+    const cameraPayload = dropPayload({
+      kind: "camera",
+      asset_id: "node_scene3d_1",
+      media_type: "camera",
+    });
+
+    fireEvent.drop(videoTrackContent(), {
+      clientX: 150,
+      dataTransfer: makeDataTransfer(cameraPayload),
+    });
+
+    await screen.findByTestId("timeline-drop-error");
+    expect(vi.mocked(createClip)).not.toHaveBeenCalled();
+  });
+
+  it("ignores drags that do not carry the timeline payload", async () => {
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+    const content = videoTrackContent();
+
+    fireEvent.dragOver(content, {
+      dataTransfer: makeDataTransfer({ "text/plain": "some random text" }),
+    });
+    fireEvent.drop(content, {
+      clientX: 150,
+      dataTransfer: makeDataTransfer({ "text/plain": "some random text" }),
+    });
+
+    expect(content.getAttribute("data-drop-hover")).toBeNull();
+    expect(vi.mocked(createClip)).not.toHaveBeenCalled();
+  });
+
+  it("uses the source duration default when the payload has none", async () => {
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+
+    fireEvent.drop(videoTrackContent(), {
+      clientX: 150,
+      dataTransfer: makeDataTransfer(
+        dropPayload({ kind: "asset", asset_id: "a", media_type: "video" }),
+      ),
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(createClip)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(createClip).mock.calls[0][1].duration).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR 0008 phase switch (director / editor faces of one timeline)
+// ---------------------------------------------------------------------------
+
+describe("GlobalTimelinePanel — timeline phase switch", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({
+        tracks: [
+          makeTrack({
+            track_id: "track_video",
+            type: "video",
+            name: "Video",
+            display_order: 0,
+            clips: [
+              makeClip({
+                clip_id: "clip_video_1",
+                track_id: "track_video",
+                label: "Video clip 1",
+                start_time: 3,
+                duration: 2,
+                bound_character_id: "char_lin",
+              }),
+            ],
+          }),
+          voiceTrack,
+        ],
+      }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+  });
+
+  it("defaults to the editor face with the switch visible", () => {
+    renderPanel();
+    const group = screen.getByTestId("timeline-phase-switch");
+    expect(group).toBeTruthy();
+    expect(screen.getByRole("button", { name: "剪辑态" }).getAttribute("aria-pressed")).toBe("true");
+    // Editor face: no intent annotations, no director hint.
+    expect(screen.queryByTestId("timeline-clip-intent")).toBeNull();
+    expect(screen.queryByTestId("timeline-director-hint")).toBeNull();
+  });
+
+  it("director face annotates clips with their shot intent", async () => {
+    renderPanel();
+    // The fixture has two clips (video + voice): wait for the list, not one.
+    await screen.findAllByTestId("timeline-clip");
+    fireEvent.click(screen.getByRole("button", { name: "导演态" }));
+
+    expect(screen.getByRole("button", { name: "导演态" }).getAttribute("aria-pressed")).toBe("true");
+    expect(await screen.findByTestId("timeline-director-hint")).toBeTruthy();
+
+    // The video clip shows its window (3.0–5.0s) and its speaker.
+    const intents = screen.getAllByTestId("timeline-clip-intent");
+    const videoIntent = intents.find((node) => node.textContent?.includes("3.0–5.0s"));
+    expect(videoIntent).toBeTruthy();
+    expect(videoIntent?.textContent).toContain("char_lin");
+    // The voice clip is annotated too (its window), without a speaker here.
+    const voiceIntent = intents.find((node) => node.textContent?.includes("0.0–2.0s"));
+    expect(voiceIntent).toBeTruthy();
+  });
+
+  it("switches back to the editor face", async () => {
+    renderPanel();
+    await screen.findAllByTestId("timeline-clip");
+    fireEvent.click(screen.getByRole("button", { name: "导演态" }));
+    expect((await screen.findAllByTestId("timeline-clip-intent")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "剪辑态" }));
+    expect(screen.queryByTestId("timeline-clip-intent")).toBeNull();
+    expect(screen.queryByTestId("timeline-director-hint")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR 0008 P2: director-face shot-intent summary in the inspector
+// ---------------------------------------------------------------------------
+
+describe("GlobalTimelinePanel — director shot intent summary", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({
+        tracks: [
+          makeTrack({
+            track_id: "track_video",
+            type: "video",
+            name: "Video",
+            display_order: 0,
+            clips: [
+              makeClip({
+                clip_id: "clip_video_dir",
+                track_id: "track_video",
+                label: "Intent clip",
+                start_time: 3,
+                duration: 2,
+                bound_character_id: "char_lin",
+              }),
+            ],
+          }),
+          voiceTrack,
+        ],
+      }),
+    );
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({
+      status: "ready",
+      feature_flags: { audio_ducking: true },
+    });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+    vi.mocked(updateClip).mockImplementation(async (_workflowId, _clipId, patch) => ({
+      ...makeClip(),
+      ...patch,
+      clip_id: _clipId as string,
+    }));
+  });
+
+  afterEach(cleanup);
+
+  it("shows the shot-intent summary for a video clip in director face", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Intent clip" }));
+    await screen.findByTestId("timeline-clip-inspector");
+
+    // Editor face: no intent summary.
+    expect(screen.queryByTestId("timeline-clip-director-summary")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "导演态" }));
+    const summary = await screen.findByTestId("timeline-clip-director-summary");
+    expect(summary.textContent).toContain("镜头意图");
+    expect(summary.textContent).toContain("3–5.0s");
+    expect(summary.textContent).toContain("char_lin");
+    expect(summary.textContent).toContain("预演/语音参考切片驱动视频生成");
+  });
+
+  it("shows the lip-sync intent for a voice clip in director face", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Voice line 1" }));
+    await screen.findByTestId("timeline-clip-inspector");
+
+    fireEvent.click(screen.getByRole("button", { name: "导演态" }));
+    const summary = await screen.findByTestId("timeline-clip-director-summary");
+    expect(summary.textContent).toContain("台词音频驱动 3D 唇形关键帧");
   });
 });

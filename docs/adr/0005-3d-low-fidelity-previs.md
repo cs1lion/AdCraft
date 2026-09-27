@@ -126,8 +126,20 @@ Failures block execution-result commit; warnings emit queryable events. This is 
 
 Credentials never enter the repository (engineering standard §7).
 
-## Appendix: SceneScript schema sketch (reference, not the source of truth)
+## 实施状态（2026-09-26 回填）
 
+本 ADR 的核心决策（SceneScript 是唯一规范中间格式）未变；施工分解在 `docs/plans/3d-previs-construction.md`（P0–P6）与 `docs/plans/3d-workbench-and-pipeline-completion.md`（工作台 P0–P5）逐项登记。代码现状要点：
+
+- **SceneScript + 全链路**：`schemas/scene_script.py`（校验器 + mutation 测试）→ Three.js 实时预览 → Blender 渲染 → 视频提示词包；`scene3d/` 下 parser / blender_converter / blender_renderer / encoder / keyframes / control_passes（depth/normal/flow）+ `previs_control_level` 能力指纹降级链（full/video_only/images_only/text_only，可查询）。
+- **交互工作台**：`SceneScript3DEditor`（选择-拖拽-放置相机-关键帧捕获-检查器保存）、运镜预设 + 地面画轨迹（常速采样）、角色动作预设、资产托盘、角色资产绑定（Dramagic 式身份锁，绑定后显示参考图）。
+- **审片与连续性**：`scene_consistency.py`（一致性闸门，warning 级不阻断）+ `blocking_continuity.py`（跨镜头走位连续性，Continuity State 可算内核；**2026-09-27 起首次接入执行器**——此前只有定义与测试、无调用者，转身在产品里无人看得见）+ `transition_intent_reconciliation.py`（§13 第 4 问：把『什么必须连续』与『什么发生改变』对上账——变化类读法解释连续性 findings，承诺连续的读法被它反驳；两个看门用两种约定指同一条边界，已统一为『出镜 id 在前』一次 join 服务两者）+ `held_items.py`（Continuity State 的道具维度：持有声明 → 预览与 Blender 同步跟随持有者的手，"伞换手"成为不可表示状态）+ `emotion_continuity.py`（Continuity State 的情绪维度：跨切情绪突变且无停顿可读作有时，advisory 提问不判决；L-cut 不误报；切在停顿处不出建议） + `wardrobe_drift.py`（Continuity State 的服装维度可算部分：同一角色资产跨 scene-3d 节点的外观漂移、绑定冲突与**声明的色板漂移**（`character_palette_drift`），执行器发布 `scene3d_wardrobe_drift`；工作流脚本读不到时明说，不伪装通过）+ `CharacterAppearance.palette`（服装的**声明**侧：1-4 hex、可选、加性；检查器「服装色板」字段经 `setCharacterPalette` 写入，按 author 的正式声明比较而非从绑定资产的图里取色——代理编造颜色等于编造资产绑定唯一要钉住的东西；未声明 = 还没决定，跳过而不是误报；资产侧同事实的落点与消费见 **ADR 0011**（Proposed：资产是真相源、预演是不得编造的代理，两条落点路径 B 过渡 / A 终点）+ `shot_advisor.py`（台词驱动分镜顾问）+ `transition_proposals.py`（A→B 衔接方案：连续运动/视线特写/声音桥/说完再切/时间跳跃/视角切换） + `transitionVariants.ts`（局部分叉：读法可存为方案并排恢复，整份脚本快照、上限 4 且界面明示） + shotTransitionRelations（§13 第 5 问：边界作为一对被命名——s1 → s2：声音桥，未登记边以 null 上报而非跳过，因为「这条边界还没人认领」本身就是审片会问的事）+ `SceneShot.transition_intent` 与 `intent_audit`（§13 第 5 问：转场关系用**标签**而非连线——读法本身已作为关键帧写在脚本里，连线只会成为可与之矛盾的第二份拷贝；标签把哪一镜以何种读法接入（**可撤销**：镜头条的取消登记，写而不撤不算编辑）记在镜头上，镜头条边界楔标可见，登记即可校验，读法不再成立时报出它自己的理由与补救）+ 480P 预览带真实台词音频（animatic）。
+- **Animatic 成片侧（V0.2 §14.9）**：scene-3d 节点渲染的 MP4 在完整动画渲染后混入台词床音（`mux_audio_to_video`——此前是死代码）；`animatic_audio` provenance（muxed/asset_ref/reason）发布在节点上，四种原因可查询，混入失败只降级不拖垮渲染；`/render` 与异步任务同语义（`audio_path`/`audio_asset_id` → `animatic_video_path`/`audio_muxed`）。
+- **分层所有权（V0.2 §14.13）**：两层锁都是结构性的——① Audio 锁：走位/运镜预设落在说话窗内时保留 talk（边走边说），应用时报告保留帧数；② Visual 锁：唇形合并继承**该帧的插值姿态**（与预览同一语义），重新应用唇形不再把 authored 走位台阶化（此前 forward-hold 让走路变"原地站住、后半段冲刺"）。唇形应用反向只接管 action 通道。层的所有权在界面上可见（`LayerOwnershipNote`）：没人看得见的锁等于没有锁。仅剩的坦诚记录：偏航插值落在 schema 弧度盲区（0<|yaw|<=2π）时回落至 authored 值——位置永远精确，极小转身只在其起点量化。
+- **LLM 的位置**：读法目录与可行性由规则层决定（`transition_proposals.py`），LLM 可重写叙事理由（`transition_narratives.py` 的 `polish_narratives`），也可**提出规则目录之外的新读法**（`propose_readings`）——但每条提案必须先过校验（id 不冒充规则读法、至少一个操作、操作词表与场景 id 逐条核对），过不了就跑掉并点名；提案带 `origin` 徽章，应用路径与规则读法同一套。多轮迭代（V0.2 §15 深化）：作者应用/驳回的读法进入保留集（`exclude_reading_ids`），prompt 与校验层双保险——LLM 被要求换个方向想，重复提议直接丢弃并点名（已知边界：记忆活在面板状态，刷新即重置）。"机器提案、人选择"的边界用代码固定，不靠提示词自律。
+- **建模入口**：自然语言 / 图片（含全景切面 + MiDaS 深度）/ 参考视频 / shot 模板四通道；Blender MCP 客户端（受控白名单）+ 白模设计模式（操作批次经同一校验闸门）。
+- **仍开放**：音素级唇形（启发式音节开合仍是低保真）、`render_settings` 的 Blender Converter 消费、ADR 0003 §5 的 QA registry（未建）。
+
+## Appendix: SceneScript schema sketch (reference, not the source of truth)
 The authoritative schema lives in `apps/api/app/schemas/scene_script.py`. This sketch is for readability only:
 
 ```json

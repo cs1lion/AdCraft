@@ -1502,7 +1502,8 @@ export type CanvasNodeTypeV2 =
   | "audio"
   | "editing"
   | "scene-3d"
-  | "voice-cast";
+  | "voice-cast"
+  | "replica";
 
 export type CanvasNodeStatusV2 = "draft" | "working" | "ready" | "failed";
 
@@ -1525,7 +1526,8 @@ export type CanvasCreativeRoleV2 =
   | "general_audio"
   | "editing"
   | "scene_3d_previs"
-  | "voice_cast";
+  | "voice_cast"
+  | "replica_blueprint";
 
 export interface WorldSettingAuthoringProvenanceV2 {
   source_proposal_id: string;
@@ -3355,10 +3357,31 @@ export interface CanvasBindingMutationResponseV2 {
   events_cursor: number;
 }
 
+/** One affected neighbour, as the ADR 0009 scope report names it. */
+export interface CanvasScopeNeighbourV2 {
+  node_id?: string;
+  relation?: string;
+  reason?: string;
+}
+
+/**
+ * What a node patch touched — and what it did NOT (ADR 0009 决策 2). The
+ * backend computes this on every patch; the surface must SAY it, because an
+ * unspoken "no neighbours affected" reads as "the system didn't check".
+ */
+export interface CanvasNodeScopeReportV2 {
+  edited_keys?: string[];
+  content_areas?: string[];
+  affected_neighbours?: CanvasScopeNeighbourV2[];
+  dirty_reasons?: string[];
+  notes?: string[];
+}
+
 export interface CanvasMutationResponseV2 {
   workflow: AgentCanvasWorkflowV2;
   node: CanvasNodeV2 | null;
   binding: CanvasBindingV2 | null;
+  scope_report?: CanvasNodeScopeReportV2 | null;
 }
 
 export interface ProjectAssetUploadMetadataV2 {
@@ -4261,4 +4284,79 @@ export interface GuidedReferenceCandidateListResponseV2 {
   scope: GuidedReferenceCandidateScopeV2;
   items: GuidedReferenceCandidateV2[];
   next_cursor: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 拉片复刻（Replica）蓝图内容 —— 与后端 ReplicaBlueprintContentV2 对齐
+// ---------------------------------------------------------------------------
+
+export type ReplicaSlotKindV2 = "character" | "product" | "script" | "style" | "voice" | "scene";
+
+export interface ReplicaSlotV2 {
+  kind: ReplicaSlotKindV2;
+  label: string;
+  source_value: string;
+  replace_with: string;
+  applied: boolean;
+}
+
+export type ReplicaAnchorKindV2 = "broll" | "caption" | "sfx" | "mg" | "transition";
+
+export interface ReplicaAnchorEventV2 {
+  event_id: string;
+  trigger: string;
+  beat_id: string;
+  kind: ReplicaAnchorKindV2;
+  hint: string;
+  keep: boolean;
+  /** 词级锚定（whisperX 可用时）：绑定的词语与时间跨度；空 = 段落级锚点 */
+  word?: string;
+  word_start_seconds?: number;
+  word_end_seconds?: number;
+}
+
+export interface ReplicaBeatV2 {
+  beat_id: string;
+  role: string;
+  description: string;
+  /** 段落台词原文（词级转录可用时）：行内词锚的文本载体 */
+  line?: string;
+  start_seconds: number;
+  end_seconds: number;
+  anchor_event_ids: string[];
+}
+
+export interface ReplicaShotV2 {
+  index: number;
+  start_seconds: number;
+  end_seconds: number;
+  shot_size: string;
+  camera_motion: string;
+  subject_action: string;
+  on_screen_text: string;
+  transition_to_next: string;
+  recreate_hint: string;
+}
+
+export interface ReplicaBlueprintContentV2 {
+  blueprint_version: "replica-blueprint-v1";
+  source_video_asset_id: string;
+  duration_seconds: number;
+  aspect: string;
+  replica_goal: string;
+  whole_piece_reading: string;
+  format_name: string;
+  slots: ReplicaSlotV2[];
+  beats: ReplicaBeatV2[];
+  anchor_events: ReplicaAnchorEventV2[];
+  shots: ReplicaShotV2[];
+  rhythm_avg_shot_seconds: number;
+  rhythm_cut_points_seconds: number[];
+  rhythm_energy_curve: string;
+  systems_captions: string;
+  systems_music: string;
+  systems_graphics: string[];
+  systems_sfx: string[];
+  constraints: string[];
+  instantiated_script_node_id: string | null;
 }

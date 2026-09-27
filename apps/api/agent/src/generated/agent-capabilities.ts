@@ -20,6 +20,7 @@ export const AGENT_CAPABILITY_CONTRACT = {
         "execute_canvas_scene_3d",
         "execute_canvas_script",
         "execute_canvas_text",
+        "execute_canvas_white_model",
         "free_audio",
         "free_image",
         "free_video",

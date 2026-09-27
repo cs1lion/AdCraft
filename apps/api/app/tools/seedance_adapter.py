@@ -23,6 +23,28 @@ from app.tools.media_provider_protocol import (
 )
 
 
+#: The reference roles a legacy segment's ``input_assets`` may carry as still
+#: pictures.  One definition, because the Agnes branch and the legacy content
+#: walk build different request shapes out of the same list and have to agree on
+#: which roles are images -- a role that one treats as a picture and the other
+#: as a clip would be sent twice, or dropped by both.
+SEEDANCE_SEGMENT_IMAGE_ROLES = frozenset(
+    {
+        "character_turnaround",
+        "product_reference",
+        "scene_reference",
+        "storyboard",
+    }
+)
+
+#: The one role that carries a *clip* rather than a picture.  Agnes takes it in
+#: ``videos`` -- an array of objects with its own budget -- so it consumes no
+#: image slot.  That is what lets the 3D previs camera-motion reference ride
+#: alongside the finished character and scene stills instead of being traded
+#: against them, which is the whole point of the channel.
+SEEDANCE_SEGMENT_MOTION_ROLE = "motion_reference"
+
+
 def _video_generation_task_url(endpoint: str, task_id: str) -> str:
     """Derive the task query URL from the configured submit endpoint.
 
@@ -80,13 +102,23 @@ class VolcengineSeedanceAdapter:
                 "size": "720P",
                 "aspect_ratio": normalized_ratio,
             }
-            # Add reference images if present (Agnes reference mode)
-            image_items = _seedance_image_content_items(segment.get("input_assets", []))
-            if image_items:
+            # Add reference images if present (Agnes reference mode), and the
+            # motion clip if one is bound: they are separate arrays with
+            # separate budgets, so the clip costs no image slot.  ``mode`` is
+            # decided by the union, not by the image list alone -- a segment
+            # bound only to a previs clip used to ship as ``"text"`` with a
+            # ``videos`` array attached to a mode that ignores it.
+            images, videos, described = _seedance_segment_reference_plan(segment)
+            if images:
+                agnes_payload["images"] = images
+            if videos:
+                agnes_payload["videos"] = videos
+            if described:
                 agnes_payload["mode"] = "reference"
-                agnes_payload["images"] = [
-                    item["image_url"]["url"] for item in image_items if item.get("type") == "image_url"
-                ]
+                # The provider's own guidance is that unattributed material is
+                # harder to steer than none, and a video reference especially:
+                # "follow this camera" has to be said out loud.
+                agnes_payload["prompt"] = _agnes_reference_directives(prompt, described)
             return agnes_payload
 
         content: list[dict[str, Any]] = [
@@ -267,12 +299,7 @@ def _seedance_image_content_items(input_assets: Any) -> list[dict[str, Any]]:
     for asset in input_assets:
         if not isinstance(asset, dict):
             continue
-        if asset.get("role") not in {
-            "character_turnaround",
-            "product_reference",
-            "scene_reference",
-            "storyboard",
-        }:
+        if asset.get("role") not in SEEDANCE_SEGMENT_IMAGE_ROLES:
             continue
         model_input_type = asset.get("model_input_type")
         image_url = (
@@ -294,6 +321,96 @@ def _seedance_image_content_items(input_assets: Any) -> list[dict[str, Any]]:
             }
         )
     return content_items
+
+
+def _seedance_segment_image_url(asset: dict[str, Any]) -> str:
+    """Where a segment's picture reference actually points.
+
+    ``model_input_value`` when the recorded type says it carries the bytes, and
+    ``url`` otherwise -- the same precedence ``_seedance_image_content_items``
+    uses, because they walk the same list and must not disagree about which
+    field holds the payload.
+    """
+
+    model_input_type = asset.get("model_input_type")
+    value = (
+        asset.get("model_input_value")
+        if model_input_type in {"image_url", "data_url", "provider_uploaded_url"}
+        else asset.get("url")
+    )
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _seedance_segment_reference_description(asset: dict[str, Any]) -> str:
+    """What this reference is for, in the wording recorded on the binding.
+
+    Legacy segment references carry a ``description`` or a ``semantic_type``;
+    the manifest path compiles a ``reference_instruction`` from the binding's
+    kind and purpose.  Both are preferred over naming the asset, and both are
+    single-line text because they are pasted into the prompt.
+    """
+
+    for key in ("description", "reference_instruction", "semantic_type"):
+        value = asset.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return "reference image"
+
+
+def _seedance_segment_reference_plan(
+    segment: dict[str, Any],
+) -> tuple[list[str], list[dict[str, Any]], list[tuple[str, int, str]]]:
+    """Split a legacy segment's references into the three arrays Agnes accepts.
+
+    Returns ``(images, videos, described)`` where ``described`` is
+    ``(kind, position, description)`` per reference in the order each array is
+    built -- which is the order ``<Picture N>`` / ``<Video N>`` in the prompt are
+    numbered against, because Agnes resolves those placeholders against their own
+    array by position.  So one walk builds both claims.
+
+    A motion clip is *refused*, not skipped, when it is not a URL the provider
+    can fetch: the local previs file has no public address until someone
+    publishes one, and a silently dropped camera is indistinguishable from a
+    model that simply ignored the reference.  That is the failure this whole
+    channel used to have -- and unlike an image, a clip cannot be inlined as a
+    data URL, because the payload is the file and the provider has to stream it.
+    """
+
+    images: list[str] = []
+    videos: list[dict[str, Any]] = []
+    described: list[tuple[str, int, str]] = []
+    for asset in segment.get("input_assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        role = asset.get("role")
+        if role not in SEEDANCE_SEGMENT_IMAGE_ROLES:
+            if role != SEEDANCE_SEGMENT_MOTION_ROLE:
+                continue
+            url = asset.get("model_input_value")
+            if not isinstance(url, str):
+                url = asset.get("url")
+            url = url.strip() if isinstance(url, str) else ""
+            if not url or not _is_seedance_compatible_image_input(url):
+                raise ValueError("provider_reference_delivery_unavailable")
+            # No ``start_seconds`` and no ``require_audio``: one is the clip's
+            # own trim and the other describes its soundtrack, and a guessed
+            # default for either is a decision made on the provider's behalf.
+            # They belong here once a binding can carry them.
+            videos.append({"url": url})
+            described.append(
+                ("Video", len(videos), _seedance_segment_reference_description(asset))
+            )
+            continue
+        image_url = _seedance_segment_image_url(asset)
+        if not image_url:
+            continue
+        if not _is_seedance_compatible_image_input(image_url):
+            raise ValueError("v2_provider_reference_url_invalid")
+        images.append(image_url)
+        described.append(
+            ("Picture", len(images), _seedance_segment_reference_description(asset))
+        )
+    return images, videos, described
 
 
 def _seedance_manifest_content_item(item: SeedanceMediaInputV1) -> dict[str, Any]:

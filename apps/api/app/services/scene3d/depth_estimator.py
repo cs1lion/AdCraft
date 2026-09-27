@@ -409,6 +409,91 @@ def extract_depth_from_video(
     )
 
 
+def estimate_depth_from_image(
+    input_image_path: str | Path,
+    output_dir: str | Path | None = None,
+    model_type: str = DEFAULT_MODEL_TYPE,
+    colormap: str = COLORMAP_GRAYSCALE,
+    max_dimension: int = 1280,
+) -> DepthEstimationResult:
+    """Estimate a depth map (white model) from a single image.
+
+    The image counterpart of ``extract_depth_from_video``: a dropped panorama
+    or reference photo becomes a grayscale depth map (near = bright, far =
+    dark). Used as a composition-fidelity control signal for the video model
+    and as the white-model texture in the previs pipeline.
+
+    Large inputs (panoramas!) are downscaled so the long side does not exceed
+    ``max_dimension`` before inference — MiDaS quality does not need (and the
+    CPU cannot afford) more.
+
+    The result reuses ``DepthEstimationResult``; for an image
+    ``frame_count == 1`` and ``duration_seconds == 0`` — the paths point at
+    images, not videos.
+    """
+
+    cv2 = _import_cv2()
+    torch = _import_torch()
+
+    input_path = Path(input_image_path)
+    if not input_path.exists():
+        raise DepthEstimationError(
+            f"Input image not found: {input_path}",
+            error_type="file_not_found",
+        )
+
+    image = cv2.imread(str(input_path))
+    if image is None:
+        raise DepthEstimationError(
+            f"Failed to read image: {input_path}",
+            error_type="image_read_error",
+        )
+    src_height, src_width = image.shape[:2]
+
+    scale = min(1.0, max_dimension / max(src_height, src_width))
+    if scale < 1.0:
+        image = cv2.resize(
+            image,
+            (max(1, int(src_width * scale)), max(1, int(src_height * scale))),
+        )
+
+    if output_dir is None:
+        output_dir = Path(tempfile.mkdtemp(prefix="depth_image_"))
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    asset_id = f"depth_{uuid.uuid4().hex[:12]}"
+    output_path = output_dir / f"{asset_id}.png"
+
+    model, transform = load_midas_model(model_type)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    import time
+
+    start_time = time.time()
+    depth_image = estimate_depth_frame(image, model, transform, device, colormap)
+    if not cv2.imwrite(str(output_path), depth_image):
+        raise DepthEstimationError(
+            f"Failed to write depth map: {output_path}",
+            error_type="image_write_error",
+        )
+
+    out_height, out_width = depth_image.shape[:2]
+    return DepthEstimationResult(
+        asset_id=asset_id,
+        input_video_path=str(input_path),
+        output_video_path=str(output_path),
+        output_width=out_width,
+        output_height=out_height,
+        frame_count=1,
+        duration_seconds=0.0,
+        fps=0.0,
+        model_type=model_type,
+        colormap=colormap,
+        processing_time_seconds=time.time() - start_time,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------

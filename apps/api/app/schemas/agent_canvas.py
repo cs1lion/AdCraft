@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -21,7 +21,17 @@ from app.schemas.agent_canvas_video_parameters import CanvasParameterProvenanceV
 from app.schemas.agent_canvas_world_setting import WorldSettingResolvedInputV2
 
 
-CanvasNodeTypeV2 = Literal["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast"]
+CanvasNodeTypeV2 = Literal[
+    "text",
+    "script",
+    "image",
+    "video",
+    "audio",
+    "editing",
+    "scene-3d",
+    "voice-cast",
+    "replica",
+]
 CanvasNodeStatusV2 = Literal["draft", "working", "ready", "failed"]
 CanvasNodeExecutionModeV2 = Literal["generative", "source_only"]
 CanvasNodeAuthoringOriginV2 = Literal["user_free", "agent_guided", "template"]
@@ -45,6 +55,7 @@ CanvasCreativeRoleV2 = Literal[
     "editing",
     "scene_3d_previs",
     "voice_cast",
+    "replica_blueprint",
 ]
 CanvasBindingInputRoleV2 = Literal[
     "text_context",
@@ -493,6 +504,9 @@ class CanvasMutationResponseV2(_AgentCanvasModel):
     workflow: AgentCanvasWorkflowV2
     node: CanvasNodeV2 | None = None
     binding: CanvasBindingV2 | None = None
+    # ADR 0009 决策 2: what this mutation touched, and what it did NOT.
+    # Absent on mutations that carry no patch scope (creates/deletes).
+    scope_report: dict[str, Any] | None = None
 
 
 class ProjectAssetListResponseV2(_AgentCanvasModel):

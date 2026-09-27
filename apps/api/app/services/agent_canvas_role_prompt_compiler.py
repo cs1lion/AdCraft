@@ -711,6 +711,14 @@ def _structured_content(
                 else brief.silhouette_and_proportions
             ),
             wardrobe=projection.wardrobe if projection is not None else brief.wardrobe,
+            # ADR 0011: the declared palette travels with the identity — the
+            # turnaround is the same person, so it must not declare a second
+            # wardrobe.
+            appearance_palette=(
+                projection.appearance_palette
+                if projection is not None and projection.appearance_palette
+                else brief.appearance_palette
+            ),
             accessories=projection.accessories if projection is not None else brief.accessories,
             gender_presentation=(
                 projection.gender_presentation
@@ -751,6 +759,7 @@ def _structured_content(
             face_and_hair=brief.face_and_hair,
             silhouette_and_proportions=brief.silhouette_and_proportions,
             wardrobe=brief.wardrobe,
+            appearance_palette=brief.appearance_palette,
             accessories=brief.accessories,
             gender_presentation=brief.gender_presentation,
             design_summary="; ".join(

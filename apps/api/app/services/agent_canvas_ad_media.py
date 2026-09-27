@@ -12,6 +12,7 @@ from app.schemas.agent_canvas_ad_media import (
     BgmContentV2,
     CharacterDesignAssetContentV2,
     DesignAssetContentV2,
+    ReplicaBlueprintContentV2,
     SceneDesignBoardContentV2,
     StoryboardGridContentV2,
     VideoSegmentContentV2,
@@ -145,6 +146,8 @@ def _role_registry() -> dict[str, _RegisteredRole]:
     add("editing", "editing", "video")
     add("scene_3d_previs", "scene-3d", "video")
     add("voice_cast", "voice-cast", "audio")
+    # 拉片复刻蓝图：规划型节点，产出文本（复刻脚本），执行由实例化落到 script 节点
+    add("replica_blueprint", "replica", "text", ReplicaBlueprintContentV2)
     return roles
 
 

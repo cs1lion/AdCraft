@@ -12,6 +12,7 @@ import type {
   UpstreamInputReadinessIssueV2,
 } from "../../../types-v2.ts";
 import type { ProviderModelSummaryV1 } from "../../../api/providerRegistry.ts";
+import type { AlignedLine } from "../canvas/DialogueAlignmentPanel.tsx";
 
 export type PatchNode = (
   nodeId: string,
@@ -37,6 +38,13 @@ export interface AgentCanvasInlineWorkbenchProps {
   providerModelsLoading?: boolean;
   providerModelsError?: string | null;
   inputManifest?: ProviderInputManifestAuditV2 | null;
+  /**
+   * C-mode handoff (ADR 0005 + the audio plan): lines recovered from the
+   * voice-cast bed by forced alignment. The scene-3d workbench seeds its
+   * lip-sync editor with them; the voice-cast workbench reports them.
+   */
+  alignedSpeechLines?: AlignedLine[] | null;
+  onSpeechLinesAligned?: (lines: AlignedLine[] | null) => void;
   modelResolution?: CanvasRuntimeModelResolutionV2 | null;
   inputReadinessIssue?: UpstreamInputReadinessIssueV2 | null;
   onRun: (node: CanvasNodeV2) => Promise<void>;

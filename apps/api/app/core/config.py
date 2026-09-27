@@ -187,6 +187,21 @@ class Settings:
     bgm_timeout_seconds: int = 60
     bgm_download_max_bytes: int = 100 * 1024 * 1024
     bgm_response_format: str = "mp3"
+    #: StepAudio 3 Gen unified audio generation
+    #: (``POST https://api.stepfun.com/v1/audio/generate``, model
+    #: ``stepaudio-3-gen-preview``): one call composes multi-role dialogue
+    #: (``roles`` + speaker-tagged ``scripts``), SFX / ambience / BGM
+    #: (``[...]``-wrapped script entries) and a global ``instruction`` into a
+    #: single finished audio bed. Same StepFun open-platform key as
+    #: ``stepfun_api_key`` / ``bgm_api_key``. Synchronous endpoint: the timeout
+    #: covers the whole generation, so it is far larger than the music
+    #: submit/query timeout.
+    step_audio_gen_endpoint: str = "https://api.stepfun.com"
+    step_audio_gen_path: str = "/v1/audio/generate"
+    step_audio_gen_model: str = "stepaudio-3-gen-preview"
+    step_audio_gen_timeout_seconds: int = 300
+    step_audio_gen_download_max_bytes: int = 100 * 1024 * 1024
+    step_audio_gen_response_format: str = "mp3"
     composition_api_key: str | None = None
     composition_endpoint: str | None = None
     composition_provider: str = "ffmpeg"
@@ -229,6 +244,17 @@ class Settings:
     # that is what a downstream video node binds; the encoded video is for
     # reviewers who want to press play.  Set false to skip the encoder.
     scene3d_emit_video: bool = True
+    # Speech forced alignment (C mode: bed audio -> per-line timings).
+    # "estimated" is the deterministic fallback; "whisperx" opts into the
+    # real engine when whisperX is installed (the report says which ran).
+    speech_alignment_engine: str = "estimated"
+    whisperx_model: str = "large-v3"
+    # Blender MCP (white-model design mode): the server command (overridable
+    # via BLENDER_MCP_COMMAND) and the per-call timeout. The client enforces a
+    # tool whitelist, so the blast radius of a compromised server is the
+    # whitelisted geometry vocabulary, not arbitrary Python.
+    blender_mcp_command: str = "blender-mcp"
+    blender_mcp_timeout_seconds: int = 30
     provider_failure_cooldown_threshold: int = 3
     provider_cooldown_seconds: int = 300
     v2_stale_running_timeout_seconds: int = 900
@@ -471,6 +497,24 @@ class Settings:
             bgm_timeout_seconds=_read_int("BGM_TIMEOUT_SECONDS", cls.bgm_timeout_seconds),
             bgm_download_max_bytes=_read_int("BGM_DOWNLOAD_MAX_BYTES", cls.bgm_download_max_bytes),
             bgm_response_format=os.getenv("BGM_RESPONSE_FORMAT", cls.bgm_response_format),
+            step_audio_gen_endpoint=os.getenv(
+                "STEP_AUDIO_GEN_ENDPOINT", cls.step_audio_gen_endpoint
+            ),
+            step_audio_gen_path=os.getenv(
+                "STEP_AUDIO_GEN_PATH", cls.step_audio_gen_path
+            ),
+            step_audio_gen_model=os.getenv(
+                "STEP_AUDIO_GEN_MODEL", cls.step_audio_gen_model
+            ),
+            step_audio_gen_timeout_seconds=_read_int(
+                "STEP_AUDIO_GEN_TIMEOUT_SECONDS", cls.step_audio_gen_timeout_seconds
+            ),
+            step_audio_gen_download_max_bytes=_read_int(
+                "STEP_AUDIO_GEN_DOWNLOAD_MAX_BYTES", cls.step_audio_gen_download_max_bytes
+            ),
+            step_audio_gen_response_format=os.getenv(
+                "STEP_AUDIO_GEN_RESPONSE_FORMAT", cls.step_audio_gen_response_format
+            ),
             composition_api_key=os.getenv("COMPOSITION_API_KEY") or None,
             composition_endpoint=os.getenv("COMPOSITION_ENDPOINT") or None,
             composition_provider=os.getenv("COMPOSITION_PROVIDER", cls.composition_provider),
@@ -601,6 +645,19 @@ class Settings:
             scene3d_emit_video=_read_bool(
                 "SCENE3D_EMIT_VIDEO",
                 cls.scene3d_emit_video,
+            ),
+            speech_alignment_engine=os.getenv(
+                "SPEECH_ALIGNMENT_ENGINE",
+                cls.speech_alignment_engine,
+            ),
+            whisperx_model=os.getenv("WHISPERX_MODEL", cls.whisperx_model),
+            blender_mcp_command=os.getenv(
+                "BLENDER_MCP_COMMAND",
+                cls.blender_mcp_command,
+            ),
+            blender_mcp_timeout_seconds=_read_int(
+                "BLENDER_MCP_TIMEOUT_SECONDS",
+                cls.blender_mcp_timeout_seconds,
             ),
             provider_failure_cooldown_threshold=int(
                 os.getenv(

@@ -24,7 +24,7 @@ from typing import Any
 
 from app.schemas.scene_script import SceneScriptRoot
 from app.services.scene3d.blender_renderer import render_scene_script
-from app.services.scene3d.encoder import encode_png_sequence
+from app.services.scene3d.encoder import encode_png_sequence, mux_audio_to_video
 from app.services.scene3d.keyframes import extract_keyframes
 
 
@@ -40,9 +40,12 @@ class RenderJobResult:
     output_dir: str
     frame_count: int = 0
     video_path: str | None = None
+    animatic_video_path: str | None = None
+    audio_muxed: bool = False
     keyframes: list[dict[str, Any]] = field(default_factory=list)
     duration_seconds: float = 0.0
     blender_version: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -103,6 +106,8 @@ class RenderJobManager:
         blender_executable: str | None = None,
         timeout_seconds: int = 600,
         output_dir: str | None = None,
+        audio_path: str | None = None,
+        audio_warning: list[str] | None = None,
     ) -> str:
         """Submit a new render job.
 
@@ -113,6 +118,10 @@ class RenderJobManager:
             blender_executable: Override Blender executable path.
             timeout_seconds: Maximum render time per job.
             output_dir: Override output directory (auto-generated if None).
+            audio_path: Dialogue bed to mux into the render (the animatic,
+                V0.2 §14.9). Omit for a silent previs.
+            audio_warning: Resolution warnings to publish with the job (e.g.
+                an unresolvable bed), so the degradation stays visible.
 
         Returns:
             Job ID string.
@@ -134,6 +143,11 @@ class RenderJobManager:
                 "blender_executable": blender_executable,
                 "timeout_seconds": timeout_seconds,
                 "output_dir": output_dir,
+                # Animatic (V0.2 §14.9): the bed path plus any resolution
+                # warning, both published with the result so the degradation
+                # stays queryable after the job finishes.
+                "audio_path": audio_path,
+                "audio_warning": list(audio_warning or []),
             },
         )
 
@@ -250,6 +264,9 @@ class RenderJobManager:
 
             # Phase 2: Encode video (optional)
             video_path = None
+            animatic_video_path = None
+            audio_muxed = False
+            job_warnings: list[str] = list(job.options.get("audio_warning") or [])
             if job.options.get("render_video", True):
                 if self._is_cancelled(job_id):
                     return
@@ -261,6 +278,23 @@ class RenderJobManager:
                 )
                 if not encode_result.success:
                     video_path = None  # Don't fail whole job if encoding fails
+                elif job.options.get("audio_path"):
+                    # Phase 2.5: the animatic mux (V0.2 §14.9). A failure keeps
+                    # the silent previs and reports why — never the reverse.
+                    animatic_video_path = os.path.join(output_dir, "previs_animatic.mp4")
+                    mux_result = mux_audio_to_video(
+                        video_path,
+                        str(job.options["audio_path"]),
+                        animatic_video_path,
+                    )
+                    if getattr(mux_result, "success", False):
+                        audio_muxed = True
+                    else:
+                        animatic_video_path = None
+                        job_warnings.append(
+                            "音频床混入失败，已输出无声预演："
+                            f"{getattr(mux_result, 'error', 'unknown')}"
+                        )
 
             job.progress = 0.8
 
@@ -287,7 +321,10 @@ class RenderJobManager:
                 output_dir=output_dir,
                 frame_count=render_result.frame_count,
                 video_path=video_path,
+                animatic_video_path=animatic_video_path,
+                audio_muxed=audio_muxed,
                 keyframes=keyframes_result,
+                warnings=job_warnings,
                 duration_seconds=render_result.duration_seconds,
                 blender_version=render_result.blender_version,
             )

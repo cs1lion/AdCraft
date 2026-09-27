@@ -284,6 +284,7 @@ class CreationFlowGuidanceService:
                 "No world_setting node found. Start by defining the world "
                 "(era, rules, style) to establish visual continuity."
             )
+        warnings.extend(self._speaker_orchestration_warnings(nodes))
 
         return FlowAssessment(
             current_stage=current_stage,
@@ -296,6 +297,68 @@ class CreationFlowGuidanceService:
             blockers=tuple(blockers),
             warnings=tuple(warnings),
         )
+
+    def _speaker_orchestration_warnings(
+        self, nodes: list[CanvasNodeV2]
+    ) -> list[str]:
+        """Warn when dialogue speakers and scene characters cannot match.
+
+        The dialogue-driven chain (ADR 0005 + the audio plan) ends at
+        ``apply_dialogue_lip_sync``, which FAILS CLOSED on unknown speakers
+        (``dialogue_unknown_speaker``). Honest, but the first-time author
+        learns it only after writing the whole bed. The canvas guidance can
+        say it before they start: bed ``speaker`` names must equal the
+        scene-3d character ids.
+        """
+
+        warnings: list[str] = []
+
+        # Scene character ids from every scene-3d node's scene script.
+        scene_character_ids: list[str] = []
+        for node in nodes:
+            if node.node_type != "scene-3d":
+                continue
+            script = node.structured_content.get("scene_script")
+            if not isinstance(script, dict):
+                continue
+            for character in script.get("characters") or []:
+                if isinstance(character, dict) and character.get("id"):
+                    scene_character_ids.append(str(character["id"]))
+        scene_character_ids = sorted(set(scene_character_ids))
+
+        # Bed speaker names from every voice-cast node's audio_bed block.
+        speakers: list[tuple[str, str]] = []  # (node title, speaker name)
+        for node in nodes:
+            if node.node_type != "voice-cast":
+                continue
+            bed = node.structured_content.get("audio_bed")
+            if not isinstance(bed, dict):
+                continue
+            for script in bed.get("scripts") or []:
+                if not isinstance(script, dict):
+                    continue
+                speaker = str(script.get("speaker") or "").strip()
+                if speaker:
+                    speakers.append((node.title or node.node_id, speaker))
+
+        if not speakers:
+            return warnings
+
+        unmatched = sorted({name for _, name in speakers if name not in scene_character_ids})
+        if unmatched:
+            warnings.append(
+                "Audio-bed speaker(s) "
+                + ", ".join(unmatched)
+                + " do not match any scene-3d character id. "
+                + (
+                    "Available character ids: " + ", ".join(scene_character_ids) + ". "
+                    if scene_character_ids
+                    else "No scene-3d character exists yet. "
+                )
+                + "Lip-sync will refuse unknown speakers (it never drops dialogue silently) — "
+                "rename the bed speakers or rename the scene characters to match."
+            )
+        return warnings
 
     def _assess_stage(
         self,

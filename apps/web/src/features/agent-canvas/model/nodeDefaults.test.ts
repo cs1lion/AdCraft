@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_CANVAS_VISIBLE_NODE_TYPES,
+  assetBackedCanvasNodeRequest,
   createDefaultCanvasNodeRequest,
   sourceAssetSemanticRole,
   sourceAssetStructuredContent,
@@ -74,3 +75,36 @@ describe("Agent Canvas node defaults", () => {
   );
 
 });
+
+  it("builds the create request for an asset dropped on the canvas", () => {
+    // V0.2 §2.1: the drop's payload becomes an asset-backed create. The node
+    // type IS the media type (the backend's validate_asset_backed_node rule);
+    // the asset rides as source_asset_id so the node is grounded in the
+    // library item the author dragged.
+    const request = assetBackedCanvasNodeRequest(
+      {
+        assetId: "asset-9",
+        mediaType: "video",
+        displayName: "赌场入口",
+      },
+      { x: 42, y: 17 },
+    );
+    expect(request.node_type).toBe("video");
+    expect(request.creative_role).toBe("general_video");
+    expect(request.title).toBe("赌场入口");
+    expect(request.source_asset_id).toBe("asset-9");
+    expect(request.position).toEqual({ x: 42, y: 17 });
+  });
+
+  it("gives a dropped audio asset the BGM contract it needs", () => {
+    const request = assetBackedCanvasNodeRequest(
+      { assetId: "asset-a", mediaType: "audio", displayName: "导入配乐" },
+      { x: 0, y: 0 },
+    );
+    expect(request.node_type).toBe("audio");
+    expect(request.structured_content).toMatchObject({
+      music_summary: "导入配乐",
+      duration_seconds: 30,
+    });
+  });
+

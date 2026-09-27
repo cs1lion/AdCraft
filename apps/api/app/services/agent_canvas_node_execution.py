@@ -79,18 +79,48 @@ from app.services.agent_canvas_role_reference_policy import (
     AgentCanvasRoleReferencePolicyService,
 )
 from app.services.agent_canvas_authoring_validation import require_node_runnable
+from app.tools.step_audio_gen import (
+    StepAudioGenAdapter,
+    select_step_audio_gen_model,
+)
+from app.tools.media_provider_protocol import MediaConfigurationError
 from app.tools.mock_media_fixtures import (
     MockMediaFixtureError,
     deterministic_mock_media_bytes,
 )
 from app.tools.seedance_adapter import VolcengineSeedanceAdapter
 from app.schemas.scene_script import SceneScriptRoot
+from app.services.dialogue.audio_concat import (
+    concat_audio_files,
+    probe_audio_duration_seconds,
+)
+from app.services.dialogue.voice_cast_lines import (
+    DialogueLine,
+    parse_dialogue_lines,
+    plan_line_synthesis,
+)
 from app.services.scene3d.blender_converter import keyframe_render_frames
+from app.services.timeline_window_slicer import (
+    WindowSlicingReport,
+    slice_references_to_window,
+)
+from app.services.scene3d.auto_lip_sync import (
+    AutoLipSyncResult,
+    apply_speech_bound_lip_sync,
+    speech_asset_ref,
+)
+from app.services.scene3d.speech_orchestration import SpeechSegment
+from app.services.scene3d.scene_consistency import check_scene_script_consistency
+from app.services.scene3d.blocking_continuity import check_blocking_continuity
+from app.services.scene3d.emotion_continuity import check_emotion_continuity
+from app.services.scene3d.transition_intent_reconciliation import (
+    reconcile_transition_intents,
+)
 from app.services.scene3d.blender_renderer import (
     get_blender_capability,
     render_scene_script,
 )
-from app.services.scene3d.encoder import encode_png_sequence
+from app.services.scene3d.encoder import encode_png_sequence, mux_audio_to_video
 from app.services.scene3d.keyframes import rendered_frame_files
 from app.services.scene3d.previs_trajectory import previs_trajectory
 from app.services.scene3d.scene_script_generator import (
@@ -133,6 +163,9 @@ class NodeExecutionContext:
     effective_parameters: EffectiveMediaParameterSnapshotV2 | None = None
     seedance_manifest: SeedanceInputManifestV1 | None = None
     seedance_input_audit: SeedanceInputManifestAuditV1 | None = None
+    # ADR 0008 P1: how the delivered references were sliced to the node's
+    # timeline window (queryable provenance; published with the execution).
+    timeline_slicing_report: dict[str, Any] | None = None
     delivered_references: tuple[V2DeliveredProviderReference, ...] = ()
     input_manifest: ResolvedNodeInputManifestV2 | None = None
     optional_input_omissions: tuple[dict[str, str], ...] = ()
@@ -431,6 +464,40 @@ class TextNodeExecutor:
         return NodeExecutionOutcome(structured_content=dict(completed.value))
 
 
+def _default_timeline_window_resolver(node: CanvasNodeV2) -> tuple[float, float] | None:
+    """Resolve a node's timeline clip window: (start_time, duration) or None.
+
+    The clip whose ``source_node_id`` matches the node, on the video track.
+    Lazy: no database is touched unless a resolver is actually requested.
+    """
+
+    if node.node_type != "video":
+        return None
+    try:
+        from app.core.config import get_settings
+        from app.persistence.database import create_v2_database
+        from app.persistence.timeline_repository import TimelineRepository
+
+        settings = get_settings()
+        database = create_v2_database(settings.media_data_dir)
+        try:
+            timeline = TimelineRepository(
+                database.session_factory()
+            ).get_by_workflow_id(node.workflow_id)
+        finally:
+            database.dispose()
+        for track in timeline.tracks:
+            if track.type != "video":
+                continue
+            for clip in track.clips:
+                if clip.source_node_id == node.node_id:
+                    return (clip.start_time, clip.duration)
+        return None
+    except Exception:
+        # A timeline lookup failure must never block generation.
+        return None
+
+
 class MediaNodeExecutor:
     """Adapt node-native media requests to the existing provider boundary."""
 
@@ -443,7 +510,10 @@ class MediaNodeExecutor:
         reference_delivery: V2ProviderReferenceInputDeliveryService | None = None,
         seedance_inputs: AgentCanvasSeedanceInputCompiler | None = None,
         submission_intents=None,
+        qa_registry_factory: Any | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        timeline_window_resolver: Callable[[CanvasNodeV2], tuple[float, float] | None]
+        | None = None,
     ) -> None:
         self._provider = provider
         self._data_dir = data_dir.resolve()
@@ -454,7 +524,86 @@ class MediaNodeExecutor:
         )
         self._seedance_inputs = seedance_inputs or AgentCanvasSeedanceInputCompiler()
         self._submission_intents = submission_intents
+        # ADR 0003 §5's second half: the image/video content checks. Injected
+        # so tests stay hermetic and the production default is one import away.
+        self._qa_registry_factory = qa_registry_factory
         self._clock = clock
+        # ADR 0008 P1: the node's timeline clip window, used to slice the
+        # bound rehearsal references before the provider sees them. None
+        # disables slicing (the pre-0008 behavior).
+        self._timeline_window_resolver = timeline_window_resolver or _default_timeline_window_resolver
+
+    def _media_qa_gate(
+        self,
+        media_type: str,
+        content: bytes,
+        parameters: dict[str, object],
+    ) -> dict[str, Any] | None:
+        """Run the ADR 0003 §5 image/video checks before the artifact commits.
+
+        Returns the report when something needs SAYING (a ``warn``); RAISES
+        when a check fails — a flat image or a truncated render must not be
+        published, because the edit would carry it as a finished shot. All-pass
+        reports stay silent (the compliment), exactly like the speech gate.
+
+        ``audio`` is deliberately not covered here: its pre-commit checks are
+        the speech registry (loudness, timeline), which is a different subject
+        with a different reference — routing audio through a content check for
+        pictures would be a check that cannot run.
+        """
+
+        if media_type not in {"image", "video"} or not content:
+            return None
+        from app.services.dialogue.v2_qa_registry import QaSubject
+
+        factory = self._qa_registry_factory
+        if factory is None:
+            from app.services.dialogue.media_qa_checks import (
+                build_media_qa_registry,
+            )
+
+            factory = build_media_qa_registry
+        registry = factory()
+        # Suffix by modality: PIL and ffprobe both read the header, and a
+        # provider payload's real name is not on disk anywhere.
+        suffix = ".png" if media_type == "image" else ".mp4"
+        with tempfile.TemporaryDirectory(prefix="media-qa-") as tmp_dir:
+            artifact = os.path.join(tmp_dir, f"artifact{suffix}")
+            with open(artifact, "wb") as handle:
+                handle.write(content)
+            requested = parameters.get("duration_seconds")
+            report = registry.report(
+                QaSubject(
+                    **(
+                        {"image_path": artifact}
+                        if media_type == "image"
+                        else {
+                            "video_path": artifact,
+                            "requested_duration_seconds": (
+                                float(requested)
+                                if isinstance(requested, (int, float))
+                                and not isinstance(requested, bool)
+                                and requested > 0
+                                else None
+                            ),
+                        }
+                    )
+                )
+            )
+        if not report["passed"]:
+            raise _error(
+                "media_qa_failed",
+                "媒体未通过提交前质量检查："
+                + "；".join(
+                    str(outcome["reason"])
+                    for outcome in report["outcomes"]
+                    if outcome["status"] == "fail"
+                ),
+                details={"qa_report": report},
+            )
+        if report["warned"]:
+            return report
+        return None
 
     def _submit_with_transient_retry(
         self,
@@ -517,6 +666,55 @@ class MediaNodeExecutor:
             time.sleep(min(base_delay * (2 ** (attempt - 1)), 30.0))
         assert result is not None  # loop always assigns at least once
         return result
+
+    def _slice_references_to_window(
+        self,
+        node: CanvasNodeV2,
+        delivered_media: tuple[SeedanceDeliveredMediaInputV1, ...],
+    ) -> tuple[tuple[SeedanceDeliveredMediaInputV1, ...], WindowSlicingReport]:
+        """Slice delivered references to the node's timeline window (ADR 0008).
+
+        Failures degrade to the whole asset with warnings — never a block.
+        """
+
+        window = None
+        try:
+            window = self._timeline_window_resolver(node)
+        except Exception:  # noqa: BLE001 - a resolver failure must not block generation.
+            window = None
+        if window is None or not delivered_media:
+            return tuple(delivered_media), WindowSlicingReport(window=window)
+        return slice_references_to_window(
+            delivered_media,
+            window=window,
+            workflow_id=node.workflow_id,
+            output_dir=self._data_dir,
+            resolve_local_path=self._resolve_reference_local_path,
+            ffmpeg_path=self._settings.ffmpeg_path,
+            ffprobe_path=self._settings.ffprobe_path,
+        )
+
+    def _resolve_reference_local_path(
+        self, asset_id: str, version_id: str | None
+    ) -> Path | None:
+        """Resolve a delivered reference to its local media file."""
+
+        try:
+            from app.persistence.asset_library_repository import V2AssetLibraryRepository
+            from app.persistence.database import create_v2_database
+            from app.services.v2_storage_adapter import StorageAdapter
+
+            database = create_v2_database(self._data_dir)
+            try:
+                version = V2AssetLibraryRepository(database).find_version(asset_id=asset_id)
+            finally:
+                database.dispose()
+            if version is None:
+                return None
+            path = StorageAdapter(self._data_dir).resolve_local_path(version.storage_key)
+            return path if path.is_file() else None
+        except Exception:
+            return None
 
     def prepare(self, context: NodeExecutionContext) -> NodeExecutionContext:
         """Resolve provider-safe media before the scheduler starts provider work."""
@@ -621,6 +819,13 @@ class MediaNodeExecutor:
             )
             for reference in delivered_references
         )
+        # ADR 0008 P1: slice the delivered rehearsal references to this
+        # node's timeline window so the model receives the shot's slice, not
+        # the whole upstream take. The report rides on the execution so a
+        # reviewer can see which references were sliced or degraded.
+        delivered_media, slicing_report = self._slice_references_to_window(
+            context.node, delivered_media
+        )
         try:
             if context.model_resolution is None or not context.model_id:
                 raise _error(
@@ -658,6 +863,7 @@ class MediaNodeExecutor:
             context,
             seedance_manifest=manifest,
             seedance_input_audit=audit,
+            timeline_slicing_report=slicing_report.to_dict(),
             delivered_references=delivered_references,
             optional_input_omissions=optional_input_omissions,
         )
@@ -750,6 +956,9 @@ class MediaNodeExecutor:
                     "Provider result did not include media content.",
                 )
             mime_type, filename, gate = accepted_provider_media(media_type, content)
+            # ADR 0003 §5's second half: the content checks, on the file the
+            # provider actually produced.
+            qa_report = self._media_qa_gate(media_type, content, effective_parameters)
             if intent is not None:
                 self._submission_intents.complete(intent, now=self._clock())
             return NodeExecutionOutcome(
@@ -767,6 +976,11 @@ class MediaNodeExecutor:
                 provider=result.provider,
                 remote_task_id=result.remote_task_id,
                 result_descriptor=dict(result.metadata),
+                # The persistence layer merges onto the node's existing keys,
+                # so publishing the report never drops the node's own content.
+                structured_content=(
+                    {"media_qa_report": qa_report} if qa_report else None
+                ),
                 submission_intent_id=(intent.intent_id if intent is not None else None),
             )
         if result.status == "waiting" and result.remote_task_id:
@@ -847,6 +1061,15 @@ class MediaNodeExecutor:
                     "provider_output_missing", "Provider result did not include media content."
                 )
             mime_type, filename, gate = accepted_provider_media("video", content)
+            qa_report = self._media_qa_gate(
+                "video",
+                content,
+                (
+                    context.effective_parameters.effective
+                    if context.effective_parameters is not None
+                    else context.node.parameters
+                ),
+            )
             if intent is not None:
                 self._submission_intents.complete(intent, now=self._clock())
             return NodeExecutionOutcome(
@@ -865,6 +1088,9 @@ class MediaNodeExecutor:
                 remote_task_id=result.remote_task_id,
                 result_descriptor=dict(result.metadata),
                 prompt_metadata=audit_payload,
+                structured_content=(
+                    {"media_qa_report": qa_report} if qa_report else None
+                ),
                 submission_intent_id=(intent.intent_id if intent is not None else None),
             )
         if result.status == "waiting" and result.remote_task_id:
@@ -989,6 +1215,86 @@ def accepted_provider_media(
     return mime_type, filename or derived_filename, report.to_dict()
 
 
+def _audio_bed_config(node: CanvasNodeV2) -> dict[str, Any] | None:
+    """Parse the unified audio-bed configuration from a voice-cast node.
+
+    Returns None when the node carries no ``audio_bed`` block (the classic
+    per-line TTS path owns the node). The block is freeform — the adapter's
+    payload builder is the single validation point — but the executor fails
+    early on the two structural mistakes that would otherwise surface as an
+    opaque provider 400: no scripts, and scripts that are not objects.
+    """
+
+    raw = node.structured_content.get("audio_bed")
+    if not isinstance(raw, dict):
+        return None
+    scripts = raw.get("scripts")
+    if not isinstance(scripts, list) or not scripts:
+        raise _error(
+            "audio_bed_scripts_required",
+            "The unified audio bed requires at least one script entry "
+            "(dialogue lines and [sfx/ambience/bgm] descriptions).",
+        )
+    if not all(isinstance(script, dict) for script in scripts):
+        raise _error(
+            "audio_bed_scripts_invalid",
+            "Every audio-bed script entry must be an object with a text field.",
+        )
+    roles = raw.get("roles")
+    if roles is not None and not isinstance(roles, list):
+        raise _error(
+            "audio_bed_roles_invalid",
+            "audio_bed.roles must be a list of {name, description} objects.",
+        )
+    return raw
+
+
+def _audio_bed_credential_failure() -> ActionableFailureV1:
+    """Credential-rejection disposition for the unified audio bed.
+
+    External + revise + no-retry, mirroring the per-line TTS failure: a
+    rejected key does not fix itself by re-running the node.
+    """
+
+    return ActionableFailureV1(
+        failure_class="external",
+        retry_scope="none",
+        user_action="revise",
+    )
+
+
+def _mock_audio_bed_bytes(config: dict[str, Any], frame_rate: int = 22050) -> bytes:
+    """Deterministic stand-in bed for mock media mode.
+
+    A valid WAV of near-silence whose length matches the requested content
+    (estimated from script text at ~8 chars/s, clamped to 1..60s), so the
+    timeline gets a sensible clip duration without touching the provider.
+    """
+
+    import math
+    import struct
+    import wave
+
+    scripts = [str(script.get("text") or "") for script in config.get("scripts") or []]
+    estimated_seconds = sum(max(1.0, len(text) / 8.0) for text in scripts) or 3.0
+    duration_seconds = min(60.0, max(1.0, estimated_seconds))
+    frame_count = int(duration_seconds * frame_rate)
+    buffer = bytearray()
+    for index in range(frame_count):
+        # A very quiet 220 Hz tone: audible in a player, harmless in a mix.
+        sample = int(800 * math.sin(2 * math.pi * 220 * index / frame_rate))
+        buffer.extend(struct.pack("<h", sample))
+    import io
+
+    with io.BytesIO() as container:
+        with wave.open(container, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(frame_rate)
+            writer.writeframes(bytes(buffer))
+        return container.getvalue()
+
+
 def _voice_cast_text(context: NodeExecutionContext) -> str:
     """Collect dialogue text for a voice-cast node.
 
@@ -1068,13 +1374,57 @@ class VoiceCastNodeExecutor:
     selected by ``tts_engine_factory`` from the installation settings.
     When no real TTS engine is configured the executor fails closed
     rather than publishing a fake audio asset (ADR 0003).
+
+    Per-line mode (V0.2 §14.7 内容层/表演层): when the node's
+    ``structured_content.dialogue_lines`` carries lines with ids, the take is
+    built ONE LINE AT A TIME — each line an Audio Event with its own text and
+    emotion, cached content-addressed under ``media_data_dir``. Re-running
+    with one line changed re-synthesizes THAT line only (an unchanged line's
+    take is reused, never re-paid for), and the per-line manifest with
+    running offsets is published so the timeline that follows can recompute.
+    See ``services/dialogue/voice_cast_lines.py``.
+
+    Unified audio-bed mode (StepAudio 3 Gen): when the node's
+    ``structured_content.audio_bed`` carries a ``roles``/``scripts``/
+    ``instruction`` bundle, ONE call composes multi-role dialogue, SFX,
+    ambience and BGM into a single finished bed instead of per-line TTS.
+    The model returns no per-element timestamps, so the asset metadata
+    records ``per_element_timing_available: False`` — downstream alignment
+    (dialogue-driven lip-sync) must not assume shot-level timing from a
+    bed. See docs/plans/blender-mcp-white-model-mode-and-audio-collaboration.md §2.
     """
 
-    def __init__(self, settings: Settings, *, engine: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        engine: Any | None = None,
+        audio_bed_adapter: Any | None = None,
+        qa_registry_factory: Any | None = None,
+        audio_concat: Any | None = None,
+        audio_duration_probe: Any | None = None,
+    ) -> None:
         self._settings = settings
         self._engine = engine
+        self._audio_bed_adapter = audio_bed_adapter
+        # Per-line mode (§14.7) joins and measures its take with ffmpeg, so
+        # both are seams: tests answer with fakes and the executor keeps its
+        # "no provider in a unit test" property.
+        self._audio_concat = audio_concat or concat_audio_files
+        self._audio_duration_probe = (
+            audio_duration_probe or probe_audio_duration_seconds
+        )
+        # ADR 0003 §5: the pre-commit QA gate. Injected so tests stay hermetic
+        # (a stub registry answers with controlled statuses); production gets
+        # the real phase-1 registry.
+        self._qa_registry_factory = qa_registry_factory
 
     def __call__(self, context: NodeExecutionContext) -> NodeExecutionOutcome:
+        bed_config = _audio_bed_config(context.node)
+        if bed_config is not None:
+            return self._run_unified_audio_bed(context, bed_config)
+        if isinstance(context.node.structured_content.get("dialogue_lines"), list):
+            return self._run_per_line_dialogue(context)
         text = _voice_cast_text(context)
         if not text:
             raise _error(
@@ -1134,6 +1484,9 @@ class VoiceCastNodeExecutor:
                     "The TTS engine returned no audio.",
                     details={"tts_provider": _tts_provider_label(engine)},
                 )
+            # ADR 0003 §5: the pre-commit gate, on the file the engine actually
+            # wrote. A fail blocks the node; a warn publishes with the report.
+            qa_report = self._qa_gate(output_path)
             audio_bytes = Path(output_path).read_bytes()
         # A voice-cast node reads back the file the TTS engine wrote, so this is
         # the same gate a provider payload gets: an engine that claims success
@@ -1161,8 +1514,349 @@ class VoiceCastNodeExecutor:
                     "media_output_gate": audio_gate,
                 },
             ),
-            structured_content={"tts_provider": provider, "tts_model": model},
+            structured_content={
+                "tts_provider": provider,
+                "tts_model": model,
+                # The warn entries, published as the queryable event the ADR
+                # asks for. Absent when every check passed.
+                **({"voicecast_qa_report": qa_report} if qa_report else {}),
+            },
         )
+
+    def _run_per_line_dialogue(self, context: NodeExecutionContext) -> NodeExecutionOutcome:
+        """Build the take one Audio Event at a time (V0.2 §14.7 内容层/表演层).
+
+        The whole point: changing one line must not re-synthesize the take, and
+        the timing after the change must be recomputable. Both fall out of the
+        plan — an unchanged line's take is reused (content-addressed cache), a
+        requested one is re-made, and the manifest carries per-line durations
+        plus running offsets so a caller can rebuild the timeline without
+        guessing where each line now sits.
+        """
+
+        raw_lines = context.node.structured_content.get("dialogue_lines")
+        lines, dropped = parse_dialogue_lines(raw_lines)
+        if not lines:
+            raise _error(
+                "voicecast_dialogue_lines_invalid",
+                "逐行台词没有可用的行：每一行都需要 id、文本（情绪可选），"
+                "且 id 只能用字母数字与 -_。",
+                details={
+                    # Every dropped row, individually: the author needs to
+                    # know WHICH line to fix, not that something was wrong.
+                    "dropped": dropped,
+                    "remedy": "按 dialogue_lines[{id, text, emotion}] 补齐后重试。",
+                },
+            )
+
+        cache_dir = os.path.join(
+            str(self._settings.media_data_dir), "voicecast", context.node.node_id
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        regenerate = context.node.structured_content.get("regenerate_line_ids")
+        plan = plan_line_synthesis(
+            lines,
+            cache_dir=cache_dir,
+            regenerate_ids=[str(item) for item in regenerate]
+            if isinstance(regenerate, list)
+            else [],
+        )
+
+        if plan.to_synthesize:
+            engine = self._engine or create_tts_engine_from_settings(self._settings)
+            if not _tts_engine_is_live(engine):
+                raise _error(
+                    "voicecast_tts_unconfigured",
+                    "No TTS provider is configured. Add a StepFun or Fish Audio API key.",
+                )
+            self._synthesize_lines(engine, plan.to_synthesize, cache_dir)
+        # From here every line's take exists on disk — cached or just written.
+        paths = [os.path.join(cache_dir, line.filename) for line in lines]
+
+        take_path = os.path.join(cache_dir, "take.mp3")
+        joined = self._audio_concat(paths, take_path)
+        if not getattr(joined, "success", False):
+            # The per-line takes are all on disk and intact: a failed join is a
+            # tooling failure, and failing the node is honest — but the cache
+            # means the retry costs nothing beyond the join itself.
+            raise _error(
+                "voicecast_concat_failed",
+                "逐行拼接失败：" + str(getattr(joined, "error", "unknown")),
+                details={"remedy": "确认 ffmpeg 可用后重试；已合成的单句不会重复计费。"},
+            )
+
+        durations = {
+            line.line_id: self._audio_duration_probe(path)
+            for line, path in zip(lines, paths)
+        }
+        manifest = plan.manifest(durations)
+        audio_bytes = Path(take_path).read_bytes()
+        # The same pre-commit gate as the whole-text path, on the joined file.
+        qa_report = self._qa_gate(take_path)
+        audio_mime, audio_filename, audio_gate = accepted_provider_media(
+            "audio", audio_bytes, filename="voice-cast.mp3"
+        )
+        provider = _tts_provider_label(engine if plan.to_synthesize else self._engine)
+        model = _tts_model_label(engine if plan.to_synthesize else self._engine)
+        synthesized = [entry.line.line_id for entry in plan.entries if entry.needs_synthesis]
+        return NodeExecutionOutcome(
+            media=GeneratedMediaPayload(
+                content=audio_bytes,
+                mime_type=audio_mime,
+                filename=audio_filename,
+                metadata={
+                    "provider": provider,
+                    "model_id": model,
+                    "tts_provider": provider,
+                    "tts_model": model,
+                    "media_output_gate": audio_gate,
+                    # The take is assembled: downstream code that assumes one
+                    # provider call per take must know.
+                    "per_line": True,
+                    "line_count": len(lines),
+                },
+            ),
+            structured_content={
+                "tts_provider": provider,
+                "tts_model": model,
+                # The manifest IS the editable structure (§14.7): ids, words,
+                # emotion, measured duration, running offset, and whether this
+                # run re-made the line.
+                "dialogue_line_manifest": manifest,
+                "regenerated_line_ids": synthesized,
+                "reused_line_ids": [
+                    entry.line.line_id for entry in plan.entries if not entry.needs_synthesis
+                ],
+                **({"dialogue_lines_dropped": dropped} if dropped else {}),
+                **({"voicecast_qa_report": qa_report} if qa_report else {}),
+            },
+        )
+
+    def _synthesize_lines(
+        self,
+        engine: Any,
+        lines: list[DialogueLine],
+        cache_dir: str,
+    ) -> list[str]:
+        """Synthesize the given lines into the content-addressed cache.
+
+        ``synthesize_batch`` is preferred when the engine has it (StepFun's
+        does, and it is the whole point of having it); engines without it
+        (Fish Audio) take the per-line ``synthesize`` loop with the same
+        emotion. Either way the file lands at the CONTENT-ADDRESSED name, so
+        the cache's identity is the line's words and direction — never an
+        engine's naming scheme.
+        """
+
+        batch = getattr(engine, "synthesize_batch", None)
+        items = [
+            {
+                "segment_id": line.line_id,
+                "text": line.text,
+                "emotion": line.emotion or None,
+                "character_id": "",
+            }
+            for line in lines
+        ]
+        if callable(batch):
+            try:
+                # The engine names files after segment_id; move each take to
+                # its content-addressed name so a later run can find it.
+                written = batch(items, cache_dir)
+                for line, produced in zip(lines, list(written)):
+                    target = os.path.join(cache_dir, line.filename)
+                    if os.path.abspath(produced) != os.path.abspath(target):
+                        os.replace(produced, target)
+                return [os.path.join(cache_dir, line.filename) for line in lines]
+            except Exception as exc:  # noqa: BLE001 - re-raised as a coded error.
+                raise _error(
+                    "voicecast_tts_failed",
+                    f"逐行合成失败：{exc}",
+                    details={
+                        "tts_provider": _tts_provider_label(engine),
+                        "failure": str(exc),
+                        "failure_type": type(exc).__name__,
+                        "remedy": "检查 TTS 凭据后重试；已缓存的单句不会重复计费。",
+                    },
+                ) from exc
+        for line in lines:
+            target = os.path.join(cache_dir, line.filename)
+            try:
+                engine.synthesize(
+                    text=line.text,
+                    character_id="",
+                    output_path=target,
+                    emotion=line.emotion or None,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised as a coded error.
+                raise _error(
+                    "voicecast_tts_failed",
+                    f"逐行合成失败（{line.line_id}）：{exc}",
+                    details={
+                        "tts_provider": _tts_provider_label(engine),
+                        "failed_line_id": line.line_id,
+                        "remedy": "检查 TTS 凭据后重试；已缓存的单句不会重复计费。",
+                    },
+                ) from exc
+        return [os.path.join(cache_dir, line.filename) for line in lines]
+
+    def _qa_gate(self, audio_path: str) -> dict[str, Any] | None:
+        """Run the ADR 0003 §5 registry before the speech asset commits.
+
+        Returns the report when something needs SAYING (a warn); RAISES when a
+        check fails — a take that measures as silence must not be committed,
+        because the downstream alignment, lip-sync and final mix would all
+        inherit a silent voice. All-pass reports stay silent (the compliment).
+        """
+
+        from app.services.dialogue.v2_qa_registry import QaSubject
+
+        factory = self._qa_registry_factory
+        if factory is None:
+            from app.services.dialogue.speech_qa_checks import (
+                build_speech_qa_registry,
+            )
+
+            factory = build_speech_qa_registry
+        registry = factory()
+        report = registry.report(QaSubject(audio_path=audio_path))
+        if not report["passed"]:
+            raise _error(
+                "voicecast_qa_failed",
+                "语音轨未通过提交前质量检查："
+                + "；".join(
+                    str(outcome["reason"])
+                    for outcome in report["outcomes"]
+                    if outcome["status"] == "fail"
+                ),
+                # The whole report rides along: the author sees WHICH check
+                # failed and why, not just that something did.
+                details={"qa_report": report},
+            )
+        if report["warned"]:
+            return report
+        return None
+
+    def _resolve_audio_bed_adapter(self) -> Any:
+        """The audio-bed adapter: injected instance, injected factory, or the
+        default construction from settings.
+
+        Accepting a factory (class/callable) lets callers wire settings-aware
+        adapters without building them per node; an injected instance is used
+        as-is (test doubles, pre-built clients).
+        """
+
+        if self._audio_bed_adapter is None:
+            return StepAudioGenAdapter(self._settings, self._settings.media_data_dir)
+        if hasattr(self._audio_bed_adapter, "generate_unified_audio"):
+            return self._audio_bed_adapter
+        return self._audio_bed_adapter(self._settings, self._settings.media_data_dir)
+
+    def _run_unified_audio_bed(
+        self, context: NodeExecutionContext, config: dict[str, Any]
+    ) -> NodeExecutionOutcome:
+        workflow_id = context.node.workflow_id
+        scripts = config.get("scripts") or []
+        roles = config.get("roles") or None
+        instruction = config.get("instruction")
+        response_format = config.get("response_format")
+
+        duration_source = "mock"
+        # The pre-commit QA gate runs on a REAL take (it probes the audio the
+        # provider wrote). A mock bed is a deterministic fixture, not a take,
+        # so the gate is skipped there rather than probing synthetic bytes and
+        # reporting a warning nobody can act on.
+        qa_report = None
+        if str(self._settings.media_mode).strip().lower() == "mock":
+            # Mock mode never touches the provider: a deterministic WAV keeps
+            # the full node -> asset -> timeline path exercisable offline.
+            audio_bytes = _mock_audio_bed_bytes(config)
+            model = select_step_audio_gen_model(self._settings)
+            provider = "stepfun"
+        else:
+            try:
+                adapter = self._resolve_audio_bed_adapter()
+            except MediaConfigurationError as exc:
+                raise _error(
+                    "voicecast_audio_bed_unconfigured",
+                    "The unified audio bed requires a StepFun API key "
+                    "(STEPFUN_API_KEY / BGM_API_KEY): "
+                    + str(exc),
+                    details={"actionable_failure": _audio_bed_credential_failure()},
+                ) from exc
+            result = adapter.generate_unified_audio(
+                workflow_id=workflow_id,
+                scripts=scripts,
+                roles=roles,
+                instruction=instruction,
+                response_format=response_format,
+                speed=config.get("speed"),
+                volume=config.get("volume"),
+                sample_rate=config.get("sample_rate"),
+                pronunciation_map=config.get("pronunciation_map"),
+                text_normalization=config.get("text_normalization"),
+            )
+            if result.get("status") != "ready":
+                raise _error(
+                    "voicecast_audio_bed_failed",
+                    "The unified audio bed request failed: "
+                    + str(result.get("error") or "unknown provider error"),
+                    details={
+                        "audio_bed_error_code": result.get("error_code"),
+                        "audio_bed_retryable": bool(
+                            (result.get("metadata") or {}).get("retryable")
+                        ),
+                    },
+                )
+            local_path = result.get("local_path")
+            stored = self._settings.media_data_dir / str(local_path or "")
+            if not local_path or not stored.is_file():
+                raise _error(
+                    "voicecast_audio_bed_failed",
+                    "The unified audio bed completed but its audio file is missing.",
+                )
+            audio_bytes = stored.read_bytes()
+            # The same pre-commit gate, on the bed's own file.
+            qa_report = self._qa_gate(str(stored))
+            duration_source = "measured"
+            model = select_step_audio_gen_model(self._settings)
+            provider = "stepfun"
+
+        audio_mime, audio_filename, audio_gate = accepted_provider_media(
+            "audio", audio_bytes, filename="audio-bed.mp3"
+        )
+        return NodeExecutionOutcome(
+            media=GeneratedMediaPayload(
+                content=audio_bytes,
+                mime_type=audio_mime,
+                filename=audio_filename,
+                metadata={
+                    "provider": provider,
+                    "model_id": model,
+                    "audio_bed": True,
+                    # The model returns no per-element timestamps: record the
+                    # fact so alignment decisions are explicit (ADR 0005:
+                    # queryable, never silent).
+                    "per_element_timing_available": False,
+                    "duration_source": duration_source,
+                    "script_count": len(scripts),
+                    "role_count": len(roles or []),
+                    "instruction": str(instruction)[:500] if instruction else None,
+                    "scripts_snapshot": [
+                        str(script.get("text") or "")[:200] for script in scripts
+                    ],
+                    "roles_snapshot": [
+                        str(role.get("name") or "") for role in (roles or [])
+                    ],
+                },
+            ),
+            # The QA gate's warn entries, as a queryable marker (ADR 0003 §5:
+            # warn emits event). Absent when everything passed.
+            structured_content=(
+                {"voicecast_qa_report": qa_report} if qa_report else None
+            ),
+        )
+
 
 
 def _scene_script_from_node(node: CanvasNodeV2) -> SceneScriptRoot | None:
@@ -1375,14 +2069,30 @@ class Scene3DNodeExecutor:
         capability_probe: Callable[[], Any] | None = None,
         renderer: Callable[..., Any] | None = None,
         encoder: Callable[..., Any] | None = None,
+        audio_muxer: Callable[..., Any] | None = None,
+        sibling_scripts: Callable[[str], dict[str, SceneScriptRoot] | None] | None = None,
         script_generator: SceneScriptGenerator | None = None,
         render_slot: Any | None = None,
+        white_model_generator: Any | None = None,
     ) -> None:
         self._settings = settings
         self._capability_probe = capability_probe or get_blender_capability
         self._renderer = renderer or render_scene_script
         self._encoder = encoder or encode_png_sequence
+        # Animatic mux (V0.2 §14.9): the emitted previs carries the dialogue
+        # bed when one resolves, so a reviewer watches the RENDER with sound,
+        # not only the live viewport. Injected so tests need no ffmpeg.
+        self._audio_muxer = audio_muxer or mux_audio_to_video
+        # Cross-node character drift (V0.2 §5 服装维度): this workflow's OTHER
+        # scene-3d scripts, so the identity binding can be checked across
+        # nodes. Injected so tests need no database.
+        self._sibling_scripts = sibling_scripts or self._read_sibling_scene_scripts
         self._script_generator = script_generator
+        # White-model mode (opt-in per node): the description becomes an ops
+        # batch applied through SceneScriptToolService instead of one whole
+        # script, so the generation path shares the validation gate with the
+        # workbench and the agent-tools surface.
+        self._white_model_generator = white_model_generator
         # Flat ceiling: an operator who needs more headroom raises this rather
         # than the per-frame slope.  The actual budget handed to Blender is
         # derived per render (see ``_render_timeout_for``), so a 6-shot draft
@@ -1441,21 +2151,293 @@ class Scene3DNodeExecutor:
         derived = self._render_startup_seconds + self._render_seconds_per_frame * frames
         return max(30, min(self._render_timeout_seconds, int(round(derived))))
 
+    def _mux_animatic_bed(
+        self,
+        scene_script: SceneScriptRoot,
+        *,
+        video_path: str,
+        rendered_frames: str,
+        tmp_dir: str,
+        report: dict[str, Any],
+    ) -> str:
+        """Mux the dialogue bed into the rendered previs (returns the final path).
+
+        Writes ``report`` in place (muxed / asset_ref / reason) so every skip
+        is queryable. A mux failure keeps the silent video — the render itself
+        already succeeded, and failing it would trade a watchable previs for an
+        audio track (engineering standard §4: degrade, never block).
+        """
+
+        if not scene_script.speech_bindings:
+            report["reason"] = "no_speech_binding"
+            return video_path
+        if rendered_frames != "animation":
+            # Five instants cannot host a continuous bed honestly.
+            report["reason"] = "keyframes_only_render"
+            return video_path
+
+        for binding in scene_script.speech_bindings:
+            asset_ref = speech_asset_ref(binding.speech_asset)
+            audio_path = self._resolve_speech_asset_path(asset_ref)
+            if audio_path is None:
+                continue
+            muxed_path = os.path.join(tmp_dir, "previs_animatic.mp4")
+            muxed = self._audio_muxer(video_path, str(audio_path), muxed_path)
+            if getattr(muxed, "success", False):
+                report["muxed"] = True
+                report["asset_ref"] = binding.speech_asset
+                return muxed_path
+            report["reason"] = (
+                f"mux_failed: {getattr(muxed, 'error', 'unknown')}"
+            )
+            return video_path
+
+        report["reason"] = "speech_asset_unresolved"
+        return video_path
+
+    def _scene3d_emotion_advisories(
+        self,
+        scene_script: SceneScriptRoot,
+        context: NodeExecutionContext,
+    ) -> list[object]:
+        """Emotion advisories for this script, when the speech timeline is known.
+
+        The emotion gate needs segments; the scene-3d path has them only when
+        a lip-sync run published them on this node. Without them the emotion
+        half of the reconciliation is simply absent (never a guess).
+        """
+
+        raw = context.node.structured_content.get("dialogue_segments")
+        if not isinstance(raw, list) or not raw:
+            return []
+        segments: list[SpeechSegment] = []
+        for index, entry in enumerate(raw):
+            try:
+                segments.append(
+                    SpeechSegment(
+                        segment_id=str(entry.get("segment_id") or f"seg_{index}"),
+                        character_id=str(entry.get("character_id") or ""),
+                        text=str(entry.get("text") or ""),
+                        start_time=float(entry.get("start_time") or 0.0),
+                        end_time=float(entry.get("end_time") or 0.0),
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                continue
+        if not segments:
+            return []
+        return list(
+            check_emotion_continuity(
+                shots=list(scene_script.shots),
+                segments=segments,
+                frame_rate=scene_script.scene.frame_rate,
+            )
+        )
+
+    def _wardrobe_drift_report(
+        self,
+        scene_script: SceneScriptRoot,
+        *,
+        node_id: str,
+        workflow_id: str,
+    ) -> dict[str, Any]:
+        """Cross-node character drift for this node (queryable, never silent)."""
+
+        from app.services.scene3d.wardrobe_drift import (
+            check_cross_node_character_drift,
+        )
+
+        siblings = self._sibling_scripts(workflow_id)
+        if siblings is None:
+            return {
+                "checked": False,
+                "reason": "workflow_scripts_unreadable",
+                "findings": [],
+            }
+        scripts = dict(siblings)
+        # The node's own script is authoritative here: the persisted version
+        # may lag the draft this execution rendered from.
+        scripts[node_id] = scene_script
+        findings = check_cross_node_character_drift(
+            scripts,
+            asset_palettes=self._read_sibling_character_palettes(workflow_id),
+        )
+        return {
+            "checked": True,
+            "reason": None,
+            "findings": [finding.to_dict() for finding in findings],
+        }
+
+    def _read_sibling_scene_scripts(
+        self, workflow_id: str
+    ) -> dict[str, SceneScriptRoot] | None:
+        """Every scene-3d script in this workflow (this node's included).
+
+        Same resolution pattern as the speech-asset path (workflow repository
+        over the media data dir). Any failure returns None — the caller then
+        publishes WHY the cross-node check did not run rather than pretending
+        it passed.
+        """
+
+        from app.persistence.agent_canvas_repository import (
+            AgentCanvasWorkflowRepository,
+        )
+        from app.persistence.database import create_v2_database
+        from app.persistence.event_repository import EventRepository
+        from app.persistence.project_repository import ProjectRepository
+
+        try:
+            database = create_v2_database(self._settings.media_data_dir)
+            try:
+                repository = AgentCanvasWorkflowRepository(
+                    database, ProjectRepository(database), EventRepository(database)
+                )
+                workflow = repository.get_workflow(workflow_id)
+            finally:
+                database.dispose()
+        except Exception:
+            return None
+
+        scripts: dict[str, SceneScriptRoot] = {}
+        for node in workflow.nodes:
+            if node.node_type != "scene-3d":
+                continue
+            raw = node.structured_content.get("scene_script")
+            if not isinstance(raw, dict):
+                continue
+            try:
+                scripts[node.node_id] = SceneScriptRoot.model_validate(raw)
+            except Exception:
+                continue
+        return scripts
+
+    def _read_sibling_character_palettes(
+        self, workflow_id: str
+    ) -> dict[str, list[str]]:
+        """What every character asset in this workflow DECLARES (ADR 0011).
+
+        The asset library does not carry structured content, so the bridge is
+        the character-design NODE that produced each asset: its
+        ``structured_content`` holds the identity payload and its
+        ``output_asset_id`` is the asset a scene binds. A node with no palette
+        declares nothing and is simply absent — an undeclared asset is "not
+        decided yet", never a colour to be invented.
+
+        Returns an empty mapping when nothing declares (the caller then runs
+        the previs-side check as a no-op rather than failing the run).
+        """
+
+        from app.persistence.agent_canvas_repository import (
+            AgentCanvasWorkflowRepository,
+        )
+        from app.persistence.database import create_v2_database
+        from app.persistence.event_repository import EventRepository
+        from app.persistence.project_repository import ProjectRepository
+
+        palettes: dict[str, list[str]] = {}
+        try:
+            database = create_v2_database(self._settings.media_data_dir)
+            try:
+                repository = AgentCanvasWorkflowRepository(
+                    database, ProjectRepository(database), EventRepository(database)
+                )
+                workflow = repository.get_workflow(workflow_id)
+            finally:
+                database.dispose()
+        except Exception:
+            return palettes
+        for node in workflow.nodes:
+            asset_id = node.output_asset_id
+            if not asset_id:
+                continue
+            raw = node.structured_content.get("appearance_palette")
+            if not isinstance(raw, (list, tuple)):
+                continue
+            declared = [
+                str(entry).upper()
+                for entry in raw
+                if isinstance(entry, str) and entry.startswith("#")
+            ][:4]
+            if declared:
+                palettes[asset_id] = declared
+        return palettes
+
+    def _resolve_speech_asset_path(self, asset_ref: str) -> Path | None:
+        """Resolve a speech audio asset ref to a local file (None when absent).
+
+        Mirrors the timeline beat tools' resolution path: asset id -> stored
+        version -> storage key -> local path. Any failure degrades to None
+        (the caller reports the asset as un-animated rather than guessing a
+        duration).
+        """
+
+        from app.persistence.asset_library_repository import V2AssetLibraryRepository
+        from app.persistence.database import create_v2_database
+        from app.services.v2_storage_adapter import StorageAdapter
+
+        asset_ref = speech_asset_ref(asset_ref)
+        try:
+            database = create_v2_database(self._settings.media_data_dir)
+            try:
+                version = V2AssetLibraryRepository(database).find_version(asset_id=asset_ref)
+            finally:
+                database.dispose()
+            if version is None:
+                return None
+            path = StorageAdapter(self._settings.media_data_dir).resolve_local_path(
+                version.storage_key
+            )
+            return path if path.is_file() else None
+        except Exception:
+            return None
+
     def __call__(self, context: NodeExecutionContext) -> NodeExecutionOutcome:
         scene_script = _scene_script_from_node(context.node)
         generated = False
+        white_model_report: dict[str, Any] | None = None
         if scene_script is None:
             description = _scene_description_text(context)
-            if not description or self._script_generator is None:
+            white_model = bool(context.node.structured_content.get("white_model"))
+            if white_model:
+                if self._white_model_generator is None:
+                    # The mode is requested but its generator is not wired:
+                    # falling back to the classic path would silently change
+                    # the semantics the author asked for.
+                    raise _error(
+                        "white_model_generator_missing",
+                        "This node requests white-model mode but no ops generator is configured.",
+                    )
+                try:
+                    scene_script, white_model_report = self._white_model_generator.generate(
+                        description=description, base_script=None
+                    )
+                except Exception as error:  # noqa: BLE001 - re-raised coded below.
+                    code = getattr(error, "code", "white_model_generation_failed")
+                    raise _error(code, str(error)) from error
+                generated = True
+            elif not description or self._script_generator is None:
                 raise _error(
                     "scene3d_scene_script_missing",
                     "The Scene-3D node has no valid SceneScript or scene description to render.",
                 )
-            try:
-                scene_script = self._script_generator.generate(description=description)
-            except SceneScriptGenerationError as error:
-                raise _error(error.code, str(error)) from error
-            generated = True
+            else:
+                try:
+                    scene_script = self._script_generator.generate(description=description)
+                except SceneScriptGenerationError as error:
+                    raise _error(error.code, str(error)) from error
+                generated = True
+        # Dialogue-driven previs: bound speech audio moves the characters'
+        # mouths automatically (the voice-cast -> scene-3d one-click chain).
+        # Degradation is queryable: unresolved speech assets render without
+        # lip-sync and say so in the published report.
+        auto_lip_sync: AutoLipSyncResult | None = None
+        if scene_script.speech_bindings:
+            auto_lip_sync = apply_speech_bound_lip_sync(
+                scene_script,
+                asset_resolver=self._resolve_speech_asset_path,
+            )
+            if auto_lip_sync.applied:
+                scene_script = auto_lip_sync.scene_script
         capability = self._capability_probe()
         if getattr(capability, "state", "unsupported") == "unsupported":
             detail = getattr(capability, "error", "")
@@ -1491,6 +2473,17 @@ class Scene3DNodeExecutor:
                 scene_script, rendered_frames=rendered_frames
             )
             media: GeneratedMediaPayload
+            # Animatic (V0.2 §14.9): the emitted previs carries the dialogue
+            # bed so the render side has the same "watch it with sound" the
+            # live preview has. Only a FULL animation render can host it — a
+            # keyframes-only clip is five instants, and muxing a continuous
+            # bed onto it would misrepresent the take. Every other outcome is
+            # reported in ``animatic_audio`` (never silent).
+            animatic_audio: dict[str, Any] = {
+                "muxed": False,
+                "asset_ref": None,
+                "reason": None,
+            }
             if self._emit_video:
                 video_path = os.path.join(tmp_dir, "previs.mp4")
                 encoded = self._encoder(
@@ -1503,6 +2496,13 @@ class Scene3DNodeExecutor:
                         "scene3d_encode_failed",
                         getattr(encoded, "error", "PNG sequence could not be encoded."),
                     )
+                video_path = self._mux_animatic_bed(
+                    scene_script,
+                    video_path=video_path,
+                    rendered_frames=rendered_frames,
+                    tmp_dir=tmp_dir,
+                    report=animatic_audio,
+                )
                 media = GeneratedMediaPayload(
                     content=Path(video_path).read_bytes(),
                     mime_type="video/mp4",
@@ -1530,10 +2530,20 @@ class Scene3DNodeExecutor:
         structured_content: dict[str, Any] | None = {
             "previs_trajectory": trajectory
         }
-        if generated:
+        if white_model_report is not None:
+            # Queryable provenance: which ops the agent's batch applied and
+            # what the MCP extension ops returned (ADR 0005: never silent).
+            structured_content["white_model_report"] = white_model_report
+        if generated or (auto_lip_sync is not None and auto_lip_sync.applied):
             # publish_node_output merges this onto the existing column, so
             # panel-authored structured fields are preserved.
             structured_content["scene_script"] = scene_script.model_dump(mode="json")
+        if auto_lip_sync is not None:
+            structured_content["auto_lip_sync"] = auto_lip_sync.to_dict()
+        # Animatic provenance: whether the emitted previs carries the bed, and
+        # why not when it doesn't (no binding / asset unresolved / keyframes-only
+        # render / mux failure). A reviewer must be able to ask.
+        structured_content["animatic_audio"] = animatic_audio
         reference_bindings = _scene3d_reference_bindings(context)
         if reference_bindings:
             # The previs itself is Blender's output and cannot be shaped by a
@@ -1552,6 +2562,45 @@ class Scene3DNodeExecutor:
             )
             if generated:
                 structured_content["scene_script"] = scene_script.model_dump(mode="json")
+        # Dramagic-style pre-render consistency report. Published (not
+        # enforced): warnings name the ways this script can quietly lose
+        # identity — an unbound character in a multi-shot scene, two
+        # indistinguishable color-twins, a dead camera, coverage gaps — so a
+        # reviewer or the workbench gate can ask for them. Nothing that used
+        # to render stops rendering (engineering standard §4: queryable,
+        # never silent, and never a new blocker on an old path).
+        structured_content["scene3d_consistency"] = check_scene_script_consistency(
+            scene_script
+        ).to_dict()
+        # Cross-node character drift (V0.2 §5 服装维度): the identity binding is
+        # only as true as every node that claims it. The check needs the
+        # workflow's other scene-3d scripts; when they cannot be read the
+        # report SAYS so instead of implying a pass.
+        structured_content["scene3d_wardrobe_drift"] = self._wardrobe_drift_report(
+            scene_script,
+            node_id=context.node.node_id,
+            workflow_id=context.node.workflow_id,
+        )
+        # Continuity State's motion dimension (V0.2 §5): a character's pose
+        # disagreeing across a cut. Published here for the first time — the
+        # gate existed and was tested but had no caller, so a facing flip was
+        # never surfaced to anyone.
+        blocking_issues = check_blocking_continuity(scene_script)
+        structured_content["scene3d_blocking_continuity"] = [
+            issue.to_dict() for issue in blocking_issues
+        ]
+        # §13 第 4 问: join the two halves. Continuity answers "什么必须连续",
+        # the declared reading answers "什么发生改变" — and neither gate ever
+        # looked at the other, so a turn nobody declared read as a bug and a
+        # declared 连续运动 over a flipped keyframe read as fine.
+        structured_content["scene3d_transition_intent"] = [
+            note.to_dict()
+            for note in reconcile_transition_intents(
+                shots=list(scene_script.shots),
+                blocking_issues=blocking_issues,
+                emotion_advisories=self._scene3d_emotion_advisories(scene_script, context),
+            )
+        ]
         return NodeExecutionOutcome(media=media, structured_content=structured_content)
 
     def _previs_metadata(

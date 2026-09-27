@@ -14,6 +14,7 @@ import {
   normalizeAgentWorkingDocumentV2,
   normalizeCanvasBindingV2,
   normalizeCanvasEditingExportImportResponseV2,
+  normalizeCanvasMutationResponseV2,
   normalizeCanvasLayoutPatchResponseV2,
   normalizeCanvasNodeErrorV2,
   normalizeCanvasNodeV2,
@@ -4374,5 +4375,58 @@ describe("normalizeCanvasEditingExportImportResponseV2", () => {
       binding: { binding_id: "binding-editing-export" },
       asset: { asset_id: "asset-export", media_type: "video" },
     });
+  });
+});
+
+describe("normalizeCanvasMutationResponseV2", () => {
+  // ADR 0009 决策 2: the patch response carries the scope report. The
+  // normalizer used to reject it as an unknown field, which killed the answer
+  // in the API client — every real node patch broke it.
+  it("accepts the scope report and keeps its documented fields", () => {
+    const workflow = validWorkflowPayload();
+    const node = {
+      ...workflow.nodes[0],
+    };
+    const normalized = normalizeCanvasMutationResponseV2({
+      workflow,
+      node,
+      binding: null,
+      scope_report: {
+        edited_keys: ["structured_content"],
+        content_areas: ["场景脚本"],
+        affected_neighbours: [{ node_id: "video-1", relation: "video_reference" }],
+        dirty_reasons: ["场景脚本有未提交的作者修改"],
+        notes: ["本次编辑不影响任何已绑定节点（下游只消费本节点的产物，不读取作者态）。"],
+        // A key the frontend does not model: kept silently rather than fatal.
+        future_detail: { anything: true },
+      },
+    });
+    expect(normalized.scope_report).not.toBeNull();
+    expect(normalized.scope_report?.edited_keys).toEqual(["structured_content"]);
+    expect(normalized.scope_report?.affected_neighbours).toEqual([
+      { node_id: "video-1", relation: "video_reference" },
+    ]);
+  });
+
+  it("degrades a missing scope report to null", () => {
+    const workflow = validWorkflowPayload();
+    const normalized = normalizeCanvasMutationResponseV2({
+      workflow,
+      node: workflow.nodes[0],
+      binding: null,
+    });
+    expect(normalized.scope_report).toBeNull();
+  });
+
+  it("still rejects a genuinely unknown top-level field", () => {
+    const workflow = validWorkflowPayload();
+    expect(() =>
+      normalizeCanvasMutationResponseV2({
+        workflow,
+        node: workflow.nodes[0],
+        binding: null,
+        surprise: true,
+      }),
+    ).toThrow(/unknown field/);
   });
 });

@@ -666,12 +666,33 @@ _TRUSTED_MANIFESTS = (
         },
     ),
     # The video endpoint this deployment actually calls
-    # (``VIDEO_GENERATION_MODEL=agnes-video-2.5-flash``,
+    # (``VIDEO_GENERATION_MODEL=agnes-video-2.5``,
     # ``VIDEO_GENERATION_ENDPOINT``).  It is registered under ``volcengine_ark``
     # because that is the protocol family and the credential slot it runs on, and
     # WITHOUT an ``adapter_profile`` for the same reason the StepFun and Agnes
     # image rows carry none: the request goes out through
     # ``seedance_adapter``'s Agnes branch, not through a native adapter.
+    #
+    # This row used to name ``agnes-video-2.5-flash``, and it was switched to the
+    # non-flash SKU on 09-24 because ``-flash`` does not accept the ``videos``
+    # parameter at all -- not "one element", *none*.  What the endpoint said,
+    # verbatim:
+    #
+    #     400 invalid_request
+    #     {"code":"invalid_request","message":"当前模型不支持 videos",
+    #      "data":{"param":"videos"}}
+    #
+    # The refusal is for the request as a whole, so a bound previs clip did not
+    # merely get dropped -- it took the whole segment down.  Any future request
+    # that puts a URL in ``videos`` has to go to this SKU; ``-flash`` can only
+    # ever carry ``images``/``audio``.
+    #
+    # Both of the image limits below -- the count and the aspect-ratio window --
+    # were measured on ``-flash``, because that was the SKU this deployment ran
+    # when they were learned.  Nothing re-measured them on this one.  They are
+    # kept as-is because under-declaring costs budget while over-declaring costs
+    # the whole request, and the documented numbers were never an accepted
+    # request from *any* Agnes endpoint.
     #
     # ``reference_limits.image`` is 5, not the 9 the Doubao rows use.  The Agnes
     # endpoint enforces its own cap and says so in the refusal:
@@ -687,13 +708,13 @@ _TRUSTED_MANIFESTS = (
     # here is what let that happen; nothing in our code re-checks a provider's
     # own limit before submitting.
     #
-    # The Agnes documentation for ``agnes-video-2.5`` states that ``images``
-    # holds at most **8**, which is not this SKU's number and not a number worth
-    # changing to: the ``400`` above is from ``-flash``, the only SKU this row
-    # names, and it says 5.  The documented 8 would buy three more slots for
-    # requests the endpoint then refuses whole -- which is the exact failure this
-    # value exists to prevent.  **Leave it at 5**; revisit only with a 200 from
-    # this model that carries eight.
+    # The Agnes documentation for this SKU family states that ``images`` holds at
+    # most **8**, which is not the number below.  The ``400`` above was observed
+    # on ``-flash`` -- the SKU this row used to name -- and it says 5; the 8 is
+    # documentation, never an accepted request from *this* endpoint.  Declaring 8
+    # would buy three more slots for requests the endpoint may well refuse whole,
+    # which is the exact failure this value exists to prevent.  **Leave it at 5**;
+    # revisit only with a 200 from ``agnes-video-2.5`` that carries more.
     #
     # ``reference_limits.video`` is 1, because the endpoint's ``videos`` field is
     # a one-element array; a second clip in the request is refused, not ignored.
@@ -704,6 +725,15 @@ _TRUSTED_MANIFESTS = (
     # URL, and the Agnes branch of ``seedance_adapter.payload_for_manifest``
     # never built a ``videos`` array at all.  Both of those are fixed now, so the
     # number is load-bearing and said plainly.
+    #
+    # **The 1 is now observed, not documented.**  On 09-24 this SKU accepted a
+    # request carrying one previs clip in ``videos`` alongside two image
+    # references and rendered it: ``task_Rs42UF9UxpleZPta0TWBychhX90UPLMM``, 7s,
+    # 2,767,095 bytes, stored by the provider at
+    # ``.../videos/agnes-video-2.5/<task id>.mp4``.  What is still *not*
+    # observed is a request carrying **two** clips -- the endpoint's schema says
+    # the array holds one, and that remains the only evidence for the cap.
+    # If a second clip is ever refused, that is the value to revisit, not this 1.
     #
     # ``reference_limits.audio`` is 3, which matches the endpoint's own cap.
     #
@@ -724,8 +754,8 @@ _TRUSTED_MANIFESTS = (
     # other four down with it.
     TrustedModelManifest(
         provider_id="volcengine_ark",
-        provider_model_id="agnes-video-2.5-flash",
-        display_name="Agnes Video 2.5 Flash",
+        provider_model_id="agnes-video-2.5",
+        display_name="Agnes Video 2.5",
         capability="video",
         capability_metadata={
             "accepted_input_types": ["text", "image", "video", "audio"],
@@ -750,6 +780,59 @@ _TRUSTED_MANIFESTS = (
             "supports_native_audio": True,
             # ADR 0005 §4/§4a previs fingerprint: reference video consumed;
             # geometric control passes (depth/normal/flow) not yet accepted.
+            "previs_control_signal_support": {"depth": False, "normal": False, "flow": False},
+            "provider_protocol": "ark_video",
+            "openai_compatible_video_generation": True,
+            "supports_provider_idempotency_token": False,
+            "supports_remote_task_lookup": True,
+        },
+    ),
+    # The ``-flash`` SKU this deployment used to call, kept in the catalog rather
+    # than dropped so that its row in the database says the same thing the code
+    # says.  ``upsert_models`` never deletes a row that left the catalog, so
+    # removing this entry would not remove the row -- it would freeze it at
+    # whatever it said last and let an operator select a SKU whose metadata is
+    # no longer maintained.
+    #
+    # The only difference from the row above is ``reference_limits.video``: 0.
+    # That is the whole reason this SKU stopped being the default.  The endpoint
+    # refused a request carrying a previs clip with:
+    #
+    #     400 invalid_request
+    #     {"code":"invalid_request","message":"当前模型不支持 videos",
+    #      "data":{"param":"videos"}}
+    #
+    # It used to declare 1 here, then 3 before that, and neither number was ever
+    # true -- the ``videos`` channel was simply unreachable, so nothing observed
+    # the refusal.  With a 0 below, a node bound to this SKU cannot accumulate a
+    # video reference at all, which is the correct behaviour for an endpoint that
+    # rejects the parameter outright.
+    TrustedModelManifest(
+        provider_id="volcengine_ark",
+        provider_model_id="agnes-video-2.5-flash",
+        display_name="Agnes Video 2.5 Flash",
+        capability="video",
+        capability_metadata={
+            "accepted_input_types": ["text", "image", "audio"],
+            "max_references": 8,
+            "reference_limits": {"image": 5, "video": 0, "audio": 3},
+            "reference_image_aspect_ratio_range": [0.4, 2.5],
+            "supported_parameters": [
+                "aspect_ratio",
+                "resolution",
+                "duration_seconds",
+                "generate_audio",
+            ],
+            "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+            "supported_resolutions": ["480p", "720p", "1080p"],
+            "duration_range_seconds": [4, 12],
+            "default_parameters": {
+                "duration_seconds": 5,
+                "resolution": "720p",
+                "aspect_ratio": "16:9",
+                "generate_audio": False,
+            },
+            "supports_native_audio": True,
             "previs_control_signal_support": {"depth": False, "normal": False, "flow": False},
             "provider_protocol": "ark_video",
             "openai_compatible_video_generation": True,

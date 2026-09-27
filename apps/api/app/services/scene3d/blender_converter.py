@@ -16,6 +16,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas.scene_script import SceneScriptRoot
+
+from app.services.scene3d.held_items import held_keyframe_positions
 # Imported rather than reimplemented: the draft pass must render exactly the
 # frames ``extract_keyframes`` copies and ``control_passes`` aligns to, or a
 # keyframe deliverable would silently miss frames the full pass produces.
@@ -669,6 +671,19 @@ def scene_script_to_blender(
                 rotation_y=prop.rotation_y,
                 scale=prop.scale,
             ))
+            # Held items (V0.2 §5): ride the holder's hand at the holder's own
+            # keyframes — same frames, same interpolation basis as the
+            # character, so preview ≡ render at every authored pose. A static
+            # prop keeps its authored position untouched.
+            if prop.held_by:
+                holder = next((c for c in s.characters if c.id == prop.held_by), None)
+                if holder is not None:
+                    lines.append(f"# Held prop keyframes: {prop.id} (held by {holder.id})")
+                    lines.append(f'prop_obj = bpy.data.objects["{_esc(prop.id)}"]')
+                    for frame, hand_position in held_keyframe_positions(prop, holder):
+                        lines.append(f"# frame {frame}")
+                        lines.append(f"prop_obj.location = {_vec(hand_position)}")
+                        lines.append(f"prop_obj.keyframe_insert(data_path='location', frame={frame + 1})")
         lines.append("")
 
     # Characters

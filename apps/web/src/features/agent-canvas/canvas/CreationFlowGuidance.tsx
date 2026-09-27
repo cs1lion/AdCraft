@@ -162,11 +162,17 @@ export const CreationFlowGuidance: React.FC<CreationFlowGuidanceProps> = ({
       {/* Warnings */}
       {warnings.length > 0 && (
         <div className="creation-flow-warnings">
-          {warnings.slice(0, 2).map((warning, idx) => (
+          {warnings.slice(0, 3).map((warning, idx) => (
             <div key={idx} className="creation-flow-warning-item">
               <span>💡</span> {warning}
             </div>
           ))}
+          {warnings.length > 3 && (
+            // Never drop silently: the cap is visible and counted.
+            <div className="creation-flow-warning-more">
+              还有 {warnings.length - 3} 条提示
+            </div>
+          )}
         </div>
       )}
 
