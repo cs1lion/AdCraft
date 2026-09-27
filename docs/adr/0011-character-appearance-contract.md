@@ -109,6 +109,10 @@ advisory 不阻断；唯一允许 FAIL 的是"确定的坏"（例如声明色板
 
 ## 实施状态（2026-09-27 更新：B 路径已实施）
 
+### 接手会话（2026-09-27 同日）新增
+- 单句重合成端点 `POST /scene-3d/voice-cast-resynth-line` 落地（交接文档「二.3」）
+- 跨会话保留集 `TransitionProposalsRequest.retained_reading_ids` 落地（交接文档「二.4」）
+
 * **B 路径（节点即桥）已落地**：`CharacterDesignAssetContentV2.appearance_palette` +
   `CharacterMainRoleBriefV2` / `CharacterIdentityAuthorityProjectionV1` 的同名字段（色板随身份走，
   turnaround 不得声明第二套衣服）+ 编译器两分支映射 + 确定性 fixture 不发明色板 +

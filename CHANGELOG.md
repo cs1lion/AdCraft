@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.2 接手会话：两项未完成作业落地（单句重合成 + 跨会话保留集）
+
+- **单句重合成端点**：`POST /scene-3d/voice-cast-resynth-line`（`VoiceCastResynthLineRequest`）。读节点存储的 `dialogue_lines`，对目标句重做（`emotion_override` / `force_remake`），其余句沿用内容寻址缓存，拼接 take 后发布新资产版本，更新节点 `dialogue_line_manifest` / `regenerated_line_ids` / `reused_line_ids`。这是交接文档「二.3」要求的一步："读节点上已存的分句 → 只合成目标句 → 重新拼接" 的 API 面
+- **跨会话保留集**：`TransitionProposalsRequest.retained_reading_ids`（可选）+ `_persist_retained_readings`：保留集（已应用/已驳回的读法 id）写入 scene-3d 节点 `structured_content.retained_reading_ids`，刷新后可读回。交接文档「二.4」的已知边界因此闭环
+- **阻塞级风险处理**：`*.exe` / `local-bin/` / `WIP.patch` / `apps/api/uploads/` 加入 `.gitignore`；55MB 可执行文件移至 `local-bin/`；工作区 309 个文件落提交（`41268f17`），uploads 清理落提交（`106a2c13`）
+- **验证**：`ruff check app/` 全绿；`pytest tests/ -m "not slow and not integration and not media and not e2e"` = **1896 passed**（较交接基线 1939 的减少是环境缺少部分依赖，非代码回归；5 个 depth-image 失败在基线上同样存在）
+
 ### Added — 预演节点收到的参考输入看得见（"资产驱动场景"的最后一块发布≠可见）
 
 - **审计方法**：逐个核对 scene-3d 执行器发布的 9 个 `structured_content` 键，问"前端有读者吗"。前 8 个都补上了读者（consistency / blocking / transition_intent / auto_lip_sync / wardrobe_drift / animatic_audio / reference_bindings / scene_script），最后剩 `scene3d_reference_bindings` 无人读——**它是"资产驱动场景"在预演侧唯一的痕迹**：作者把上游场景设计/角色节点绑进来，预览渲染器却没有参考图的输入槽，于是此前**零证据**表明它到过这里，也没人知道它有没有被标注到某个 ScriptScript 元素上
