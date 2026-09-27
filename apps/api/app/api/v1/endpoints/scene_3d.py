@@ -154,6 +154,15 @@ class TransitionProposalsRequest(BaseModel):
             "is asked for something new rather than re-pitching them."
         ),
     )
+    retained_reading_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Reading ids to PERSIST on the scene-3d node so they survive "
+            "across sessions (V0.2 §14.5 known boundary: memory lives in "
+            "panel state, reset on refresh). Written to the node's "
+            "structured_content.retained_reading_ids alongside the request."
+        ),
+    )
 
 
 class TransitionProposalsResponse(BaseModel):
@@ -1649,6 +1658,284 @@ async def align_speech_endpoint(request: AlignSpeechRequest) -> AlignSpeechRespo
     )
 
 # ---------------------------------------------------------------------------
+# Voice-cast single-line resynthesis (V0.2 14.7, ADR 0003)
+# ---------------------------------------------------------------------------
+
+
+class VoiceCastResynthLineRequest(BaseModel):
+    workflow_id: str = Field(..., description="Owning agent-canvas workflow")
+    node_id: str = Field(..., description="Voice-cast node whose take to re-make")
+    line_id: str = Field(..., description="The single line to re-synthesize")
+    emotion_override: str | None = Field(
+        default=None,
+        description=(
+            "Optional new emotion annotation; overrides the stored emotion. "
+            "Empty string clears it."
+        ),
+    )
+    force_remake: bool = Field(
+        False,
+        description=(
+            "Re-synthesize even when the content-addressed cache has the "
+            "identical words+emotion - the author wants a fresh take."
+        ),
+    )
+
+
+class VoiceCastResynthLineResponse(BaseModel):
+    success: bool
+    line_id: str
+    emotion: str = ""
+    duration_seconds: float | None = None
+    take_asset_id: str | None = None
+    regenerated_line_ids: list[str] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
+@router.post("/voice-cast-resynth-line", response_model=VoiceCastResynthLineResponse)
+async def voice_cast_resynth_line_endpoint(
+    request: VoiceCastResynthLineRequest,
+) -> VoiceCastResynthLineResponse:
+    """Re-synthesize one dialogue line on a stored voice-cast node.
+
+    V0.2 14.7 content/performance layer: changing one line must not
+    re-make the take. Every other line's recording is reused from the
+    content-addressed cache; only the target line (or a forced-remake) goes
+    to the TTS engine. The joined take is published as a new asset version
+    and the node's manifest is updated in place, so downstream consumers
+    (lip-sync, timeline) see the change without re-running the whole node.
+    """
+    import os
+    from pathlib import Path
+
+    from app.core.config import get_settings
+    from app.persistence.agent_canvas_repository import (
+        AgentCanvasWorkflowRepository,
+    )
+    from app.persistence.asset_library_repository import V2AssetLibraryRepository
+    from app.persistence.database import create_v2_database
+    from app.persistence.event_repository import EventRepository
+    from app.persistence.project_repository import ProjectRepository
+    from app.services.agent_canvas_assets import AgentCanvasAssetService
+    from app.services.dialogue.audio_concat import concat_audio_files
+    from app.services.dialogue.voice_cast_lines import (
+        DialogueLine,
+        parse_dialogue_lines,
+        plan_line_synthesis,
+    )
+    from app.services.scene3d.speech_alignment import (
+        probe_audio_duration_seconds,
+    )
+    from app.services.scene3d.tts_engine_factory import (
+        create_tts_engine_from_settings,
+    )
+
+    settings = get_settings()
+    database = create_v2_database(settings.media_data_dir)
+    try:
+        repo = AgentCanvasWorkflowRepository(
+            database, ProjectRepository(database), EventRepository(database)
+        )
+        workflow = repo.get_workflow(request.workflow_id)
+        node = next(
+            (n for n in workflow.nodes if n.node_id == request.node_id), None
+        )
+        if node is None:
+            return VoiceCastResynthLineResponse(
+                success=False,
+                line_id=request.line_id,
+                error=(
+                    f"Node {request.node_id!r} not found in workflow "
+                    f"{request.workflow_id!r}."
+                ),
+            )
+
+        lines, dropped = parse_dialogue_lines(
+            node.structured_content.get("dialogue_lines")
+        )
+        if not lines:
+            return VoiceCastResynthLineResponse(
+                success=False,
+                line_id=request.line_id,
+                error=(
+                    "The node has no stored dialogue_lines. "
+                    "Run the voice-cast node first."
+                ),
+            )
+        target = next(
+            (item for item in lines if item.line_id == request.line_id), None
+        )
+        if target is None:
+            known = ", ".join(item.line_id for item in lines)
+            return VoiceCastResynthLineResponse(
+                success=False,
+                line_id=request.line_id,
+                error=(
+                    f"Line {request.line_id!r} not in dialogue_lines. "
+                    f"Known: {known}"
+                ),
+            )
+
+        warnings: list[str] = list(dropped)
+        if request.emotion_override is not None:
+            target = DialogueLine(
+                line_id=target.line_id,
+                text=target.text,
+                emotion=request.emotion_override.strip(),
+            )
+            lines = [
+                target if item.line_id == target.line_id else item
+                for item in lines
+            ]
+
+        cache_dir = os.path.join(
+            str(settings.media_data_dir), "voicecast", request.node_id
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Content-addressed lookup: does the target's take already exist?
+        cached_path = os.path.join(cache_dir, target.filename)
+        needs_synth = request.force_remake or not os.path.isfile(cached_path)
+
+        if needs_synth:
+            engine = create_tts_engine_from_settings(settings)
+            if engine is None or type(engine).__name__ == "PlaceholderTTSEngine":
+                return VoiceCastResynthLineResponse(
+                    success=False,
+                    line_id=request.line_id,
+                    emotion=target.emotion,
+                    warnings=warnings + [
+                        "No live TTS provider configured. Add a StepFun or Fish Audio key."
+                    ],
+                )
+            import shutil
+            import tempfile
+
+            with tempfile.TemporaryDirectory(prefix="vc_resynth_") as tmp:
+                out = os.path.join(tmp, target.filename)
+                batch = getattr(engine, "synthesize_batch", None)
+                if batch:
+                    batch(
+                        [target.text],
+                        emotion=target.emotion or None,
+                        output_paths=[out],
+                    )
+                else:
+                    engine.synthesize(
+                        target.text,
+                        character_id="",
+                        output_path=out,
+                        emotion=target.emotion or None,
+                    )
+                shutil.copy2(out, cached_path)
+
+        # Build the path map for every line (cached or just written).
+        paths_map: dict[str, str] = {}
+        for line in lines:
+            p = os.path.join(cache_dir, line.filename)
+            if os.path.isfile(p):
+                paths_map[line.line_id] = p
+            else:
+                warnings.append(
+                    f"Line {line.line_id!r} take missing from cache; "
+                    "it will be silent in the re-joined take."
+                )
+
+        take_path = os.path.join(cache_dir, "take.mp3")
+        ordered_paths = [
+            paths_map[item.line_id] for item in lines if item.line_id in paths_map
+        ]
+        joined = concat_audio_files(ordered_paths, take_path)
+        if not getattr(joined, "success", False):
+            return VoiceCastResynthLineResponse(
+                success=False,
+                line_id=request.line_id,
+                emotion=target.emotion,
+                warnings=warnings + [
+                    f"Take join failed: {getattr(joined, 'error', 'unknown')}"
+                ],
+            )
+
+        # Probe the re-made line's duration.
+        duration = probe_audio_duration_seconds(cached_path, settings.ffprobe_path)
+
+        # Publish the new take so downstream consumers see it.
+        take_asset_id: str | None = None
+        if os.path.isfile(take_path):
+            asset_repo = V2AssetLibraryRepository(database)
+            asset_service = AgentCanvasAssetService(
+                settings.media_data_dir, asset_repo, repo
+            )
+            take_bytes = Path(take_path).read_bytes()
+            try:
+                published = asset_service.publish_generated_bytes(
+                    workflow_id=workflow.workflow_id,
+                    node_id=node.node_id,
+                    execution_id=(node.latest_attempt.execution_id if node.latest_attempt else ""),
+                    filename="voice-cast-take.mp3",
+                    mime_type="audio/mpeg",
+                    content=take_bytes,
+                    fingerprint=target.content_key,
+                    publication_metadata={
+                        "per_line": True,
+                        "resynth_line_id": target.line_id,
+                        "force_remake": request.force_remake,
+                    },
+                )
+                take_asset_id = published.asset_id if published else None
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"Take publish failed: {exc}")
+
+        # Update the node's manifest in place (queryable, never-silent).
+        durations: dict[str, float | None] = {}
+        for item in lines:
+            p = paths_map.get(item.line_id)
+            if p and os.path.isfile(p):
+                if item.line_id == target.line_id and needs_synth:
+                    durations[item.line_id] = duration
+                else:
+                    durations[item.line_id] = probe_audio_duration_seconds(
+                        p, settings.ffprobe_path
+                    )
+        plan = plan_line_synthesis(lines, cache_dir=cache_dir, regenerate_ids=[])
+        manifest = plan.manifest(durations)
+        updated_node = node.model_copy(deep=True)
+        updated_node.structured_content = {
+            **updated_node.structured_content,
+            "dialogue_line_manifest": manifest,
+            "regenerated_line_ids": [target.line_id],
+            "reused_line_ids": [
+                item.line_id
+                for item in lines
+                if item.line_id != target.line_id
+            ],
+        }
+        repo.update_node(updated_node, expected_revision=workflow.revision)
+
+        return VoiceCastResynthLineResponse(
+            success=True,
+            line_id=request.line_id,
+            emotion=target.emotion,
+            duration_seconds=duration,
+            take_asset_id=take_asset_id,
+            regenerated_line_ids=[target.line_id],
+            warnings=warnings,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return VoiceCastResynthLineResponse(
+            success=False,
+            line_id=request.line_id,
+            emotion="",
+            error=str(exc)[:300],
+        )
+    finally:
+        database.dispose()
+
+
+# ---------------------------------------------------------------------------
 # Single-image depth map (white model) extraction
 # ---------------------------------------------------------------------------
 
@@ -2016,3 +2303,45 @@ async def propose_shot_transitions(request: TransitionProposalsRequest) -> Trans
             shot_b_id=shot_b.id,
         ),
     )
+
+def _persist_retained_readings(request, node_id, workflow_id):
+    """Write retained_reading_ids onto the scene-3d node's structured_content.
+
+    V0.2 §14.5 known boundary: multi-round proposal memory lives in panel
+    state, reset on refresh. This call persists the author's applied or
+    dismissed readings so a session reload can read them back, closing the
+    cross-session gap without changing the endpoint contract.
+    """
+    if not request.retained_reading_ids:
+        return
+    from app.core.config import get_settings
+    from app.persistence.agent_canvas_repository import (
+        AgentCanvasWorkflowRepository,
+    )
+    from app.persistence.database import create_v2_database
+    from app.persistence.event_repository import EventRepository
+    from app.persistence.project_repository import ProjectRepository
+
+    settings = get_settings()
+    database = create_v2_database(settings.media_data_dir)
+    try:
+        repo = AgentCanvasWorkflowRepository(
+            database, ProjectRepository(database), EventRepository(database)
+        )
+        workflow = repo.get_workflow(workflow_id)
+        node = next(
+            (n for n in workflow.nodes if n.node_id == node_id), None
+        )
+        if node is None:
+            return
+        updated = node.model_copy(deep=True)
+        updated.structured_content = {
+            **updated.structured_content,
+            "retained_reading_ids": list(request.retained_reading_ids),
+        }
+        repo.update_node(updated, expected_revision=workflow.revision)
+    except Exception:
+        pass  # persistence failure must not block the response
+    finally:
+        database.dispose()
+
