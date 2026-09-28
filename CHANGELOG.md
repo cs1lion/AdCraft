@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — E2 配方导入导出接到源码 tab（`recipe/export` + `recipe/import` 第一次有 UI）
+
+- **问题**：后端 `.adrecipe` 配方端点（`/blueprint/recipe/export`、`/blueprint/recipe/import`）早已存在且测试齐全，前端零调用——改写用例（导出一个配方 → 改维度 → 导回生效）没有入口，`recipe/export` 一度是死端点。
+- **改动**（纯前端）：源码 tab 直出区配方下拉下方新增「🎨 导出配方 .adrecipe」/「📥 导入配方」一对按钮 + 独立配方文本框（与蓝图 `.adreplica` 编辑器分开，不共用语义）。导出打 `/recipe/export`（载荷 = 当前选中配方）；导入打 `/recipe/import`，成功即**选为该直出的字幕配方**（下一次直出生效），422 解析错误原文上屏（不静默降级）。
+- **验证**：`vitest ReplicaBlueprintPanel.test.tsx` **26 passed**（+2：导出→改→导入→直出体带新配方全流程；导入 422 原文可见）。`tsc` 0 error；eslint 0 error。
+
 ### Fixed — E1 变体审片：变体并排预览 + recipe 身份展示（G5 兑付点）
 
 - **问题**：`/style-variants` 早已给每个变体带 `recipe_id`/`recipe_name`，前端类型没这两个字段、渲染只有一行"分数 + skill 名 + 应用"——变体间"看得见的差异"在 UI 层断裂；且"应用"只写 skill 槽位，配方不随应用提交，"差异进成片"的最后一跳断了。

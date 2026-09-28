@@ -286,6 +286,78 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
     };
   }, [tab, recipes.length]);
 
+  // E2: .adrecipe 配方文档的导出/导入（配方家族的"文件即真相源"）——
+  // 与蓝图 .adreplica 同纪律：改写用例可存 before/after，粘贴回来即换样式。
+  const [recipeText, setRecipeText] = useState("");
+  const [recipeBusy, setRecipeBusy] = useState(false);
+
+  const exportRecipe = useCallback(async () => {
+    if (!selectedRecipe) {
+      setError("先选一个字幕配方（或导入一个）再导出");
+      return;
+    }
+    setRecipeBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/v1/replica/blueprint/recipe/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipe: selectedRecipe }),
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        const detail = body?.detail;
+        throw new Error(
+          (typeof detail === "object" && detail?.error) ||
+            (typeof detail === "string" && detail) ||
+            `配方导出失败 (HTTP ${response.status})`,
+        );
+      }
+      setRecipeText(body.adrecipe ?? "");
+      setNotice(
+        `已导出配方 .adrecipe（${String(selectedRecipe.name ?? selectedRecipe.recipe_id ?? "")}）`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "配方导出失败");
+    } finally {
+      setRecipeBusy(false);
+    }
+  }, [selectedRecipe]);
+
+  const importRecipe = useCallback(async () => {
+    if (!recipeText.trim()) {
+      setError("请先把 .adrecipe 配方文本粘贴到文本框（或先导出一个再改）");
+      return;
+    }
+    setRecipeBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/v1/replica/blueprint/recipe/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adrecipe: recipeText }),
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        const detail = body?.detail;
+        throw new Error(
+          (typeof detail === "object" && detail?.error) ||
+            (typeof detail === "string" && detail) ||
+            `配方导入失败 (HTTP ${response.status})`,
+        );
+      }
+      // 导入即选为直出配方——改完的样式下一次直出生效
+      setSelectedRecipe(body.recipe as Record<string, unknown>);
+      setNotice("配方已导入并选为本次直出的字幕配方");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "配方导入失败");
+    } finally {
+      setRecipeBusy(false);
+    }
+  }, [recipeText]);
+
   // 高亮行滚动到可见（jsdom 无 scrollIntoView，需守卫）
   useEffect(() => {
     if (!highlightedEventId || tab !== "anchors") return;
@@ -907,6 +979,62 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                   ))}
                 </select>
               </label>
+            )}
+            {/* E2: 配方文档层——导出改完再导入（.adrecipe，与蓝图 .adreplica 同纪律） */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+              <button
+                onClick={() => void exportRecipe()}
+                disabled={recipeBusy || !selectedRecipe}
+                title={selectedRecipe ? "把当前配方导出成 .adrecipe 文本" : "先选一个配方"}
+                style={{
+                  background: recipeBusy || !selectedRecipe ? "#2a2a4a" : "#3a3a6a",
+                  border: "none",
+                  color: recipeBusy || !selectedRecipe ? "#666" : "#fff",
+                  padding: "2px 10px",
+                  borderRadius: 3,
+                  cursor: recipeBusy || !selectedRecipe ? "default" : "pointer",
+                  fontSize: 9,
+                }}
+              >
+                {recipeBusy ? "⏳ 处理中…" : "🎨 导出配方 .adrecipe"}
+              </button>
+              <button
+                onClick={() => void importRecipe()}
+                disabled={recipeBusy || !recipeText.trim()}
+                title="把文本框里的 .adrecipe 配方导入并选为直出配方"
+                style={{
+                  background: recipeBusy || !recipeText.trim() ? "#2a2a4a" : "#3a5a8a",
+                  border: "none",
+                  color: recipeBusy || !recipeText.trim() ? "#666" : "#fff",
+                  padding: "2px 10px",
+                  borderRadius: 3,
+                  cursor: recipeBusy || !recipeText.trim() ? "default" : "pointer",
+                  fontSize: 9,
+                }}
+              >
+                📥 导入配方
+              </button>
+            </div>
+            {recipeText && (
+              <textarea
+                value={recipeText}
+                onChange={(event) => setRecipeText(event.target.value)}
+                placeholder={'<adrecipe version="1" kind="subtitle-style">…'}
+                spellCheck={false}
+                style={{
+                  width: "100%",
+                  minHeight: 64,
+                  marginBottom: 6,
+                  background: "#101018",
+                  border: "1px solid #2a2a4a",
+                  borderRadius: 3,
+                  color: "#8f8",
+                  fontSize: 10,
+                  fontFamily: "monospace",
+                  padding: "4px 6px",
+                  resize: "vertical",
+                }}
+              />
             )}
             <button
               onClick={() => void startDirectRender()}

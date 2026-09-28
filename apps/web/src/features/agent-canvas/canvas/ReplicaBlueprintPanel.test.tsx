@@ -606,7 +606,8 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
   });
 });
 
-describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {  function openSourceTab() {
+describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {
+  function openSourceTab() {
     const node = replicaNode();
     render(<ReplicaBlueprintPanel node={node} />);
     fireEvent.click(screen.getByText("源码 .adreplica"));
@@ -709,6 +710,150 @@ describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {  function open
     });
     fireEvent.click(screen.getByText("📥 导入重编译"));
     await waitFor(() => expect(screen.getByText(/Unknown slot kind/)).toBeTruthy());
+  });
+
+  // E2：配方文档层接到源码 tab——导出当前配方改完再导入，导入即成为直出配方。
+  it("exports the selected recipe as .adrecipe and imports an edited one back (E2)", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/recipe/export")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipe: { recipe_id: "bottom-bold", name: "底部大字", subtitle: { font_size: 42, color: "#FFFFFF" } },
+            adrecipe: '<adrecipe version="1" kind="subtitle-style"><subtitle font_size="42" color="#FFFFFF"/></adrecipe>',
+          }),
+        };
+      }
+      if (target.includes("/recipe/import")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipe: { recipe_id: "imported-amber", name: "导入的琥珀", subtitle: { font_size: 30, color: "#FFC658" } },
+            adrecipe: '<adrecipe version="1" kind="subtitle-style"><subtitle font_size="30" color="#FFC658"/></adrecipe>',
+          }),
+        };
+      }
+      if (target.includes("/blueprint/recipes")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipes: [
+              {
+                recipe_id: "bottom-bold",
+                name: "底部大字",
+                description: "经典短视频字幕形态",
+                subtitle: { font_size: 42, color: "#FFFFFF", position: "bottom_center" },
+              },
+            ],
+          }),
+        };
+      }
+      if (target.includes("/final-composition/renders/")) {
+        return {
+          status: 200,
+          json: async () => ({ status: "completed", progress_percent: 100, output_url: "https://cdn/f.mp4" }),
+        };
+      }
+      if (target.includes("/direct-execute/render")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            feasible: true,
+            render_id: "render_e2",
+            status: "queued",
+            timeline_version: 2,
+            previous_timeline_version: 1,
+          }),
+        };
+      }
+      return { status: 200, json: async () => ({ success: true }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    await waitFor(() => expect(screen.getByText("🎨 字幕配方")).toBeTruthy());
+
+    // 1) 导出当前配方 → .adrecipe 文本进文本框（可改）
+    fireEvent.click(screen.getByText("🎨 导出配方 .adrecipe"));
+    await waitFor(() => expect(screen.getByText(/已导出配方/)).toBeTruthy());
+    const recipeBox = screen.getByPlaceholderText(/<adrecipe/) as HTMLTextAreaElement;
+    expect(recipeBox.value).toContain('kind="subtitle-style"');
+    const exportCall = fetchMock.mock.calls.find((call) =>
+      String(call[0]).includes("/recipe/export"),
+    );
+    expect(exportCall).toBeTruthy();
+    const exportBody = JSON.parse((exportCall as unknown as [string, RequestInit])[1].body as string);
+    expect(exportBody.recipe.recipe_id).toBe("bottom-bold");
+
+    // 2) 改完导入 → 选为该直出配方（下一次直出带上它）
+    fireEvent.change(recipeBox, {
+      target: { value: '<adrecipe version="1" kind="subtitle-style"><subtitle font_size="30" color="#FFC658"/></adrecipe>' },
+    });
+    fireEvent.click(screen.getByText("📥 导入配方"));
+    await waitFor(() => expect(screen.getByText(/配方已导入并选为/)).toBeTruthy());
+
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+    await waitFor(() =>
+      expect(screen.getAllByText(/成片已产出/).length).toBeGreaterThan(0),
+    );
+    const bridgeCall = fetchMock.mock.calls.find((call) =>
+      String(call[0]).includes("/direct-execute/render"),
+    );
+    const bridgeBody = JSON.parse((bridgeCall as unknown as [string, RequestInit])[1].body as string);
+    expect(bridgeBody.recipe.recipe_id).toBe("imported-amber");
+    expect(bridgeBody.recipe.subtitle.color).toBe("#FFC658");
+  });
+
+  it("surfaces the recipe parse error on import (E2: no silent fallback)", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/blueprint/recipes")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipes: [
+              {
+                recipe_id: "bottom-bold",
+                name: "底部大字",
+                description: "",
+                subtitle: { font_size: 42, color: "#FFFFFF", position: "bottom_center" },
+              },
+            ],
+          }),
+        };
+      }
+      if (target.includes("/recipe/export")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipe: { recipe_id: "bottom-bold", name: "底部大字" },
+            adrecipe: '<adrecipe version="1" kind="subtitle-style"><subtitle font_size="42"/></adrecipe>',
+          }),
+        };
+      }
+      if (target.includes("/recipe/import")) {
+        return { status: 422, json: async () => ({ detail: "Unknown subtitle dimension 'glow'" }) };
+      }
+      return { status: 200, json: async () => ({ success: true }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    await waitFor(() => expect(screen.getByText("🎨 导出配方 .adrecipe")).toBeTruthy());
+    // 先导出拿到文本框（配方文本与蓝图 .adreplica 分开，不共用语义）
+    fireEvent.click(screen.getByText("🎨 导出配方 .adrecipe"));
+    await waitFor(() => expect(screen.getByText(/已导出配方/)).toBeTruthy());
+    const recipeBox = screen.getByPlaceholderText(/<adrecipe/) as HTMLTextAreaElement;
+    fireEvent.change(recipeBox, { target: { value: "<adrecipe/>" } });
+    fireEvent.click(screen.getByText("📥 导入配方"));
+    await waitFor(() => expect(screen.getByText(/Unknown subtitle dimension/)).toBeTruthy());
   });
 });
 
