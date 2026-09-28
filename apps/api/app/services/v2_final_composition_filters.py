@@ -317,10 +317,20 @@ def _subtitle_filter(clip: WorkflowV2TimelineClip, canvas: V2CompositionCanvas) 
     }[style.position]
     escaped_text = _escape_drawtext(clip.text)
     escaped_font = _escape_drawtext(canvas.subtitle_font_path or "")
+    # 可见窗优先：编译层（复刻直出的 schedule_caption_cues）按 hypit
+    # caption-fine 语义把语义窗（口播）与可见窗（lead/tail 加宽 + handoff
+    # 裁切）分离，写在 clip metadata 上；没有可见窗元数据的时间线（编辑器
+    # 手排的旧 clip）回落 clip 窗——行为不变。
+    visible_start = float(clip.metadata.get("visible_start_seconds", clip.start_time))
+    visible_end = float(
+        clip.metadata.get(
+            "visible_end_seconds", clip.start_time + clip.duration
+        )
+    )
     return (
         f"drawtext=fontfile='{escaped_font}':text='{escaped_text}':"
         f"fontcolor={style.color}:fontsize={style.font_size}:x=(w-text_w)/2:y={y}:"
-        f"enable='between(t,{clip.start_time:.3f},{clip.start_time + clip.duration:.3f})'"
+        f"enable='between(t,{visible_start:.3f},{visible_end:.3f})'"
     )
 
 

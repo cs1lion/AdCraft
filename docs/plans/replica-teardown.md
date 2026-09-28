@@ -217,3 +217,28 @@ TeardownResponse{report, frame_analyses, video_metadata}
   `/replica/blueprint/direct-execute/render` → 断言 render_id → 轮询到终态）。本
   增量开发环境无 ffmpeg/后端服务/LLM 额度，按"未跑过不写已验证"的纪律留到完整
   栈机器上补；端点逻辑已由 11 条单测（含 dependency_overrides 契约测试）覆盖。
+
+## 14. 已交付：G3 字幕语义/可见时间分离 + handoff（hypit caption-fine 移植，2026-09-28）
+
+**动机**：完成度研究 G3——cue 模型只有行级 + 0.4s 合并，显示时间与口播时间混为
+一谈；hypit `scheduleFineCaption` 的标准形态是语义窗（口播，神圣不可动）与可见
+窗（lead/tail 加宽 + handoff 裁切）分离。
+
+- **schema（加法）**：`WorkflowV2TimelineSubtitleStyle` += `lead_seconds`/
+  `tail_seconds`/`handoff`（cut/overlap），默认 0/0/overlap——旧时间线与编辑器
+  手排 clip 逐字节不变；前端 `V2TimelineSubtitleStyle` 镜像同步（可选字段）。
+- **`schedule_caption_cues`**（纯函数）：可见窗 = 语义窗 ± lead/tail，钳
+  `[0, total]`；同轨相邻 cue 且 cut：前可见尾裁到不超过后语义起点（≥自己的
+  语义尾），后可见头推到不早于裁点（≤自己的语义起点）。**语义窗一律不动**。
+  跨轨不交接（hypit 按 role 分组；单条 subtitle 轨的对应物是同轨）。
+- **编译层默认**：复刻 cue 0.1s lead / 0.2s tail / cut。0.4s 合并不闪跳规则
+  保留（合并防"闪"、handoff 防"抢"，两者并存——hypit 不合并是其台词语句
+  形态差异，中文短句连读下合并是可读性规则）。
+- **渲染器**：`_subtitle_filter` 的 drawtext `enable` 窗读 clip metadata
+  `visible_start_seconds`/`visible_end_seconds`（缺失回落 clip 窗）——调度
+  真的改变成片，不是文本上的成立。
+- **词级 karaoke（下一片，边界已明）**：v2 路径每 cue 一个 drawtext，无法
+  同元素逐词换色；ASS writer 的 cue 模型无词级时间。需要：蓝图侧词流保留
+  （`ReplicaBeatV2` 词列，schema 加法）+ ASS `{\k}` 发射 + 媒体验收。
+- **测试**：+9（见 CHANGELOG 顶部条目）；replica 全套 167 passed / 3 skip
+  （skip = 本机无 ffmpeg）；契约检查 185 paths 通过（style +3 字段）。

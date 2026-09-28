@@ -1119,6 +1119,11 @@ export interface V2TimelineSubtitleStyle {
   font_size: number;
   color: string;
   position: "top_center" | "center" | "bottom_center";
+  // hypit caption-fine 语义/可见时间分离（2026-09-28 加法）：可见窗在口播窗
+  // 两侧加宽的秒数 + 同轨相邻 cue 的交接方式。后端有默认值，旧数据可缺省。
+  lead_seconds?: number;
+  tail_seconds?: number;
+  handoff?: "cut" | "overlap";
 }
 
 export interface V2FinalTimelineTrack {

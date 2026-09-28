@@ -533,3 +533,190 @@ def test_resolved_bgm_enters_editing_domain_audio_graph() -> None:
         resolved_clips, timeline_duration_seconds=timeline.duration_seconds, audio_mode="none"
     )
     assert silent.audio_label is None
+
+
+# ---------------------------------------------------------------------------
+# G3: 语义/可见时间分离 + handoff（hypit caption-fine scheduleFineCaption 移植）
+# ---------------------------------------------------------------------------
+
+
+def _cue(
+    clip_id: str,
+    start: float,
+    duration: float,
+    *,
+    lead: float = 0.0,
+    tail: float = 0.0,
+    handoff: str = "overlap",
+) -> de.WorkflowV2TimelineClip:
+    from app.schemas.workflow_v2 import WorkflowV2TimelineSubtitleStyle
+
+    return de.WorkflowV2TimelineClip(
+        clip_id=clip_id,
+        track_id=de.SUBTITLE_TRACK_ID,
+        clip_type="subtitle",
+        start_time=start,
+        duration=duration,
+        text=clip_id,
+        subtitle_style=WorkflowV2TimelineSubtitleStyle(
+            lead_seconds=lead, tail_seconds=tail, handoff=handoff  # type: ignore[arg-type]
+        ),
+        metadata={"label": clip_id},
+    )
+
+
+def _visible(cue: de.WorkflowV2TimelineClip) -> tuple[float, float]:
+    return (
+        float(cue.metadata["visible_start_seconds"]),
+        float(cue.metadata["visible_end_seconds"]),
+    )
+
+
+def test_schedule_defaults_keep_legacy_behavior_byte_for_byte() -> None:
+    """无 lead/tail（旧时间线/旧样式）→ 可见窗 = 语义窗，等价于不调度。"""
+    cues = [_cue("a", 0.0, 2.0), _cue("b", 2.5, 2.0)]
+
+    scheduled = de.schedule_caption_cues(cues, total=10.0)
+
+    for cue in scheduled:
+        assert _visible(cue) == (cue.start_time, round(cue.start_time + cue.duration, 6))
+
+
+def test_schedule_widens_visible_window_without_touching_semantic_window() -> None:
+    """lead/tail 只加宽可见窗；语义窗（start_time/duration）一字不动。"""
+    cues = [_cue("a", 1.0, 2.0, lead=0.1, tail=0.2)]
+
+    [scheduled] = de.schedule_caption_cues(cues, total=10.0)
+
+    assert (scheduled.start_time, scheduled.duration) == (1.0, 2.0)
+    assert _visible(scheduled) == (0.9, 3.2)
+
+
+def test_schedule_clamps_visible_window_to_timeline_bounds() -> None:
+    """可见窗钳到 [0, total]：不造负时间、不越内容末端。"""
+    cues = [
+        _cue("a", 0.0, 1.0, lead=0.5, tail=0.5),
+        _cue("b", 9.5, 1.0, lead=0.5, tail=0.5),
+    ]
+
+    scheduled = de.schedule_caption_cues(cues, total=10.0)
+
+    assert _visible(scheduled[0]) == (0.0, 1.5)
+    assert _visible(scheduled[1]) == (9.0, 10.0)
+
+
+def test_schedule_handoff_cut_trims_previous_tail_and_pushes_next_head() -> None:
+    """handoff=cut：两条都说完（语义窗不变），可见窗在语义起点处交接。"""
+    # 前一条可见尾 2.6 会越过后一条语义起点 2.5 → 裁到 2.5；后一条可见头
+    # 2.1 被推到 2.5——交接点恰是后一条开始说话的位置。
+    cues = [
+        _cue("a", 0.0, 2.0, lead=0.0, tail=0.6, handoff="cut"),
+        _cue("b", 2.5, 2.0, lead=0.4, tail=0.0, handoff="cut"),
+    ]
+
+    first, second = de.schedule_caption_cues(cues, total=10.0)
+
+    # 语义窗神圣不可动
+    assert (first.start_time, first.duration) == (0.0, 2.0)
+    assert (second.start_time, second.duration) == (2.5, 2.0)
+    # 可见窗在语义起点交接，互不抢占
+    assert _visible(first) == (0.0, 2.5)
+    assert _visible(second) == (2.5, 4.5)
+
+
+def test_schedule_handoff_overlap_does_not_trim() -> None:
+    """handoff=overlap（默认）：可见窗可交叠，调度不裁不推。"""
+    cues = [
+        _cue("a", 0.0, 2.0, lead=0.0, tail=0.6, handoff="overlap"),
+        _cue("b", 2.5, 2.0, lead=0.4, tail=0.0, handoff="overlap"),
+    ]
+
+    first, second = de.schedule_caption_cues(cues, total=10.0)
+
+    assert _visible(first) == (0.0, 2.6)
+    assert _visible(second) == (2.1, 4.5)
+
+
+def test_schedule_handoff_skips_when_previous_ends_after_next_starts() -> None:
+    """前一条语义尾晚于后一条语义头（交叠口播）→ 不裁不推（无从交接）。"""
+    cues = [
+        _cue("a", 0.0, 3.0, lead=0.0, tail=0.5, handoff="cut"),
+        _cue("b", 2.0, 2.0, lead=0.5, tail=0.0, handoff="cut"),
+    ]
+
+    first, second = de.schedule_caption_cues(cues, total=10.0)
+
+    assert _visible(first) == (0.0, 3.5)
+    assert _visible(second) == (1.5, 4.0)
+
+
+def test_schedule_handoff_is_per_track() -> None:
+    """跨轨（字幕 vs 音效巷）不相干：不同 track_id 之间不交接。"""
+    from app.schemas.workflow_v2 import WorkflowV2TimelineSubtitleStyle
+
+    def cue(track_id: str) -> de.WorkflowV2TimelineClip:
+        return de.WorkflowV2TimelineClip(
+            clip_id=f"{track_id}_1",
+            track_id=track_id,
+            clip_type="subtitle",
+            start_time=1.0,
+            duration=2.0,
+            text="x",
+            subtitle_style=WorkflowV2TimelineSubtitleStyle(tail_seconds=0.6),
+        )
+
+    cues = [cue("track-a"), cue("track-b")]
+
+    first, second = de.schedule_caption_cues(cues, total=10.0)
+
+    assert _visible(first) == (1.0, 3.6)
+    assert _visible(second) == (1.0, 3.6)
+
+
+def test_compiled_cues_carry_replica_style_defaults_and_visible_window() -> None:
+    """编译层接线：复刻 cue 带 0.1/0.2/cut 样式默认值 + 可见窗元数据。"""
+    blueprint = _blueprint(
+        beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=6.0)],
+        shots=[
+            ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=2.0, on_screen_text="A"),
+            ReplicaShotV2(index=2, start_seconds=3.0, end_seconds=5.0, on_screen_text="B"),
+        ],
+    )
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+
+    cues = [c for c in plan.timeline.clips if c.clip_type == "subtitle"]
+    assert len(cues) == 2
+    for cue in cues:
+        style = cue.subtitle_style
+        assert style.lead_seconds == de.DEFAULT_CUE_LEAD_SECONDS
+        assert style.tail_seconds == de.DEFAULT_CUE_TAIL_SECONDS
+        assert style.handoff == de.DEFAULT_CUE_HANDOFF
+        assert "visible_start_seconds" in cue.metadata
+        assert "visible_end_seconds" in cue.metadata
+    # 相邻 cue 交接：前可见尾 ≤ 后语义起点（0.4s 合并 + 0.2s tail 下天然成立）
+    assert _visible(cues[0])[1] <= cues[1].start_time
+
+
+def test_renderer_drawtext_uses_visible_window_metadata() -> None:
+    """渲染器：可见窗元数据驱动 drawtext 的 enable 窗（缺失回落 clip 窗）。"""
+    from app.services.v2_final_composition_filters import (
+        V2CompositionCanvas,
+        _subtitle_filter,
+    )
+
+    canvas = V2CompositionCanvas(
+        width=720, height=1280, fps=30, duration_seconds=6.0, subtitle_font_path="/f.ttf"
+    )
+    scheduled = de.schedule_caption_cues(
+        [_cue("a", 1.0, 2.0, lead=0.1, tail=0.2)], total=6.0
+    )[0]
+    scheduled = scheduled.model_copy(update={"text": "BUY NOW"}, deep=True)
+
+    filter_text = _subtitle_filter(scheduled, canvas)
+
+    assert "between(t,0.900,3.200)" in filter_text
+
+    legacy = _cue("a", 1.0, 2.0)  # 无可见窗元数据的旧 clip
+    legacy_filter = _subtitle_filter(legacy.model_copy(update={"text": "X"}, deep=True), canvas)
+    assert "between(t,1.000,3.000)" in legacy_filter

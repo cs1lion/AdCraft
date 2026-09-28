@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 G3：字幕语义/可见时间分离 + handoff（hypit caption-fine 移植），渲染器 visible 窗落地
+
+- **schema（加法、向后兼容）**：`WorkflowV2TimelineSubtitleStyle` += `lead_seconds`/`tail_seconds`/`handoff`（cut/overlap）。默认值 0/0/overlap = 旧行为逐字节不变（旧时间线、编辑器手排 clip 零影响）；前端 `V2TimelineSubtitleStyle` 镜像同步（可选字段）。
+- **`schedule_caption_cues` 纯函数**（`replica/direct_execute_render.py`，hypit `scheduleFineCaption` 的秒制移植）：语义窗（口播，= cue `start_time`/`duration`，神圣不可动）与可见窗分离——可见窗按 lead/tail 向两侧加宽并钳到 `[0, total]`；同轨相邻 cue 且 `handoff="cut"` 时，前一条可见尾裁到不超过后一条语义起点（至少保留到自己的语义尾）、后一条可见头推到不早于该裁点（至多推到自己的语义起点）——两条都说完，不互相抢占。跨轨（字幕 vs 音效巷）不交接（hypit 的 role 分组在单条 subtitle 轨下的对应物 = 同轨）。
+- **编译层接线**：复刻 cue 样式默认 0.1s lead / 0.2s tail / cut（读得完、不抢下一句）；0.4s 合并不闪跳规则保留（与 hypit 只 handoff 不合并的差异：中文短句连读场景下合并是 AdCraft 的可读性规则，两者并存——合并防"闪"，handoff 防"抢"）。
+- **渲染器落地（不是文本上的成立）**：`_subtitle_filter` 的 drawtext `enable` 窗改读 clip metadata 的 `visible_start_seconds`/`visible_end_seconds`（缺失回落 clip 窗）——lead/tail/handoff 真的改变成片里字幕的出现/消失时间。
+- **词级 karaoke 未做（诚实边界）**：v2 路径是每 cue 一个 drawtext（无法在同一文本元素内做逐词换色），剪辑域 ASS writer（`timeline_subtitle_writer.cues_to_ass`）的 cue 模型也没有词级时间——词级 karaoke 烧录需要 ASS `{\k}` + 蓝图侧词流保留（schema 加法），列为下一片，不在本增量浑水摸鱼。
+- **测试**：+9（默认逐字节兼容 / 加宽不动语义窗 / 钳位 / cut 裁切+推头且语义窗不变 / overlap 不裁 / 交叠口播不交接 / 跨轨不交接 / 编译层样式默认值+可见窗接线 / 渲染器 drawtext enable 读可见窗且旧 clip 回落）；replica 全套 **167 passed / 3 skip（skip = 本机无 ffmpeg）**；ruff（E4/E7/E9/F）本线文件全绿；契约检查通过（185 paths，style 新增 3 字段）；全量后端 1987 passed（4 失败 = depth-image 既有基线，零新增）；前端 replica 29 passed、tsc/eslint 对本线文件 0 error。
+- **文档**：`replica-teardown.md` §14 记录本增量；完成度研究 G3 状态指针；hypit 差距分析 P2 行更新。
+
 ### Added — shot advisor 的 LLM 提案层（§14.3/§14.5 审计表最后一项"LLM 提案版待做"）
 
 - **缺的口**：§15 审计表 §14.3/§14.5 行自回填起就标着"规则版；LLM 提案版待做"——规则顾问（shot_advisor.py）能发现台词与分镜的分歧（跨越剪切/紧凑镜头抢话/无台词镜头）并给规则补救语，但 LLM 层从未接到这条路上：作者看到"这里有问题"，却没有"具体怎么改"的第二意见
@@ -16,7 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **测试**：单元 21 例（prompt 构造 2 + 单条校验 6 + 批量解析 7 + 调用层 6）；端点 4 例（默认关闭 / 开启后形状稳定 / 规则发现在提案落地后仍在 / 降级有理由不静默）。测试场景用"跨切台词"确保规则发现非空——否则 LLM 层无事可做会提前返回
 - **验证**：pytest 相关四文件 58 passed；ruff check 我加的行干净（scene_3d.py 既有的 import 排序/B008/S110 非本增量引入）
 - **已知边界**：测试场景触发的 advisory 是 line_crosses_cut；其余 code（cross_talk_in_tight_shot / shot_without_speech）的提案路径同一函数覆盖，未逐个建场景——纯函数校验与场景无关
-
 
 ### Added — 拉片复刻 R3 最后一公里：渲染桥 + 工作台直出入口，G7 音频测试抓到真 bug
 

@@ -88,3 +88,15 @@
 - hypit 的 provider 专属包（gpt-image/seedance/fishaudio…包名即厂商）——我们走角色契约；
 - Studio Companion 全套投影机制——我们画布即投影，无第二编辑器；
 - 100+ 包的粒度——我们单仓分层，词汇表按 §3.4 封顶（每个新元素必须有编译目标）。
+
+## 5. 落地状态更新（2026-09-28，与 CHANGELOG 对应）
+
+| 差距分析项 | 状态 |
+|---|---|
+| P1 子项：亲和边界（left/right 吸收） | ✅ 已落地（adreplica 序列化 + 匹配） |
+| P2：语义/可见时间分离 + handoff | ✅ **已交付（2026-09-28）**：`WorkflowV2TimelineSubtitleStyle` += lead_seconds/tail_seconds/handoff；`schedule_caption_cues` 语义窗不动、可见窗加宽钳位、同轨 cut 交接；渲染器 `_subtitle_filter` enable 窗读可见窗元数据。**词级可见窗/karaoke 未做**——v2 路径每 cue 一个 drawtext 无法逐词换色，ASS writer 无词级时间；下一片需蓝图词流保留 + ASS `{\k}`（见 `replica-teardown.md` §14） |
+| P1 主项：narrative token 层 | 未启动 |
+| P1 子项：normalized 匹配 | 未启动（现为原始子串匹配） |
+| P2：recipes/.adrecipe | 未启动 |
+| P3：fact log | 部分（渲染有 state；编译/解析无账本） |
+| P3：swap 骨架恒等断言 | 未启动（半天工作量） |

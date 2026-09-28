@@ -1262,11 +1262,26 @@ class WorkflowV2TimelineColorControls(BaseModel):
 
 
 class WorkflowV2TimelineSubtitleStyle(BaseModel):
+    """字幕 cue 样式（hypit caption-fine 语义/可见时间分离的最小落点）。
+
+    ``lead_seconds``/``tail_seconds`` 只加宽**可见窗**（口播窗神圣不可动——
+    cue 的 ``start_time``/``duration`` 仍是语义窗）；``handoff="cut"`` 让同轨
+    相邻 cue 竞争同一交接区间时裁前一条的可见尾，且**不切口播时间**。
+    默认值（0/0/overlap）保持既有行为逐字节不变——复刻编译层显式选择
+    0.1/0.2/cut（见 ``replica/direct_execute_render.py``）。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     font_size: int = Field(default=42, ge=12, le=96)
     color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
     position: Literal["top_center", "center", "bottom_center"] = "bottom_center"
+    #: 可见窗在口播窗前提前的秒数（0 = 不加宽）
+    lead_seconds: float = Field(default=0, ge=0, le=5)
+    #: 可见窗在口播窗后延后的秒数（0 = 不加宽）
+    tail_seconds: float = Field(default=0, ge=0, le=5)
+    #: 同轨道相邻 cue 的交接方式：cut = 裁前一条可见尾（不动口播）
+    handoff: Literal["cut", "overlap"] = "overlap"
 
 
 class WorkflowV2TimelineRenderSettings(BaseModel):

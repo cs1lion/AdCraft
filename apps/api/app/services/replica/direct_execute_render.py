@@ -51,6 +51,19 @@ UNRESOLVED_LIBRARY_ASSET_ID = "__pending_library_resolution__"
 #: 字幕 cue 合并不闪跳的最小间隔（秒）
 MIN_CUE_GAP_SECONDS = 0.4
 
+#: 复刻直出的字幕样式默认值（hypit caption-fine 的秒制最小集）：
+#: 可见窗比口播窗各提前/延后 0.1/0.2s（读得完、不抢下一句），同角色相邻
+#:  cue 竞争交接区间时裁前一条可见尾（cut），且不动口播时间。
+#: 与 ADR 0010 R1 的"零模型费"一起，这是 R1 字幕质量的一等公民。
+DEFAULT_CUE_LEAD_SECONDS = 0.1
+DEFAULT_CUE_TAIL_SECONDS = 0.2
+DEFAULT_CUE_HANDOFF = "cut"
+
+#: 调度结果落在 cue metadata 的键（渲染器 _subtitle_filter 读它们画可见窗；
+#: 缺失时回落 clip 窗——向后兼容旧时间线）。
+VISIBLE_START_KEY = "visible_start_seconds"
+VISIBLE_END_KEY = "visible_end_seconds"
+
 
 @dataclass(frozen=True)
 class DirectExecuteRenderPlan:
@@ -91,6 +104,7 @@ def plan_direct_execute_render(
 
     total = _content_duration(blueprint)
     cue_clips = _subtitle_cues(blueprint, total)
+    cue_clips = schedule_caption_cues(cue_clips, total=total)
     bgm_clips = _bgm_clips(blueprint, total)
     sfx_clips = _sfx_clips(blueprint, total)
 
@@ -230,6 +244,74 @@ def _subtitle_cues(
     return merged
 
 
+def schedule_caption_cues(
+    cues: list[WorkflowV2TimelineClip], *, total: float
+) -> list[WorkflowV2TimelineClip]:
+    """给每条 cue 算**可见窗**并写进 metadata（hypit ``scheduleFineCaption`` 秒制移植）。
+
+    语义/可见分离（hypit caption-fine 的核心纪律）：
+
+    - **语义窗**（口播时间，神圣不可动）= cue 的 ``start_time``/``duration``；
+    - **可见窗** = 语义窗按样式的 ``lead_seconds``/``tail_seconds`` 向两侧加宽，
+      钳到 ``[0, total]``——加宽只影响"看得见"，不影响"说到哪"；
+    - 同角色（``metadata.label``）相邻 cue 且 ``handoff="cut"`` 时：前一条可见尾
+      裁到不超过后一条语义起点（至少保留到自己的语义尾），后一条可见头推到
+      不早于该裁点（至多推到自己的语义起点）——两条都说完，不互相抢占。
+
+    无样式参数（旧时间线）时可见窗 = 语义窗，逐字节等价于不调度。
+    纯函数、确定性；输入未排序亦可自排序。
+    """
+    ordered = sorted(cues, key=lambda cue: (cue.start_time, cue.clip_id))
+    scheduled: list[WorkflowV2TimelineClip] = []
+    # track_id → 已排程的同轨上一条 cue 在 scheduled 里的下标。
+    # hypit 的 handoff 按 role 分组（一条 Use = 一个角色的一条字幕流）；
+    # 我们是单条 subtitle 轨，对应物就是**同轨**——同轨相邻 cue 竞争同一块
+    # 屏幕，必须交接；跨轨（字幕/音效）互不相干。
+    previous_by_track: dict[str, int] = {}
+    for cue in ordered:
+        style = cue.subtitle_style
+        semantic_start = cue.start_time
+        semantic_end = round(cue.start_time + cue.duration, 6)
+        visible_start = round(max(0.0, semantic_start - style.lead_seconds), 6)
+        visible_end = round(min(total, semantic_end + style.tail_seconds), 6)
+        previous_index = previous_by_track.get(cue.track_id)
+        previous = scheduled[previous_index] if previous_index is not None else None
+        if (
+            previous is not None
+            and style.handoff == "cut"
+            and previous.start_time + previous.duration <= semantic_start
+        ):
+            previous_semantic_end = round(previous.start_time + previous.duration, 6)
+            previous_visible_end = float(
+                previous.metadata.get(VISIBLE_END_KEY, previous_semantic_end)
+            )
+            # 裁前一条可见尾：不越过本条语义起点，也不早于前一条语义尾
+            trim_to = round(
+                max(previous_semantic_end, min(previous_visible_end, semantic_start)),
+                6,
+            )
+            scheduled[previous_index] = previous.model_copy(
+                update={"metadata": {**previous.metadata, VISIBLE_END_KEY: trim_to}},
+                deep=True,
+            )
+            # 推本条可见头：不早于裁点，也不晚于本条语义起点
+            visible_start = round(min(semantic_start, max(visible_start, trim_to)), 6)
+        previous_by_track[cue.track_id] = len(scheduled)
+        scheduled.append(
+            cue.model_copy(
+                update={
+                    "metadata": {
+                        **cue.metadata,
+                        VISIBLE_START_KEY: visible_start,
+                        VISIBLE_END_KEY: visible_end,
+                    }
+                },
+                deep=True,
+            )
+        )
+    return scheduled
+
+
 def _subtitle_clip(
     clip_id: str, start: float, end: float, text: str, label: str
 ) -> WorkflowV2TimelineClip:
@@ -243,7 +325,12 @@ def _subtitle_clip(
         duration=duration,
         text=text,
         subtitle_style=WorkflowV2TimelineSubtitleStyle(
-            font_size=42, color="#FFFFFF", position="bottom_center"
+            font_size=42,
+            color="#FFFFFF",
+            position="bottom_center",
+            lead_seconds=DEFAULT_CUE_LEAD_SECONDS,
+            tail_seconds=DEFAULT_CUE_TAIL_SECONDS,
+            handoff=DEFAULT_CUE_HANDOFF,  # type: ignore[arg-type]
         ),
         metadata={"label": label},
     )

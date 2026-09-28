@@ -12,9 +12,11 @@
 > `replica-teardown.md` §13）；**G7 已闭合**——补了"resolve-library→渲染→成片
 > 有音轨"的 media 测试，且静态核查抓到并修掉一个真 bug（BGM/SFX 意图 clip 缺
 > `role` 标记，bgm_only 模式下被音频图静默跳过）；**G2 已修**（§11 路线表与
-> ADR 0010 同步）。仍开放：G3 karaoke cue 模型、G4 narrative token 层、G5
-> `.adrecipe`、G6 teardown 缓存。下文矩阵与缺口清单为当日快照，保留作历史记录。
-
+> ADR 0010 同步）；**G3 的语义/可见时间分离 + handoff 已闭合**（schema +3 字段、
+> `schedule_caption_cues` 纯函数、渲染器 visible 窗落地；词级 karaoke 烧录作为
+> 下一片，边界已明——需要蓝图词流保留 + ASS `{\k}`）。仍开放：词级 karaoke、
+> G4 narrative token 层、G5 `.adrecipe`、G6 teardown 缓存。下文矩阵与缺口清单
+> 为当日快照，保留作历史记录。
 ## 1. 完成度矩阵
 
 | 子系统 | 状态 | 证据 |
