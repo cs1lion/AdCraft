@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — D/E 阶段工程任务全部完成（2026-09-29；实机演示未执行）
+
+- **台账**：`docs/plans/last-hundred-meters-plan.md` §8 逐项状态（D1–D8 / E1–E8）。D 阶段演示阻断项全部落地（D1 为 ◧：路径合法化完成但媒体语义受本机环境限制 ENV-SKIP；D7 为 ◧：前端在途守卫/持久化完成，真·幂等仍是后端契约缺口）。E 阶段全部落地（E5 ◧：任何到达前端的漂移载荷逐条可读，`/variant-render-plans` 前端入口仍缺）。
+- **可达性账本**：已知死端点 33 → **28**（recipe export/import、render/async、render/{job_id}、render/{job_id}/cancel 由 E2/E6 接活；baseline json 同步缩账）。
+- **测试基线**：web 全量 **2556 passed / 80 failed**（80 条与 2026-09-28 基线逐条一致、零新增；新增测试 +40 条全绿）；api replica+scene3d **1030 passed**；ruff 改动文件全绿。D8 生产取消路径经 mutation 校验（取消检查改 no-op 即变红）。
+- **留痕**：`demo-materials/runs/2026-09-29-de-completion/`（note.md + summary.md；该目录按既定 .gitignore 规则不入库，二进制不进库）。
+- **未闭合（显式）**：D1 媒体语义实跑、L0 冒烟、D8 取消实机验证、D7 真幂等、`/variant-render-plans` 入口、80 条存量前端失败（P5）、`gesture_performance.py` 存量 ruff F401——均不影响本阶段工程判据，但演示前需逐条确认。
+
 ### Fixed — E6 渲染无进度无取消 → scene-3d render/async 接线 + 直出取消落地
 
 - **问题**：3D 线后端 `render/async`、`render/{job_id}`、`render/{job_id}/cancel` + RenderJobManager（进度 + 协作式取消）早已存在，前端零引用——工作台根本没有渲染按钮，渲染只走节点执行器；同时直出的"停止跟踪"只清前端 state，后端 detached 渲染照跑（"取消"名不副实）。

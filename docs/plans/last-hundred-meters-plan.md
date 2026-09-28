@@ -193,3 +193,34 @@ L2 可交互性 → L3 状态反馈 → L4 负例 → L5 留痕。
 1. 自检阶梯按 `docs/agents/engineering-standards.md` §1 跑过并贴结果
 2. 可达性检查通过（死端点数不增）
 3. 有可回溯留痕产物，不靠"我记得跑过"
+
+---
+
+## 8. 完成状态（2026-09-29，分支 `chore/last-hundred-meters-20260928`）
+
+> D/E 工程任务全部落地；逐项问题/改动/验证/边界见 `CHANGELOG.md`（按任务
+> 编号），测试与闸门数据见 `demo-materials/runs/2026-09-29-de-completion/`。
+> **实机演示（L0–L5）未执行**：本机无 ffmpeg/Blender、无 LLM 额度、未起栈。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| D1 | ◧ | 路径合法化完成；媒体语义 **ENV-SKIP**（无 ffmpeg），需有 ffmpeg 的机器留证 |
+| D2 | ✔ | 可行动清单 + 行内补选（library_resolutions 上车） |
+| D3 | ✔ | 闸门失败走红色错误通道（回归测试在） |
+| D4 | ✔ | Blender/MCP 具名错误可行动提示（单测锁定，实机需 Blender） |
+| D5 | ✔ | 三处保存失败可见 + 可重试 |
+| D6 | ✔ | 3D 草稿持久化 + beforeunload |
+| D7 | ◧ | 前端在途守卫 + renderId 可恢复；**真·幂等仍是后端契约缺口（未做）** |
+| D8 | ✔ | 任务化 + 协作式真取消 + 总预算 timeout（生产路径 mutation 已验证） |
+| E1 | ✔ | 变体并排字幕预览卡 + recipe 应用链路 |
+| E2 | ✔ | 配方导入导出接到源码 tab（死端点 −2） |
+| E3 | ✔ | 分镜 finding 端点到 UI 全链路 |
+| E4 | ✔ | 多轮记忆补传三 props |
+| E5 | ◧ | 422/漂移逐条可读；`/variant-render-plans` 前端入口仍缺（E1 延伸） |
+| E6 | ✔ | scene-3d render/async 入口 + 直出真取消（死端点 −3） |
+| E7 | ✔ | 端点吞异常可查询（既有提交） |
+| E8 | ✔ | 配方库降级可见 + 可重试 |
+
+**可达性账本**：已知死端点 33 → **28**（零新增）。**测试基线**：web 全量
+2556 passed / 80 failed（80 条与基线逐条一致，零新增）；api replica+scene3d
+1030 passed；ruff 改动文件全绿。
