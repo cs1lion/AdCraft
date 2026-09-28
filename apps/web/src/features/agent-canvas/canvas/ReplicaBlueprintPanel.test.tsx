@@ -255,6 +255,22 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
         subtitle_cue_count: 1,
         needs_placeholder_video: true,
         dropped_unresolved_clip_ids: ["bgm_system", "sfx_system"],
+        unresolved_assets: [
+          {
+            clip_id: "bgm_system",
+            track_id: "bgm",
+            intent: "轻快电子",
+            library_hint: "轻快电子",
+            duration_seconds: 12,
+          },
+          {
+            clip_id: "sfx_system",
+            track_id: "sfx",
+            intent: "叮咚; 翻页",
+            library_hint: ["叮咚", "翻页"],
+            duration_seconds: 12,
+          },
+        ],
       },
       {
         status: "completed",
@@ -288,12 +304,18 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
         ),
       ).toBe(true);
     });
-    // 4) 成片预览 + 诚实备注（替换了哪版时间线 / 哪些库素材未计入）
+    // 4) 成片预览 + 诚实备注（替换了哪版时间线）
     await waitFor(() => expect(screen.getByText(/成片已产出/)).toBeTruthy());
     const video = document.querySelector("video");
     expect(video?.getAttribute("src")).toBe("https://cdn.example/final-replica.mp4");
     expect(screen.getByText(/已替换工作流此前的 final-composition 时间线（版本 3 → 4）/)).toBeTruthy();
-    expect(screen.getByText(/库素材未解析，未计入本次直出：bgm_system、sfx_system/)).toBeTruthy();
+    // D2: 未解析库素材是**逐条可行动清单**（clip/intent/时长/补齐入口），
+    // 不再是一句"未计入"的灰色小字
+    expect(screen.getByText(/有 2 个库素材未解析，已跳过、未计入本次直出/)).toBeTruthy();
+    expect(screen.getByText(/\[bgm_system\] 意图「轻快电子」/)).toBeTruthy();
+    expect(screen.getByText(/\[sfx_system\] 意图「叮咚; 翻页」/)).toBeTruthy();
+    expect(screen.getByText(/提示：叮咚、翻页/)).toBeTruthy();
+    expect(screen.getAllByText("选素材补齐").length).toBe(2);
   });
 
   it("submits the selected subtitle recipe (.adrecipe) with the direct render", async () => {
@@ -424,6 +446,156 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
     expect(screen.getByText(/shot_2 有动作镜头，需生成/)).toBeTruthy();
     expect(screen.getByText(/voice 需 TTS 配音/)).toBeTruthy();
     expect(screen.getByText(/可改用/)).toBeTruthy();
+  });
+
+  // D2 完成判据：看到跳过了什么 → 点补齐 → 选素材 → 重新直出 → 成片真的有这段声音。
+  // 回归锁：unresolved_assets 必须渲染成可行动清单，且补齐真的以
+  // library_resolutions 上车（而不是只显示一句文案）。
+  it("D2: 未解析素材可行动——补选素材后重新直出带 library_resolutions", async () => {
+    let bridgeCalls = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/api/v1/replica/blueprint/recipes")) {
+        return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+      }
+      if (target.includes("/final-composition/renders/")) {
+        return {
+          status: 200,
+          json: async () => ({ status: "completed", progress_percent: 100, output_url: "https://cdn/f.mp4" }),
+        };
+      }
+      if (target.includes("/api/v1/asset-library/entities/lib_ent_bgm")) {
+        return {
+          status: 200,
+          json: async () => ({
+            entity: { entity_id: "lib_ent_bgm", display_name: "轻快电子 BGM" },
+            assets: [
+              {
+                asset_id: "lib_asset_bgm1",
+                semantic_type: "bgm",
+                uri: "data/assets/library/bgm.mp3",
+                // 库记录带真实来源 id；version 缺失时按仓内约定 version_<asset_id> 兜底
+                source: { source_type: "upload", asset_id: "asset_bgm_real" },
+              },
+            ],
+          }),
+        };
+      }
+      if (target.includes("/api/v1/asset-library/entities")) {
+        return {
+          status: 200,
+          json: async () => ({
+            entities: [{ entity_id: "lib_ent_bgm", display_name: "轻快电子 BGM" }],
+          }),
+        };
+      }
+      if (target.includes("/direct-execute/render")) {
+        bridgeCalls += 1;
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            feasible: true,
+            render_id: `render_d2_${bridgeCalls}`,
+            status: "queued",
+            timeline_version: 2,
+            previous_timeline_version: 1,
+            // 第一次还有未解析；补齐后再直出即无未解析
+            unresolved_assets:
+              bridgeCalls === 1
+                ? [
+                    {
+                      clip_id: "bgm_system",
+                      track_id: "bgm",
+                      intent: "轻快电子",
+                      library_hint: "轻快电子",
+                      duration_seconds: 12,
+                    },
+                  ]
+                : [],
+          }),
+        };
+      }
+      return { status: 200, json: async () => ({ success: true }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    // 1) 未解析清单可见：意图 + 时长 + 补齐入口（不是一句 note）
+    await waitFor(() => expect(screen.getByText(/有 1 个库素材未解析/)).toBeTruthy());
+    expect(screen.getByText(/\[bgm_system\] 意图「轻快电子」/)).toBeTruthy();
+    expect(screen.getByText(/12\.0s/)).toBeTruthy();
+
+    // 2) 行内补选：候选实体 → 实体资产（version 约定兜底）
+    fireEvent.click(screen.getByText("选素材补齐"));
+    await waitFor(() => expect(screen.getByText("📁 轻快电子 BGM")).toBeTruthy());
+    fireEvent.click(screen.getByText("📁 轻快电子 BGM"));
+    await waitFor(() =>
+      expect(screen.getByText(/asset_bgm_real · version_asset_bgm_real/)).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByText(/asset_bgm_real · version_asset_bgm_real/));
+
+    // 3) 补齐态可见（用户知道自己选了什么 id）
+    await waitFor(() =>
+      expect(screen.getByText(/✓ 已选素材 asset_bgm_real（version_asset_bgm_real）/)).toBeTruthy(),
+    );
+
+    // 4) 带补齐重新直出：library_resolutions 真的上车
+    fireEvent.click(screen.getByText(/↻ 带 1 个补齐重新直出/));
+    await waitFor(() => expect(bridgeCalls).toBe(2));
+    const renderCalls = (fetchMock as unknown as {
+      mock: { calls: [string, RequestInit][] };
+    }).mock.calls.filter((call) => String(call[0]).includes("/direct-execute/render"));
+    const secondBody = JSON.parse(renderCalls[1][1].body as string);
+    expect(secondBody.library_resolutions).toEqual([
+      { clip_id: "bgm_system", asset_id: "asset_bgm_real", version_id: "version_asset_bgm_real" },
+    ]);
+
+    // 5) 无未解析残留 → 清单消失（补齐被采纳，不拿旧清单烦人）
+    await waitFor(() => expect(screen.queryByText(/个库素材未解析/)).toBeNull());
+  });
+
+  it("D2: 补选器拉素材库失败必须可见（不静默空列表）", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/api/v1/replica/blueprint/recipes")) {
+        return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+      }
+      if (target.includes("/api/v1/asset-library/entities")) {
+        return { status: 503, json: async () => ({ detail: "library offline" }) };
+      }
+      return {
+        status: 200,
+        json: async () => ({
+          success: true,
+          feasible: true,
+          render_id: "render_d2b",
+          status: "queued",
+          timeline_version: 2,
+          previous_timeline_version: 1,
+          unresolved_assets: [
+            {
+              clip_id: "bgm_system",
+              track_id: "bgm",
+              intent: "轻快电子",
+              library_hint: "轻快电子",
+              duration_seconds: 12,
+            },
+          ],
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+    await waitFor(() => expect(screen.getByText(/有 1 个库素材未解析/)).toBeTruthy());
+    fireEvent.click(screen.getByText("选素材补齐"));
+    await waitFor(() => expect(screen.getByText(/素材库不可用/)).toBeTruthy());
+    // 重试入口存在（失败可行动，不是死局）
+    expect(screen.getByText("重试")).toBeTruthy();
   });
 });
 

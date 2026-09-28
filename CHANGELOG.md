@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — D2 未解析素材静默剥掉 → 逐条可行动清单 + 行内补齐入口
+
+- **问题**：直出时未解析的 BGM/SFX clip 在写盘前被剥掉（`direct_execute_bridge.py` 的 `strip_unresolved_clips`），前端只把 `dropped_unresolved_clip_ids` 拼成一句灰色 note——用户以为 BGM 进去了，实际没有；后端早已在响应里带回 `unresolved_assets`（clip/intent/提示/时长）与请求侧 `library_resolutions` 契约，前端零消费。
+- **改动**（仅前端，后端契约未动）：① 直出响应解析 `unresolved_assets` 为**可行动清单**（每行 clip_id / 意图 / library_hint / 时长 / 选素材入口），替换原一句 note；② 新增行内补选器 `LibraryAssetPicker`：按意图搜库实体 → 选实体 → 选资产，选中即给出确定 `{clip_id, asset_id, version_id}`（库记录 `source.asset_id` 为真实 id；version 缺失按仓内约定 `version_<asset_id>` 兜底，UI 明示所选 id）；③ 补齐后「↻ 带 N 个补齐重新直出」把 `library_resolutions` 随车提交；④ 直出返回无未解析时如实清零清单与已被消费的补齐态（后端只接受哨兵 clip 回填，重发无害但 UI 不拿旧清单烦人）；⑤ 补选器拉库失败**可见 + 可重试**（§4：不静默空列表）。
+- **完成判据对齐**：看到跳过什么 → 点补齐 → 选素材 → 重新直出 → 成片有这段声音，链路入口齐了；"成片真的有声音"的端到端留证需实机（本机无 ffmpeg，见 summary ENV-SKIP）。
+- **验证**：`vitest ReplicaBlueprintPanel.test.tsx` **22 passed**（+2：补齐入口全流程断言 `library_resolutions` 精确上车；补选器拉库失败可见+重试）。**mutation 校验**：把请求体里 `library_resolutions` 改名后 3 条测试立刻变红，确认锁定。`tsc -p tsconfig.json` **0 error**。
+
 ### Fixed — D1 成片音轨：G7 media 测试路径合法化（地基任务第一步）
 
 - **问题**：`test_replica_direct_execute_render_media.py` 把合成 BGM 写到 `library/bgm_e2e.mp4`,而 `v2_data_boundary.py` 顶层白名单仅 `{assets, v2}`——`library/` 被拒。在有 ffmpeg 的机器上该 media 用例因此**真实失败**;在无 ffmpeg 的机器上 `@pytest.mark.media` 直接 skip,被误记为"通过"(交接 guide 记录的"G7 从未真正执行")。

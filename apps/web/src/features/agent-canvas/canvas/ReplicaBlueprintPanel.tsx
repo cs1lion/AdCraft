@@ -237,6 +237,23 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       ratio: number | null;
     }>
   >([]);
+  // D2: 未解析库素材的**可行动清单**（后端直出响应已带 unresolved_assets——
+  // clip/intent/时长；此前只拼成一句 note，用户无法补齐，BGM 被静默剥掉）
+  const [renderUnresolved, setRenderUnresolved] = useState<
+    Array<{
+      clip_id: string;
+      track_id: string;
+      intent: string;
+      library_hint: string | string[];
+      duration_seconds: number;
+    }>
+  >([]);
+  // D2: 人工补齐（resolve-library 的产物）：clip → 真实 asset/version，随下一次直出提交
+  const [libraryResolutions, setLibraryResolutions] = useState<
+    Array<{ clip_id: string; asset_id: string; version_id: string }>
+  >([]);
+  // D2: 哪条未解析素材正在选素材（行内补选器）
+  const [fillingClipId, setFillingClipId] = useState<string | null>(null);
   // G5 字幕族配方（.adrecipe 库）：直出时连同配方一起提交——变体之间
   // "看得见的差异"由它提供（否则只有 skill 槽位值不同，字幕样式逐字节相同）
   type RecipeEntry = {
@@ -372,6 +389,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
     setRenderBlockers([]);
     setRenderNotes([]);
     setRenderPaceWarnings([]);
+    setRenderUnresolved([]);
     setRenderVideoUrl(null);
     setRenderProgress(null);
     setError(null);
@@ -392,6 +410,16 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
           workflow_id: node.workflow_id,
           blueprint: content,
           ...(selectedRecipe ? { recipe: selectedRecipe } : {}),
+          // D2: 人工补齐的库素材（clip → 真实 asset/version）随车提交
+          ...(libraryResolutions.length > 0
+            ? {
+                library_resolutions: libraryResolutions.map((resolution) => ({
+                  clip_id: resolution.clip_id,
+                  asset_id: resolution.asset_id,
+                  version_id: resolution.version_id,
+                })),
+              }
+            : {}),
         }),
       });
       const body = await response.json().catch(() => null);
@@ -419,11 +447,25 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
           `已替换工作流此前的 final-composition 时间线（版本 ${body.previous_timeline_version} → ${body.timeline_version}）`,
         );
       }
-      if (Array.isArray(body.dropped_unresolved_clip_ids) && body.dropped_unresolved_clip_ids.length > 0) {
-        notes.push(
-          `库素材未解析，未计入本次直出：${body.dropped_unresolved_clip_ids.join("、")}`,
-        );
-      }
+      // D2: 未解析库素材逐条可行动——supersedes 此前那句"未计入"一笔带过的 note。
+      // 空数组也要如实落状态：清零清单与已被消费的补齐态。
+      const unresolved = Array.isArray(body.unresolved_assets)
+        ? body.unresolved_assets.map((item: Record<string, unknown>) => ({
+            clip_id: String(item.clip_id ?? ""),
+            track_id: String(item.track_id ?? ""),
+            intent: String(item.intent ?? ""),
+            library_hint: (item.library_hint ?? "") as string | string[],
+            duration_seconds: Number(item.duration_seconds ?? 0),
+          }))
+        : [];
+      setRenderUnresolved(unresolved);
+      // 已随本次直出解析掉的 clip，补齐态同步失效（后端只接受哨兵 clip 回填）
+      const stillUnresolved = new Set(
+        unresolved.map((item: { clip_id: string }) => item.clip_id),
+      );
+      setLibraryResolutions((current) =>
+        current.filter((resolution) => stillUnresolved.has(resolution.clip_id)),
+      );
       // P4 pace 预检：台词预估时长超窗——在花钱合成前说出来（删词 or 加窗）
       if (Array.isArray(body.pace_warnings) && body.pace_warnings.length > 0) {
         setRenderPaceWarnings(
@@ -449,7 +491,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       setRenderFailure(err instanceof Error ? err.message : "直出失败");
       setRenderPhase("failed");
     }
-  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe, renderPhase]);
+  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe, renderPhase, libraryResolutions]);
   // 轮询渲染状态（组件卸载自动停；超过 ~5 分钟未终态则明确失败，不无限轮）
   useEffect(() => {
     if (renderPhase !== "polling" || !renderId) return;
@@ -978,6 +1020,122 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                 ))}
               </div>
             )}
+            {renderUnresolved.length > 0 && (
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: "4px 8px",
+                  background: "#3a2a1a",
+                  border: "1px solid #5a4a2a",
+                  borderRadius: 3,
+                  fontSize: 9,
+                  color: "#fc8",
+                  lineHeight: 1.7,
+                }}
+              >
+                <div>
+                  🔇 有 {renderUnresolved.length} 个库素材未解析，已跳过、未计入本次直出
+                  （补上即可入片，不必整片重做）：
+                </div>
+                {renderUnresolved.map((item) => {
+                  const resolution = libraryResolutions.find((r) => r.clip_id === item.clip_id);
+                  const hint = Array.isArray(item.library_hint)
+                    ? item.library_hint.join("、")
+                    : String(item.library_hint ?? "");
+                  return (
+                    <div key={item.clip_id} style={{ marginTop: 3 }}>
+                      · [{item.clip_id}] 意图「{item.intent || "—"}」
+                      {hint ? ` · 提示：${hint}` : ""} · {item.duration_seconds.toFixed(1)}s{" "}
+                      {resolution ? (
+                        <>
+                          <span style={{ color: "#8f8" }}>
+                            ✓ 已选素材 {resolution.asset_id}（{resolution.version_id}）
+                          </span>{" "}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLibraryResolutions((current) =>
+                                current.filter((r) => r.clip_id !== item.clip_id),
+                              )
+                            }
+                            style={{
+                              background: "transparent",
+                              border: "1px solid #678",
+                              color: "#9bd",
+                              borderRadius: 3,
+                              fontSize: 9,
+                              padding: "0 6px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            撤销补齐
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFillingClipId((current) =>
+                              current === item.clip_id ? null : item.clip_id,
+                            )
+                          }
+                          style={{
+                            background: "transparent",
+                            border: "1px solid #678",
+                            color: "#9bd",
+                            borderRadius: 3,
+                            fontSize: 9,
+                            padding: "0 6px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          选素材补齐
+                        </button>
+                      )}
+                      {fillingClipId === item.clip_id && !resolution && (
+                        <LibraryAssetPicker
+                          query={item.intent || hint}
+                          onResolve={(picked) => {
+                            setLibraryResolutions((current) => [
+                              ...current.filter((r) => r.clip_id !== item.clip_id),
+                              {
+                                clip_id: item.clip_id,
+                                asset_id: picked.asset_id,
+                                version_id: picked.version_id,
+                              },
+                            ]);
+                            setFillingClipId(null);
+                          }}
+                          onCancel={() => setFillingClipId(null)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+                {libraryResolutions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void startDirectRender()}
+                    disabled={renderPhase === "starting" || renderPhase === "polling"}
+                    style={{
+                      marginTop: 5,
+                      background:
+                        renderPhase === "starting" || renderPhase === "polling" ? "#2a2a4a" : "#3a5a8a",
+                      border: "none",
+                      color:
+                        renderPhase === "starting" || renderPhase === "polling" ? "#666" : "#fff",
+                      borderRadius: 3,
+                      fontSize: 9,
+                      padding: "2px 10px",
+                      cursor:
+                        renderPhase === "starting" || renderPhase === "polling" ? "default" : "pointer",
+                    }}
+                  >
+                    ↻ 带 {libraryResolutions.length} 个补齐重新直出
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           <div style={{ color: "#888", fontSize: 10, marginBottom: 6, lineHeight: 1.6 }}>
             .adreplica = 蓝图的标记语言形态（hypit "文件即真相源"）：导出后可交给
@@ -1221,6 +1379,228 @@ function StyleVariantPicker({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// LibraryAssetPicker — D2 未解析库素材的行内补选器（B v1：人解析）
+// 两步：候选实体（按意图关键词搜）→ 实体的 version-pinned 资产。
+// 选中即给出确定的 asset/version 交给直出提交（library_resolutions）；
+// 自动匹配语义（搜索/标签/置信度）是 v2，这里不猜、失败必须可见。
+// ---------------------------------------------------------------------------
+
+function LibraryAssetPicker({
+  query,
+  onResolve,
+  onCancel,
+}: {
+  query: string;
+  onResolve: (picked: { asset_id: string; version_id: string }) => void;
+  onCancel: () => void;
+}) {
+  const [entities, setEntities] = useState<Array<{ entity_id: string; display_name: string }>>([]);
+  const [assets, setAssets] = useState<Array<Record<string, unknown>> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // 重试计数：load 受它驱动——失败后的"重试"必须真的再拉一次，而不是清空列表装死
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams();
+        if (query.trim()) params.set("q", query.trim());
+        const suffix = params.toString() ? `?${params.toString()}` : "";
+        const response = await fetch(`/api/v1/asset-library/entities${suffix}`);
+        const body = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (response.status !== 200 || !body) {
+          setError(`素材库不可用 (HTTP ${response.status})——可到资产库页手动确认后重试`);
+          return;
+        }
+        const list = Array.isArray(body.entities) ? (body.entities as unknown[]) : [];
+        setEntities(
+          list
+            .map((raw: unknown) => {
+              const item = raw as Record<string, unknown>;
+              return {
+                entity_id: String(item.entity_id ?? ""),
+                display_name: String(item.display_name ?? item.entity_id ?? ""),
+              };
+            })
+            .filter((item) => item.entity_id),
+        );
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "素材库不可用");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [query, loadAttempt]);
+
+  const openEntity = useCallback(async (entityId: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/asset-library/entities/${encodeURIComponent(entityId)}`);
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        setError(`素材详情拉取失败 (HTTP ${response.status})`);
+        return;
+      }
+      setAssets(Array.isArray(body.assets) ? body.assets : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "素材详情拉取失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return (
+    <div
+      style={{
+        marginTop: 4,
+        padding: "5px 8px",
+        background: "#16162a",
+        border: "1px solid #2a2a4a",
+        borderRadius: 3,
+        fontSize: 9,
+      }}
+    >
+      {loading && <div style={{ color: "#888" }}>⏳ 拉取素材库…</div>}
+      {error && (
+        <div style={{ color: "#f88" }}>
+          ⚠ {error}{" "}
+          <button
+            type="button"
+            onClick={() => {
+              setAssets(null);
+              setLoadAttempt((n) => n + 1);
+            }}
+            style={{
+              background: "transparent",
+              border: "1px solid #678",
+              color: "#9bd",
+              borderRadius: 3,
+              fontSize: 9,
+              padding: "0 6px",
+              cursor: "pointer",
+            }}
+          >
+            重试
+          </button>
+        </div>
+      )}
+      {assets === null ? (
+        <>
+          <div style={{ color: "#888", marginBottom: 3 }}>
+            按意图「{query || "—"}」搜到 {entities.length} 个候选实体，选一个看资产：
+          </div>
+          {entities.map((entity) => (
+            <button
+              key={entity.entity_id}
+              type="button"
+              onClick={() => void openEntity(entity.entity_id)}
+              style={{
+                display: "block",
+                marginBottom: 2,
+                background: "#1a1a30",
+                border: "1px solid #2a2a4a",
+                color: "#9bd",
+                borderRadius: 3,
+                fontSize: 9,
+                padding: "2px 8px",
+                cursor: "pointer",
+                width: "100%",
+                textAlign: "left",
+              }}
+            >
+              📁 {entity.display_name || entity.entity_id}
+            </button>
+          ))}
+          {!loading && !error && entities.length === 0 && (
+            <div style={{ color: "#888" }}>没有候选素材——可到资产库上传后重试。</div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ color: "#888", marginBottom: 3 }}>选一个资产版本回填：</div>
+          {assets.map((asset, index) => {
+            const source = (asset.source ?? {}) as Record<string, unknown>;
+            const realAssetId =
+              typeof source.asset_id === "string" && source.asset_id
+                ? source.asset_id
+                : String(asset.asset_id ?? "");
+            const versionId =
+              typeof source.version_id === "string" && source.version_id
+                ? source.version_id
+                : `version_${realAssetId}`;
+            return (
+              <button
+                key={`${realAssetId}_${index}`}
+                type="button"
+                onClick={() => onResolve({ asset_id: realAssetId, version_id: versionId })}
+                style={{
+                  display: "block",
+                  marginBottom: 2,
+                  background: "#1a2a1a",
+                  border: "1px solid #2a4a2a",
+                  color: "#8f8",
+                  borderRadius: 3,
+                  fontSize: 9,
+                  padding: "2px 8px",
+                  cursor: "pointer",
+                  width: "100%",
+                  textAlign: "left",
+                }}
+              >
+                🎵 {String(asset.semantic_type || asset.asset_type || "素材")} — {realAssetId} ·{" "}
+                {versionId}
+              </button>
+            );
+          })}
+          {assets.length === 0 && <div style={{ color: "#888" }}>该实体下没有可用资产。</div>}
+          <button
+            type="button"
+            onClick={() => setAssets(null)}
+            style={{
+              marginTop: 2,
+              background: "transparent",
+              border: "1px solid #2a2a4a",
+              color: "#889",
+              borderRadius: 3,
+              fontSize: 9,
+              padding: "0 6px",
+              cursor: "pointer",
+            }}
+          >
+            ← 返回实体列表
+          </button>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          marginLeft: 6,
+          background: "transparent",
+          border: "1px solid #2a2a4a",
+          color: "#889",
+          borderRadius: 3,
+          fontSize: 9,
+          padding: "0 6px",
+          cursor: "pointer",
+        }}
+      >
+        收起
+      </button>
     </div>
   );
 }
