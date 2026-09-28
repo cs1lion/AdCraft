@@ -809,6 +809,45 @@ describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {
     expect(bridgeBody.recipe.subtitle.color).toBe("#FFC658");
   });
 
+  // E8：配方库拉取失败必须可见（§4 可观测降级）——"配方库不可用，已用默认
+  // 字幕形态"必须说得出口，且可重试；不再是空 catch 后的静默无配方。
+  it("shows the recipe-catalog degradation visibly with a retry (E8)", async () => {
+    let attempts = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/blueprint/recipes")) {
+        attempts += 1;
+        if (attempts === 1) {
+          return { status: 503, json: async () => ({ detail: "library offline" }) };
+        }
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipes: [
+              {
+                recipe_id: "bottom-bold",
+                name: "底部大字",
+                description: "",
+                subtitle: { font_size: 42, color: "#FFFFFF", position: "bottom_center" },
+              },
+            ],
+          }),
+        };
+      }
+      return { status: 200, json: async () => ({ success: true }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    await waitFor(() =>
+      expect(screen.getByText(/配方库不可用.*已用默认字幕形态直出/)).toBeTruthy(),
+    );
+    // 重试后恢复：下拉出现、降级提示消失
+    fireEvent.click(screen.getByText("重试"));
+    await waitFor(() => expect(screen.getByText("🎨 字幕配方")).toBeTruthy());
+    expect(screen.queryByText(/配方库不可用/)).toBeNull();
+  });
+
   it("surfaces the recipe parse error on import (E2: no silent fallback)", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       const target = String(url);

@@ -264,6 +264,11 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   };
   const [recipes, setRecipes] = useState<RecipeEntry[]>([]);
   const [selectedRecipe, setSelectedRecipe] = useState<Record<string, unknown> | null>(null);
+  // E8: 配方库拉取失败的可见降级（§4）——此前空 catch 静默吞掉：用户以为
+  // 选中了配方，实际成片是默认字幕形态。意图保留（可选增强不绊倒直出），
+  // 但失败必须看得见、可重试。
+  const [recipeCatalogError, setRecipeCatalogError] = useState<string | null>(null);
+  const [recipeCatalogAttempt, setRecipeCatalogAttempt] = useState(0);
   useEffect(() => {
     // 配方库在**源码 tab 打开时**才拉（直出 UI 所在处）：挂载即拉会在无关
     // 流程的 fetch 调用序列里插队，把"第一次 POST 是这个端点"的观测变浑浊。
@@ -273,18 +278,28 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       try {
         const response = await fetch("/api/v1/replica/blueprint/recipes");
         const body = await response.json().catch(() => null);
-        if (cancelled || response.status !== 200 || !body?.success) return;
+        if (cancelled) return;
+        if (response.status !== 200 || !body?.success) {
+          setRecipeCatalogError(
+            `配方库不可用 (HTTP ${response.status})，已用默认字幕形态直出`,
+          );
+          return;
+        }
         const list = Array.isArray(body.recipes) ? (body.recipes as RecipeEntry[]) : [];
         setRecipes(list);
+        setRecipeCatalogError(null);
         if (list.length > 0) setSelectedRecipe(list[0] as unknown as Record<string, unknown>);
-      } catch {
-        // 配方库不可用不影响直出（编译层默认形态）；对可选增强静默是可接受的
+      } catch (err) {
+        if (cancelled) return;
+        setRecipeCatalogError(
+          `配方库不可用（${err instanceof Error ? err.message : "网络错误"}），已用默认字幕形态直出`,
+        );
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [tab, recipes.length]);
+  }, [tab, recipes.length, recipeCatalogAttempt]);
 
   // E2: .adrecipe 配方文档的导出/导入（配方家族的"文件即真相源"）——
   // 与蓝图 .adreplica 同纪律：改写用例可存 before/after，粘贴回来即换样式。
@@ -979,6 +994,41 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                   ))}
                 </select>
               </label>
+            )}
+            {recipes.length === 0 && recipeCatalogError && (
+              <div
+                style={{
+                  marginBottom: 6,
+                  padding: "4px 8px",
+                  background: "#3a2a1a",
+                  border: "1px solid #5a4a2a",
+                  borderRadius: 3,
+                  fontSize: 9,
+                  color: "#fc8",
+                  lineHeight: 1.6,
+                }}
+              >
+                ⚠ {recipeCatalogError}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRecipeCatalogError(null);
+                    setRecipeCatalogAttempt((n) => n + 1);
+                  }}
+                  style={{
+                    marginLeft: 6,
+                    background: "transparent",
+                    border: "1px solid #678",
+                    color: "#9bd",
+                    borderRadius: 3,
+                    fontSize: 9,
+                    padding: "0 6px",
+                    cursor: "pointer",
+                  }}
+                >
+                  重试
+                </button>
+              </div>
             )}
             {/* E2: 配方文档层——导出改完再导入（.adrecipe，与蓝图 .adreplica 同纪律） */}
             <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E8 配方库静默降级 → 可见降级（§4 可观测降级）
+
+- **问题**：配方目录拉取失败时 `catch {}` 完全静默（代码注释还写着"对可选增强静默是可接受的"）——下拉直接消失，用户无法区分"本来就没有配方"和"配方库挂了"；以为自己选中了配方，实际成片是默认字幕形态。
+- **改动**（纯前端）：拉取失败（非 200 或网络错误）在直出区原下拉位置渲染黄色警告「配方库不可用 (HTTP n)，已用默认字幕形态直出」+ **重试**按钮；成功后警告清除。意图保留——可选增强仍然不绊倒直出（编译层默认形态继续生效），但失败不再不可感知。
+- **验证**：`vitest ReplicaBlueprintPanel.test.tsx` **27 passed**（+1：503 → 降级警告可见 → 重试恢复下拉）。
+
 ### Added — E2 配方导入导出接到源码 tab（`recipe/export` + `recipe/import` 第一次有 UI）
 
 - **问题**：后端 `.adrecipe` 配方端点（`/blueprint/recipe/export`、`/blueprint/recipe/import`）早已存在且测试齐全，前端零调用——改写用例（导出一个配方 → 改维度 → 导回生效）没有入口，`recipe/export` 一度是死端点。
