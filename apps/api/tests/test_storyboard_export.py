@@ -260,3 +260,59 @@ def test_findings_are_ordered_by_shot_start() -> None:
     findings = check_storyboard_span(strip)
     assert findings[0].subject == "early\u2192late"
     assert isinstance(findings[0], StoryboardFinding)
+
+
+# ---------------------------------------------------------------------------
+# E3: 端点层——findings 必须随分镜响应透传（算了不回传 = 用户永远看不到）
+# ---------------------------------------------------------------------------
+
+
+def test_storyboard_endpoint_surfaces_findings() -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.v1.endpoints import scene_3d
+
+    app = FastAPI()
+    app.include_router(scene_3d.router)
+    client = TestClient(app)
+
+    # 留下 80..89 空隙的镜头表：findings 必须出现在响应里
+    script = _script_with_shots(
+        [
+            {"id": "s1", "camera": "cam1", "start_frame": 0, "end_frame": 80},
+            {"id": "s2", "camera": "cam1", "start_frame": 90, "end_frame": 120},
+        ]
+    )
+    response = client.post(
+        "/scene-3d/storyboard",
+        json={"scene_script": script.model_dump(mode="json")},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    codes = [finding["code"] for finding in body["findings"]]
+    assert codes == ["storyboard_shots_leave_gap"]
+    assert body["findings"][0]["subject"] == "s1\u2192s2"
+    assert set(body["findings"][0]) == {"code", "subject", "message"}
+    # advisory：分镜本身照常返回
+    assert body["total_shots"] == 2
+
+
+def test_storyboard_endpoint_clean_script_has_no_findings() -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.v1.endpoints import scene_3d
+
+    app = FastAPI()
+    app.include_router(scene_3d.router)
+    client = TestClient(app)
+
+    script = _script()
+    response = client.post(
+        "/scene-3d/storyboard",
+        json={"scene_script": script.model_dump(mode="json")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["findings"] == []

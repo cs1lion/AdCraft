@@ -1714,6 +1714,9 @@ class StoryboardResponse(BaseModel):
     total_frames: int = 0
     shots: list[dict[str, Any]] = []
     all_keyframe_frames: list[int] = []
+    # E3: 分镜 advisory findings（空隙/短镜/空分镜）——算了就必须返回，
+    # 否则 16 条 finding 测试锁定的语义到不了用户眼前。
+    findings: list[dict[str, Any]] = []
     error: str | None = None
     error_code: str | None = None
 
@@ -1724,7 +1727,7 @@ async def export_storyboard_endpoint(
 ) -> StoryboardResponse:
     """Export a storyboard strip + shot list for a SceneScript (V3)."""
     from app.schemas.scene_script import SceneScriptRoot
-    from app.services.scene3d.storyboard_export import build_storyboard
+    from app.services.scene3d.storyboard_export import build_storyboard, check_storyboard_span
 
     try:
         scene_script = SceneScriptRoot.model_validate(request.scene_script)
@@ -1739,6 +1742,10 @@ async def export_storyboard_endpoint(
     except ValueError as e:
         return StoryboardResponse(success=False, error=str(e)[:300], error_code="storyboard_expansion_failed")
 
+    # E3: findings 与 strip 同程返回（advisory：不因有 finding 拒绝出分镜，
+    # 但必须让调用方看得见"哪些帧存疑"）
+    findings = [finding.to_dict() for finding in check_storyboard_span(strip)]
+
     return StoryboardResponse(
         success=True,
         scene_name=strip.scene_name,
@@ -1746,6 +1753,7 @@ async def export_storyboard_endpoint(
         total_frames=strip.total_frames,
         shots=[entry.to_dict() for entry in strip.shots],
         all_keyframe_frames=list(strip.all_keyframe_frames),
+        findings=findings,
     )
 
 

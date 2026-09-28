@@ -118,11 +118,21 @@ export interface StoryboardShotEntry {
   keyframe_frames: number[];
 }
 
+export interface StoryboardFinding {
+  /** "storyboard_no_shots" | "storyboard_shots_leave_gap" | "storyboard_shot_keyframes_short" */
+  code: string;
+  /** 涉及的镜头或帧范围 */
+  subject: string;
+  message: string;
+}
+
 export interface StoryboardResult {
   ok: boolean;
   sceneName?: string;
   shots?: StoryboardShotEntry[];
   allKeyframeFrames?: number[];
+  // E3: advisory findings（空隙/短镜/空分镜）——后端算了就必须透传到 UI
+  findings?: StoryboardFinding[];
   error?: string;
   errorCode?: string;
 }
@@ -141,6 +151,7 @@ export async function exportStoryboard(
     scene_name?: string;
     shots?: StoryboardShotEntry[];
     all_keyframe_frames?: number[];
+    findings?: StoryboardFinding[];
     error?: string;
     error_code?: string;
   };
@@ -158,6 +169,7 @@ export async function exportStoryboard(
     sceneName: body.scene_name,
     shots: body.shots ?? [],
     allKeyframeFrames: body.all_keyframe_frames ?? [],
+    findings: Array.isArray(body.findings) ? body.findings : [],
   };
 }
 

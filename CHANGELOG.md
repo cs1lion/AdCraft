@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E3 分镜 finding 算了不返回 → 端点透传 + UI 逐条可见
+
+- **问题**：`check_storyboard_span` 有 16 条测试锁定三类 finding（空分镜/镜头间空隙/关键帧不足），但 `/storyboard` 端点只调 `build_storyboard`——findings 从未进入响应，前端 `StoryboardResult` 无该字段、面板无渲染分支。"算了不展示"的典型：后端完整、测试全绿、用户看不到。
+- **改动（后端）**：`StoryboardResponse` 新增 `findings` 字段；端点调 `check_storyboard_span(strip)` 并把 `to_dict()` 列表随分镜同程返回（advisory：不因 finding 拒绝出分镜，但"哪些帧存疑"必须说得出口）。
+- **改动（前端）**：`directorOperationsClient.StoryboardResult` 增加 `findings?: StoryboardFinding[]` 并解析；`StoryboardPanel` 在分镜列表前渲染琥珀色 findings 块（subject + message 逐条）；CSS 补 `__storyboard-findings` 样式（与既有 .adrecipe/告警视觉语言一致）。
+- **验证**：后端 `pytest test_storyboard_export.py` **18 passed**（+2 端点级：有 finding 时随响应透传且分镜照常返回/干净脚本 findings 为空）。前端 `vitest StoryboardPanel.test.tsx`（新文件）**4 passed**（findings 逐条渲染/干净时不显示块）、`directorOperationsClient.storyboard.test.ts` **+1** findings 透传；`SceneScript3DEditor.test.tsx` **80 passed** 无回归；`tsc` 0 error；ruff 全绿。后端响应仅新增字段（不破坏既有消费方）；`check:endpoint-reachability` 不受影响（无新路由）。
+
 ### Fixed — E8 配方库静默降级 → 可见降级（§4 可观测降级）
 
 - **问题**：配方目录拉取失败时 `catch {}` 完全静默（代码注释还写着"对可选增强静默是可接受的"）——下拉直接消失，用户无法区分"本来就没有配方"和"配方库挂了"；以为自己选中了配方，实际成片是默认字幕形态。

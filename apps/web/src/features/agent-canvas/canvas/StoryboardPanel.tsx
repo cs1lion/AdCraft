@@ -25,6 +25,7 @@ import {
   exportStoryboard,
   fetchContinuitySuggestions,
   type ContinuitySuggestion,
+  type StoryboardFinding,
   type StoryboardShotEntry,
 } from "./directorOperationsClient.ts";
 
@@ -48,6 +49,8 @@ export function StoryboardPanel({
   const [tab, setTab] = useState<PanelTab>("storyboard");
   const [shots, setShots] = useState<StoryboardShotEntry[]>([]);
   const [sceneName, setSceneName] = useState("");
+  // E3: 分镜 advisory findings（空隙/短镜/空分镜）——后端算了就必须显示
+  const [findings, setFindings] = useState<StoryboardFinding[]>([]);
   const [storyboardError, setStoryboardError] = useState<string | null>(null);
   const [storyboardLoading, setStoryboardLoading] = useState(false);
 
@@ -66,6 +69,7 @@ export function StoryboardPanel({
         if (result.ok && result.shots) {
           setShots(result.shots);
           setSceneName(result.sceneName ?? "");
+          setFindings(result.findings ?? []);
         } else {
           setStoryboardError(result.error ?? "storyboard export failed");
         }
@@ -149,6 +153,28 @@ export function StoryboardPanel({
             <p className="scene-script-3d-editor__note" data-testid="scene-script-3d-storyboard-empty">
               当前场景没有镜头，先添加镜头再出分镜。
             </p>
+          )}
+          {/* E3: advisory findings——空隙/短镜/空分镜逐条可见（不阻断出分镜） */}
+          {!storyboardLoading && !storyboardError && findings.length > 0 && (
+            <div
+              className="scene-script-3d-editor__storyboard-findings"
+              data-testid="scene-script-3d-storyboard-findings"
+              role="status"
+            >
+              <div className="scene-script-3d-editor__storyboard-findings-title">
+                ⚠ 分镜检查发现 {findings.length} 处（参考，不阻断出分镜）：
+              </div>
+              <ul>
+                {findings.map((finding, index) => (
+                  <li key={`${finding.code}_${finding.subject}_${index}`}>
+                    <span className="scene-script-3d-editor__storyboard-finding-subject">
+                      {finding.subject}
+                    </span>
+                    ：{finding.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           {!storyboardLoading && !storyboardError && shots.length > 0 && (
             <ul className="scene-script-3d-editor__storyboard-list" aria-label="分镜列表">

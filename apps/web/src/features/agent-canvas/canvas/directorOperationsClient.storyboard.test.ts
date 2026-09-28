@@ -74,6 +74,37 @@ describe("exportStoryboard client", () => {
     expect(result.allKeyframeFrames).toHaveLength(5);
   });
 
+  // E3：findings 必须透传到客户端——后端算了不返回，UI 就永远看不到
+  it("passes advisory findings through to the caller (E3)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            scene_name: "lab",
+            total_shots: 2,
+            shots: [],
+            all_keyframe_frames: [],
+            findings: [
+              {
+                code: "storyboard_shots_leave_gap",
+                subject: "s1→s2",
+                message: "帧 80..89 没有被任何镜头覆盖",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await exportStoryboard(scene());
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings?.[0].code).toBe("storyboard_shots_leave_gap");
+    expect(result.findings?.[0].subject).toBe("s1→s2");
+  });
+
   it("reports a failure when the backend rejects", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(

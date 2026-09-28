@@ -759,6 +759,32 @@
   min-width: 48px;
 }
 
+/* E3: 分镜 advisory findings——琥珀告警级（reference，不阻断出分镜） */
+.scene-script-3d-editor__storyboard-findings {
+  padding: 6px 8px;
+  border: 1px solid rgb(255 200 100 / 35%);
+  border-radius: 6px;
+  background: rgb(255 200 100 / 8%);
+  font-size: 11px;
+  color: #ffd9a0;
+  line-height: 1.6;
+}
+
+.scene-script-3d-editor__storyboard-findings-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.scene-script-3d-editor__storyboard-findings ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.scene-script-3d-editor__storyboard-finding-subject {
+  color: #ffb347;
+  font-weight: 600;
+}
+
 .scene-script-3d-editor__storyboard-shot-frames {
   color: #9aa3b8;
   font-variant-numeric: tabular-nums;
