@@ -312,3 +312,17 @@ TeardownResponse{report, frame_analyses, video_metadata}
 - **未覆盖（等渲染链）**：motion 预设、镜头语言等维度不进词汇表——渲染器
   不消费就不收。hypit 的 framing/pacing/performance 等 token 集其余部分
   仍属调研档 P2 后续。
+
+## 19. 已交付：P3 复刻结构恒等守卫（hypit "swap 骨架恒等"，2026-09-28）
+
+- **`structure_guard.py`**：`structure_diff`（漂移清单，逐条可行动）/
+  `assert_same_structure`（漂移即抛）。允许变：槽位替换、配方、内容字段；
+  不许变：镜头表/段落/锚点拓扑、画幅时长、节奏切点。
+- **挂点**：`/variant-render-plans`（系统生成的派生图）→ 漂移即 500
+  `replica_structure_drift`（variant_id + drifts）。
+- **故意不挂**：`.adreplica` 导入路径——手改文档有权改结构，挂断言会把
+  合法编辑判错。守卫只挂无人工决定的自动变换。
+- **测试**：+10；至此 hypit 差距分析的 P1 主项/normalized、P2 cue 时间/
+  recipes、P3 swap 断言均已落地；仍开放：P3 fact log、P4 estimate 语音
+  时长预估、词级 karaoke 烧录（生成通道 + ASS `{\k}`）、G4 "重新对齐"
+  生产触发点。

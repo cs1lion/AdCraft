@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 P3：复刻结构恒等守卫（hypit "swap 骨架恒等"断言）
+
+- **`structure_guard.py`（纯函数）**：`structure_diff`/`assert_same_structure`——把"复刻结构、不复刻像素"变成可执行断言。**允许变**：槽位替换/配方（复刻的目的正是换它们）与一切内容字段；**不许变**：镜头表拓扑（数量/序号/时间窗）、段落拓扑（id/role/时间窗）、锚点拓扑（event_id/挂靠/类型）、画幅时长、节奏切点。漂移逐条可行动（点名维度 + 期望/实际），不写"结构不符"这种逼人 diff JSON 的消息。
+- **挂点**：`/variant-render-plans` 端点——变体是**系统生成的派生图**（换 skill/recipe 不得动结构），无人工决定的自动变换必须有机器看守；漂移即 500 `replica_structure_drift`（携带 variant_id 与逐条漂移）。
+- **故意不挂导入路径（理由记录）**：`.adreplica` 导入的语义正是"作者手改文档"——删一行 `<caption>`、加一个镜头都是合法编辑，在那里挂恒等断言会把合法手改判成错误。守卫只挂自动变换路径。
+- **测试**：+10（槽位/配方可自由变 / 内容编辑保拓扑恒等 / 镜头拓扑与时间窗漂移 / 段落与锚点漂移 / 画幅时长切点 / 断言携带可行动漂移 / guard report / 端点正常通过 / 端点漂移 500 错误面）。replica 全套 **226 passed / 3 skip**；全量后端 **2064 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查 188 paths 通过。
+
 ### Added — 拉片复刻 G5：`.adrecipe` 配方层（hypit recipes 落地）——变体第一次有看得见的样式差异
 
 - **`recipe.py` + `agent/recipes/catalog.json`（新模块 + 库）**：配方 = 字幕族语义维度集（font_size/color/position/lead_seconds/tail_seconds/handoff）——**词汇表与 `WorkflowV2TimelineSubtitleStyle` 逐字段同口径**（测试锁定），收一个渲染器不消费的字段就是让文档说谎；内置 5 个配方（底部大字/顶部小签/中央舞台/紧凑跟读/琥珀强调），目录扫描宽容（坏条目跳过、缺目录才报错，同风格库纪律）。

@@ -99,4 +99,4 @@
 | P1 子项：normalized 匹配 | ✅ **已交付（2026-09-28）**：`normalize_text` + `token_range_for_text`（normalized 定位 + occurrence 选次）；锚点解析的词面绑定走这一路径 |
 | P2：recipes/.adrecipe | ✅ **已交付（2026-09-28）**：`recipe.py` + `agent/recipes/catalog.json`（六维词汇表，与样式 schema 同口径）+ `.adrecipe` 文档层 + 端点；变体 = skill × recipe（确定性轮换），变体渲染计划的字幕样式签名互不相同（测试断言）——"除槽位值外逐字节相同"的老症状修掉。motion/镜头语言等维度等渲染链支持后再进词汇表 |
 | P3：fact log | 部分（渲染有 state；编译/解析无账本） |
-| P3：swap 骨架恒等断言 | 未启动（半天工作量） |
+| P3：swap 骨架恒等断言 | ✅ **已交付（2026-09-28）**：`structure_guard.py`（漂移清单 + 断言），挂 `/variant-render-plans`（系统派生图，漂移即 500 `replica_structure_drift`）；导入路径故意不挂（手改文档有权改结构，理由见模块 docstring） |

@@ -685,6 +685,7 @@ async def plan_blueprint_variant_render_plans(
     from app.services.replica.direct_execute import plan_direct_execute
     from app.services.replica.direct_execute_render import plan_direct_execute_render
     from app.services.replica.recipe import load_recipes
+    from app.services.replica.structure_guard import StructureGuardReport
     from app.services.replica.variants import StyleVariantError, plan_style_variants
 
     try:
@@ -718,6 +719,19 @@ async def plan_blueprint_variant_render_plans(
                 ]
             }
         )
+        # P3（hypit gap 分析）：变体是系统生成的派生图（换 skill/recipe 不得动
+        # 复刻结构）——无人工决定的自动变换必须有机器看守（"swap 骨架恒等"）。
+        report = StructureGuardReport.check(blueprint, applied)
+        if not report.ok:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "replica_structure_drift",
+                    "message": "Variant derivation changed the replica structure.",
+                    "variant_id": variant.variant_id,
+                    "drifts": list(report.drifts),
+                },
+            )
         # G5：变体 = skill × recipe——各自的配方进各自的编译，渲染计划之间
         # 因此有**看得见的样式差异**（不再是"除槽位值外逐字节相同"）。
         render_plan = plan_direct_execute_render(
