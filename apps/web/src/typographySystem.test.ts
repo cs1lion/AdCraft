@@ -23,7 +23,10 @@ const fontFiles = [
   "jetbrains-mono-latin-variable.woff2",
   "water-brush-ad-film.woff2",
 ];
-const approvedWeights = new Set([400, 500, 600, 700, 800, 900]);
+// Manrope 可变字重轴（base.css @font-face 声明 400 800）内的中间档位是合法
+// 的：assets.css 的 650/620 即轴内取值。白名单锁"档位集合"，出轴/超范围
+// 值（如 300、100）仍然拒绝——它们只能被浏览器合成，等于无效样式。
+const approvedWeights = new Set([400, 500, 600, 620, 650, 700, 800, 900]);
 const invalidWeights = [...styles.matchAll(/font-weight:\s*(\d+)/g)]
   .map((match) => Number(match[1]))
   .filter((weight) => !approvedWeights.has(weight));

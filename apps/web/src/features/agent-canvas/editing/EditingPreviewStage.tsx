@@ -122,7 +122,9 @@ export function EditingPreviewStage({
     () => sequence ?? buildPlayableEditingSequence(inputs.videos),
     [inputs.videos, sequence],
   );
-  const sequenceDuration = activeSequence.duration;
+  // 播放/钳位/BGM 只认可播放长度（尺长 duration 保留给时间线尺：禁用/未就绪
+  // 的源不播放但不从尺上消失——两个口径见 PlayableEditingSequence 注释）
+  const sequenceDuration = activeSequence.playableDuration ?? activeSequence.duration;
   const mapping = mapTimelineTimeToSource(activeSequence.segments, playheadSeconds);
   const activeInput = mapping
     ? activeSequence.videos.find((input) => input.referenceId === mapping.referenceId) ?? null

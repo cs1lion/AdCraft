@@ -281,7 +281,7 @@ describe("AgentCanvasPage chrome", () => {
     expect(source).toContain("pendingDragNodeChangesRef");
     expect(source).toContain("flushPendingDragNodeChanges();");
     expect(source).toMatch(
-      /const dragResult = finishNodeDrag\([\s\S]*?pendingPresentedNodesRef\.current = null;[\s\S]*?setNodes\(dragResult\.nodes\);[\s\S]*?updateNodePositions\(dragResult\.positions\)/,
+      /const dragResult = finishNodeDrag\([\s\S]*?pendingPresentedNodesRef\.current = null;[\s\S]*?setNodes\(snapped\.nodes\);[\s\S]*?updateNodePositions\(positions\)/,
     );
   });
 
@@ -303,7 +303,7 @@ describe("AgentCanvasPage chrome", () => {
       /onNodeDragStop=\{\(_event, node, draggedNodes\) => \{[\s\S]*?if \(dragCancellationPendingRef\.current\) \{[\s\S]*?dragCancellationPendingRef\.current = false;[\s\S]*?return;/,
     );
     expect(source).toMatch(
-      /updateNodePositions\(dragResult\.positions\)[\s\S]*?catch\(\(\) => \{[\s\S]*?refreshWorkflow\(\)/,
+      /updateNodePositions\(positions\)[\s\S]*?catch\(\(\) => \{[\s\S]*?refreshWorkflow\(\)/,
     );
   });
 
@@ -323,7 +323,12 @@ describe("AgentCanvasPage chrome", () => {
 
     expect(source).toContain("captureFrozenCanvasEdges(");
     expect(source).toContain("edges={renderedEdges}");
-    expect(source).toContain("<FrozenCanvasEdgesOverlay snapshots={dragEdgeProjection.frozenSnapshots} />");
+    // overlay 消费的是 frozenSnapshots ∩ **可见边**（拖拽中隐藏的边不进
+    // overlay，否则冻结边会把无关边盖回来——锁消费点与过滤口径）
+    expect(source).toContain("<FrozenCanvasEdgesOverlay snapshots={visibleFrozenSnapshots} />");
+    expect(source).toMatch(
+      /dragEdgeProjection\?\.frozenSnapshots\.filter\([\s\S]*?visibleIds\.has\(snapshot\.id\)/,
+    );
     expect(overlaySource).toContain("className=\"agent-canvas-frozen-edges\"");
     expect(canvasCss).toMatch(/\.agent-canvas-frozen-edges \{[\s\S]*?pointer-events: none;/);
   });

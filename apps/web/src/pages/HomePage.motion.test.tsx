@@ -172,7 +172,9 @@ describe("HomePage motion", () => {
       await Promise.resolve();
     });
     expect(recentSection?.querySelectorAll(".recent-card[data-reveal-item]")).toHaveLength(4);
-    expect(IntersectionObserverMock.instances).toHaveLength(3);
+    // 首页共 4 个观察者：产品影片懒加载 + recent 揭示 + discover 揭示 +
+    // DiscoverOrbit 视口跟踪（此前 3 的断言停在 Orbit 观察者加入之前）
+    expect(IntersectionObserverMock.instances).toHaveLength(4);
 
     const recentObserver = IntersectionObserverMock.instances.find(
       (observer) => observer.observedTarget === recentSection,
@@ -252,7 +254,16 @@ describe("HomePage motion", () => {
 
     expect(recentSection?.getAttribute("data-reveal-state")).toBe("visible");
     expect(discoverSection?.getAttribute("data-reveal-state")).toBe("visible");
-    expect(IntersectionObserverMock.instances).toHaveLength(0);
+    // reduced motion 下**没有揭示观察者**（useHomeSectionReveal 直接置可见并
+    // 跳过 observe）。非动画用途的观察者（影片懒加载 / Orbit 视口跟踪）仍允许
+    // 存在——它们不是运动效果，懒加载不该被偏好设置关掉。
+    expect(
+      IntersectionObserverMock.instances.filter(
+        (observer) =>
+          observer.observedTarget === recentSection ||
+          observer.observedTarget === discoverSection,
+      ),
+    ).toHaveLength(0);
   });
 
   it("queues title lines from opposite edges without collision effects", () => {

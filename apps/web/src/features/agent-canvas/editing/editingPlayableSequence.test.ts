@@ -86,6 +86,28 @@ describe("buildPlayableEditingSequence", () => {
     expect(sequence.duration).toBe(60);
   });
 
+  it("separates the ruler duration from the playable duration", () => {
+    const first = video("first", { trimStart: 1, trimEnd: 4 });
+    const disabled = video("disabled", { enabled: false });
+
+    const sequence = buildPlayableEditingSequence([first, disabled]);
+
+    // 尺保留导入源总长（禁用 clip 仍在尺上，重启用时尺不跳）
+    expect(sequence.duration).toBe(20);
+    // 播放长度只认可可播放片段的裁切窗（3s）——BGM/钳位/停止都认这个口径
+    expect(sequence.playableDuration).toBe(3);
+  });
+
+  it("reports zero playable duration when nothing can play", () => {
+    const disabled = video("disabled", { enabled: false });
+    const pending = video("pending", { assetStatus: "pending" });
+
+    const sequence = buildPlayableEditingSequence([disabled, pending]);
+
+    expect(sequence.duration).toBe(20);
+    expect(sequence.playableDuration).toBe(0);
+  });
+
   it("uses explicit timeline positions and preserves gaps", () => {
     const first = video("first", { trimStart: 1, trimEnd: 4 });
     const second = video("second", { trimStart: 2, trimEnd: 6 });

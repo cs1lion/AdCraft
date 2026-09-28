@@ -850,7 +850,9 @@
   background: rgba(255, 255, 255, 0.12);
   color: currentColor;
   font-size: 32px;
-  font-weight: 300;
+  // 300 超出 Manrope 可变轴（400–800，base.css 声明），浏览器只能合成加粗，
+  // 是无效档位——用轴内最轻档 400（P5 台账 typographySystem 豁免项转正）
+  font-weight: 400;
   transition: background 220ms ease, border-color 220ms ease;
 }
 

@@ -8,7 +8,14 @@ export interface PlayableEditingSequence {
   videos: EditingVideoInput[];
   inactiveVideos: EditingVideoInput[];
   segments: TimelineSegment[];
+  /** 时间线尺长度：导入源总长（或后端固定时长）——重启用禁用 clip 时尺不跳。 */
   duration: number;
+  /**
+   * 可播放长度：可播放片段裁切窗的汇总末端。与 duration 是两个口径——
+   * 尺可以比内容长（禁用/未就绪的源不播放但不从尺上消失），播放/钳位/
+   * BGM 只认这一段（否则 BGM 会在没有画面的舞台上播放，播放头钳不到真实末端）。
+   */
+  playableDuration: number;
 }
 
 export function isBackendReadyEditingVideo(input: EditingVideoInput): boolean {
@@ -53,5 +60,9 @@ export function buildPlayableEditingSequence(
     inactiveVideos: inputs.filter((input) => !isPlayableEditingVideo(input)),
     segments,
     duration: timelineDuration,
+    playableDuration: segments.reduce(
+      (total, segment) => Math.max(total, segment.timelineEnd),
+      0,
+    ),
   };
 }

@@ -115,19 +115,20 @@
   min-height: 34px;
   padding: 0 13px;
   flex-shrink: 0;
-  color: #f5f5f5;
+  // 品牌亮底（与同族 __add / 画布 run 同语言）：暗色反色文字走 token，
+  // 不再硬编码色值（此前漂成 #292929 暗底，两个并列主操作一明一暗）
+  color: var(--text-inverse);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  background: #292929;
-  border: 1px solid #505050;
+  background: #f5f5f5;
+  border: 0;
   border-radius: 6px;
-  transition: border-color 160ms ease, background-color 160ms ease;
+  transition: background-color 160ms ease;
 }
 
 .agent-asset-browser__upload:hover:not(.is-busy) {
-  background: #303030;
-  border-color: #a3a3a3;
+  background: #fff;
 }
 
 .agent-asset-browser__upload.is-busy {
@@ -482,7 +483,7 @@
   min-height: 34px;
   padding: 0 13px;
   flex-shrink: 0;
-  color: #151515 !important;
+  color: var(--text-inverse) !important;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -505,7 +506,7 @@
 
 .agent-asset-browser :is(button, input[type="search"]):focus-visible,
 .agent-asset-browser__upload:focus-within {
-  outline: 2px solid #f5f5f5;
+  outline: 2px solid #151515;
   outline-offset: -2px;
 }
 
