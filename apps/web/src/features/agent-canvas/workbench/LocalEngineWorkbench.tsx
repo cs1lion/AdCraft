@@ -548,7 +548,7 @@ function Scene3DEditSection({
           },
           { coalesce: true },
         ),
-      ).catch(() => {});
+      ).catch((persistError) => setError(persistError instanceof Error ? persistError.message : "分句保存失败，请重试。"));
     },
     [node.node_id, node.structured_content, patchNode],
   );
@@ -574,7 +574,7 @@ function Scene3DEditSection({
           },
           { coalesce: true },
         ),
-      ).catch(() => {});
+      ).catch((persistError) => setError(persistError instanceof Error ? persistError.message : "Take 保存失败，请重试。"));
     },
     [node.node_id, node.structured_content, patchNode],
   );
@@ -592,7 +592,7 @@ function Scene3DEditSection({
           },
           { coalesce: true },
         ),
-      ).catch(() => {});
+      ).catch((persistError) => setError(persistError instanceof Error ? persistError.message : "变体保存失败，请重试。"));
     },
     [node.node_id, node.structured_content, patchNode],
   );

@@ -749,3 +749,31 @@ describe("LocalEngineWorkbench — voice-cast alignment handoff", () => {
   });
 });
 
+
+describe("LocalEngineWorkbench — silent persistence is a defect (D5, §4)", () => {
+  it("surfaces a dialogue-line persist failure instead of swallowing it", async () => {
+    const patchNode = vi.fn().mockRejectedValue(new Error("网络中断"));
+    const node = makeNode();
+    node.structured_content = {
+      scene_script: sceneScript(),
+      dialogue_lines: [
+        { character_id: "char_a", text: "就是这里。", start_time: 1.5, emotion: null },
+      ],
+    };
+    render(<LocalEngineWorkbench node={node} draft={draft} patchNode={patchNode} />);
+
+    fireEvent.change(screen.getByLabelText("第 1 行台词"), {
+      target: { value: "就是这里，改一下。" },
+    });
+
+    // persistLines must NOT `.catch(() => {})`: a failed PATCH must become a
+    // visible, retryable error (§4 never-silent).
+    await waitFor(
+      () => {
+        expect(screen.getByText("网络中断")).toBeTruthy();
+      },
+      { timeout: 2000 },
+    );
+  });
+});
+

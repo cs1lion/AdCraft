@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **验证**:`python3 -m pytest test_scene3d_transition_proposals.py test_scene3d_transition_narratives.py test_v02_handover_endpoints.py` → **78 passed**,成功路径无回归。**遗留(建议)**:补一条 DB-fault 注入测试(monkeypatch `create_v2_database` 抛错 → 断言响应 `warnings` 含该提示)以锁定 §4 行为。
 
 
+### Fixed — D5 三处保存静默失败 → 可见错误 + 可重试（§4）
+
+- **问题**：`LocalEngineWorkbench.tsx` 的 `persistLines`/`persistTakes`/`persistVariants`（改分句 / 存 take / 改变体）都以 `.catch(() => {})` 吞掉 `patchNode` 失败——用户以为存上了，刷新后丢失，且无从查觉。
+- **改动**：三处 `.catch(() => {})` → `.catch((e) => setError(...))`，复用组件既有 `error` 状态（`SceneScript3DEditor` 的红色 error 槽渲染）；文案带"请重试"，Error 实例显示原始信息（如"网络中断"）。乐观草稿保留，用户重做即重试。
+- **验证**：`vitest LocalEngineWorkbench.test.tsx` → **33 passed**；新增回归测试「dialogue-line 持久化失败必须可见」——patchNode reject「网络中断」→ 断言错误出现（修复前 `.catch(() => {})` 吞掉则 red）。`tsc -p tsconfig.json` **0 error**。
+
 ### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
 
 - **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。
