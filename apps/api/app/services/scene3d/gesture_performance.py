@@ -23,8 +23,6 @@ the two layers share one source of truth and can be driven from the same
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.schemas.scene_script import CharacterKeyframe, SceneCharacter, SceneScriptRoot
 from app.services.scene3d.speech_orchestration import SpeechSegment, _interpolated_pose_at
 

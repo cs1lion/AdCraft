@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Chore — 存量 ruff F401 修复（`gesture_performance.py`），`ruff check app/ tests/ scripts/` 全绿
+
+- 移除 `app/services/scene3d/gesture_performance.py` 未使用的 `from typing import Any`。gesture 相关 9 条测试复跑通过。
+
 ### Fixed — D7 真·幂等补齐：直出复用事实端到端透传（同一蓝图不再重复出片）
 
 - **问题**：底层 v2 渲染服务本就按组合指纹复用（在途同指纹 → 返回**同一个** render_id + `reused`；已完成发布 → 复用产物），但 direct-execute 桥把这个事实丢了：`ReplicaRenderOutcome`/端点响应只给"新 render_id"，前端 D7 的"重复操作不产生重复产物"因此**不可观测**——无法区分"又一次渲染"与"复用在途渲染"，用户在途守卫之外的重复提交（如刷新后重进）看不出后果。
