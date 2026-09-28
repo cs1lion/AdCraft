@@ -123,3 +123,21 @@ apps/api/scripts/replicate_*.py
 
 # Runtime uploads (user-generated media) stay local
 apps/api/uploads/
+
+# Local agent-tool runtime artifacts (run journals, telemetry, scratch)
+.stepcode/
+.claude/
+
+# Regenerable binaries for the demo material library.
+# The irreplaceable parts stay tracked: demo-materials/{README,SOURCES}.md,
+# demo-materials/scripts/**, and the download commands in SOURCES.md §6.
+# test-materials binaries are rebuilt by test-materials/tools/build_materials.py,
+# whose output truth.json IS tracked (see test-materials/README.md §6).
+demo-materials/videos/
+demo-materials/images/
+demo-materials/audio/
+demo-materials/runs/
+demo-materials/outputs/
+test-materials/fixtures/
+test-materials/units/**/*.mp4
+test-materials/units/**/*.png
