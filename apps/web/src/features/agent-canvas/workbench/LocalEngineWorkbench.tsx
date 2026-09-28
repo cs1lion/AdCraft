@@ -250,6 +250,17 @@ function audioBedParts(raw: unknown): {
   };
 }
 
+/**
+ * E4: 多轮记忆的保留集（V0.2 §14.5）——作者已处理过（应用/驳回）的 reading id。
+ * 后端把它持久化在 scene-3d 节点的 structured_content.retained_reading_ids；
+ * 刷新后由这里读回，交给编辑器喂给提案面板的初始保留集。
+ */
+function parseRetainedReadingIds(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const ids = raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return ids.length > 0 ? ids : undefined;
+}
+
 /** The continuity findings, as the editor's shape (or nothing). */
 function parseBlockingFindings(raw: unknown): BlockingFinding[] | null {
   if (!Array.isArray(raw)) return null;
@@ -827,6 +838,14 @@ function Scene3DEditSection({
           onFocusShotConsumed={() => setFocusShotId(null)}
           takes={takes}
           onSaveTake={(take) => persistTakes([...takes, take])}
+          // E4: 多轮记忆接线（V0.2 §14.5）——补传 workflowId/nodeId 让提案
+          // 面板的保留集可持久化；initialEngagedIds 让刷新后保留集恢复。
+          // 缺这两个 id 时面板静默不持久化（见 TransitionProposalsPanel）。
+          workflowId={node.workflow_id}
+          nodeId={node.node_id}
+          initialEngagedIds={parseRetainedReadingIds(
+            node.structured_content?.retained_reading_ids,
+          )}
         />
       </Suspense>
     </section>

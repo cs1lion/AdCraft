@@ -39,6 +39,10 @@ type EditorProbe = {
     text: string;
     start_time: number;
   }[];
+  /** E4 (V0.2 §14.5): the multi-round memory wiring. */
+  workflowId?: string | null;
+  nodeId?: string | null;
+  initialEngagedIds?: readonly string[];
 };
 
 const editorProps = vi.hoisted(() => ({}) as EditorProbe);
@@ -818,3 +822,30 @@ describe("LocalEngineWorkbench — 3D draft persistence (D6)", () => {
   });
 });
 
+
+describe("LocalEngineWorkbench — multi-round memory wiring (E4, V0.2 §14.5)", () => {
+  it("passes workflowId/nodeId/initialEngagedIds so the retained set survives a refresh", async () => {
+    renderWorkbench(
+      makeNode({
+        structured_content: {
+          scene_script: sceneScript(),
+          retained_reading_ids: ["reading_1", "reading_2"],
+        },
+      }),
+    );
+    await editorMounted();
+    // 三个 props 一个都不能少：缺 workflowId/nodeId → 提案面板静默不持久化；
+    // 缺 initialEngagedIds → 刷新后保留集恢复不了（此前"已落地"实为未接线）。
+    expect(editorProps.workflowId).toBe("workflow-1");
+    expect(editorProps.nodeId).toBe("scene-node");
+    expect(editorProps.initialEngagedIds).toEqual(["reading_1", "reading_2"]);
+  });
+
+  it("passes no initial set when the node carries no retained ids", async () => {
+    renderWorkbench(makeNode());
+    await editorMounted();
+    expect(editorProps.workflowId).toBe("workflow-1");
+    expect(editorProps.nodeId).toBe("scene-node");
+    expect(editorProps.initialEngagedIds).toBeUndefined();
+  });
+});

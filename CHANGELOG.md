@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E4 多轮记忆"已落地"实为未接线 → 补传 workflowId/nodeId/initialEngagedIds
+
+- **问题**：`TransitionProposalsPanel` 与后端持久化（V0.2 §14.5）都在，但 `LocalEngineWorkbench` 的 `<SceneScript3DEditor>` 没传 `workflowId`/`nodeId`/`initialEngagedIds`——面板条件发送（两个 id 缺一即静默不持久化），且无任何代码读 `structured_content.retained_reading_ids`，"刷新后保留集恢复"实际不成立。
+- **改动**（纯前端）：① 新增 `parseRetainedReadingIds`（读节点 `structured_content.retained_reading_ids`，空/坏形状返回 undefined）；② `<SceneScript3DEditor>` 补传三个 props——持久化有目标、刷新后保留集有来源。同区域的 `DialogueLipSyncPanel` 早已传 `workflowId/sourceNodeId`，本次对齐。
+- **验证**：`vitest LocalEngineWorkbench.test.tsx` **37 passed**（+2：三个 props 精确透传/无保留集时 undefined）。`tsc` 0 error。
+
 ### Fixed — E3 分镜 finding 算了不返回 → 端点透传 + UI 逐条可见
 
 - **问题**：`check_storyboard_span` 有 16 条测试锁定三类 finding（空分镜/镜头间空隙/关键帧不足），但 `/storyboard` 端点只调 `build_storyboard`——findings 从未进入响应，前端 `StoryboardResult` 无该字段、面板无渲染分支。"算了不展示"的典型：后端完整、测试全绿、用户看不到。
