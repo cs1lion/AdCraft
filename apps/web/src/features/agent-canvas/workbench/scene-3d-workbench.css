@@ -708,6 +708,14 @@
   padding: 8px 0;
 }
 
+/* E6: render/async 控件行 */
+.scene-script-3d-editor__render-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+
 .scene-script-3d-editor__storyboard-tabs {
   display: flex;
   gap: 4px;

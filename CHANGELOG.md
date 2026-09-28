@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E6 渲染无进度无取消 → scene-3d render/async 接线 + 直出取消落地
+
+- **问题**：3D 线后端 `render/async`、`render/{job_id}`、`render/{job_id}/cancel` + RenderJobManager（进度 + 协作式取消）早已存在，前端零引用——工作台根本没有渲染按钮，渲染只走节点执行器；同时直出的"停止跟踪"只清前端 state，后端 detached 渲染照跑（"取消"名不副实）。
+- **改动（前端）**：① 新增 `Scene3DRenderControls`（工作台渲染入口）：`POST /render/async` 拿 job_id → 2s 轮询进度（5 分钟上限，超时明确失败）→ 完成出视频（`buildMediaUrl`）+ warnings 逐条、失败原文上屏、取消打 `POST /render/{job_id}/cancel`（真取消）；② `directorOperationsClient` 增加三个渲染任务函数；③ `ReplicaBlueprintPanel.cancelDirectRender` 改为真的调 v2 `final-composition/renders/{render_id}/cancel`——后端确认 cancelled/仍在收尾/请求失败三种结果分别如实上屏，按钮更名"取消渲染"。
+- **可达性账本**：死端点 33 → **28**（recipe/export、recipe/import 由 E2 接活；render/async、render/{job_id}、render/{job_id}/cancel 由本提交接活），`endpoint-reachability-baseline.json` 同步缩账；`check:endpoint-reachability` OK。
+- **验证**：`vitest Scene3DRenderControls.test.tsx`（新文件）**5 passed**（提交/轮询完成+产物+warnings/进度可见/取消打端点/失败原文/提交 422 不进轮询）；`ReplicaBlueprintPanel.test.tsx` **33 passed**（+1 直出取消打端点）；`LocalEngineWorkbench.test.tsx` **37 passed** 无回归；`tsc` 0 error；eslint 0 error（仅存量 fast-refresh warning）。
+
 ### Fixed — E5 错误不可行动 → 逐条展开（结构漂移 / 422 校验 / 具名错误）
 
 - **问题**：`ReplicaBlueprintPanel` 7 处内联错误提取只认 `detail.error` 或字符串 detail——FastAPI 422 的 `[{loc,msg,type}]` 数组和结构漂移的 `{code,message,drifts}` 全部退化成"直出失败 (HTTP 422)"一句，用户看不出哪条字段、哪个维度出了问题。

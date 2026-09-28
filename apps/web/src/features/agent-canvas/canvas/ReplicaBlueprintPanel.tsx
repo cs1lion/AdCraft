@@ -686,16 +686,45 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
     return () => window.clearInterval(timer);
   }, [renderPhase]);
 
-  // D7: stop tracking an in-flight render. The detached backend job may still finish —
-  // surface that honestly instead of pretending the render stopped.
-  const cancelDirectRender = useCallback(() => {
+  // D7: stop tracking an in-flight render — and E6: ask the backend to really
+  // cancel it (v2 final-composition has a cancel endpoint that transitions the
+  // job and stops the process; pretending to cancel by clearing UI state is
+  // what made the old "取消" dishonest).
+  const cancelDirectRender = useCallback(async () => {
+    const currentRenderId = renderId;
     clearReplicaRender(node.workflow_id, node.node_id);
     setRenderId(null);
     setRenderProgress(null);
     setRenderElapsed(0);
     setRenderPhase("idle");
-    setNotice("已停止跟踪本次直出渲染；后台渲染可能仍在进行，可到工作流的 final-composition 面板查看候选。");
-  }, [node.workflow_id, node.node_id]);
+    if (!currentRenderId) {
+      setNotice("已停止跟踪本次直出渲染。");
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/v2/workflows/${node.workflow_id}/final-composition/renders/${currentRenderId}/cancel`,
+        { method: "POST" },
+      );
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200) {
+        setNotice(
+          `已停止跟踪；取消请求未被接受 (HTTP ${response.status})——渲染可能仍在后台进行，可到工作流的 final-composition 面板查看。`,
+        );
+        return;
+      }
+      const status = typeof body?.status === "string" ? body.status : "";
+      setNotice(
+        status === "cancelled"
+          ? "✓ 已取消该直出渲染（后端已停止任务）。"
+          : `已请求取消（后端状态：${status || "处理中"}）——渲染可能仍在收尾，可到 final-composition 面板查看。`,
+      );
+    } catch {
+      setNotice(
+        "已停止跟踪；取消请求发送失败——渲染可能仍在后台进行，可到 final-composition 面板查看。",
+      );
+    }
+  }, [node.workflow_id, node.node_id, renderId]);
 
   if (!hasBlueprint) {
     return (
@@ -1148,7 +1177,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                 {renderProgress !== null ? `${Math.round(renderProgress)}%` : "已进入渲染队列"} · 正在渲染 {renderElapsed} 秒{" "}
                 <button
                   type="button"
-                  onClick={cancelDirectRender}
+                  onClick={() => void cancelDirectRender()}
                   style={{
                     marginLeft: 6,
                     background: "transparent",
@@ -1160,7 +1189,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                     cursor: "pointer",
                   }}
                 >
-                  停止跟踪
+                  取消渲染
                 </button>
               </div>
             )}

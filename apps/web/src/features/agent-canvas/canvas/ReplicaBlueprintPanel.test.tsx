@@ -604,6 +604,50 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
     // 重试入口存在（失败可行动，不是死局）
     expect(screen.getByText("重试")).toBeTruthy();
   });
+
+  // E6：直出的"取消"必须真的打到后端取消端点——不是清前端状态假装取消
+  it("cancels through the backend render-cancel endpoint (E6)", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/final-composition/renders/") && target.includes("/cancel")) {
+        return {
+          status: 200,
+          json: async () => ({ status: "cancelled", render_id: "render_cancel01" }),
+        };
+      }
+      if (target.includes("/final-composition/renders/")) {
+        return { status: 200, json: async () => ({ status: "rendering", progress_percent: 40 }) };
+      }
+      return {
+        status: 200,
+        json: async () => ({
+          success: true,
+          feasible: true,
+          render_id: "render_cancel01",
+          status: "queued",
+          timeline_version: 2,
+          previous_timeline_version: 1,
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+    await waitFor(() => expect(screen.getByText("取消渲染")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("取消渲染"));
+
+    await waitFor(() => {
+      const cancelCall = fetchMock.mock.calls.find((call) =>
+        String(call[0]).includes("/renders/render_cancel01/cancel"),
+      );
+      expect(cancelCall).toBeTruthy();
+      expect((cancelCall as unknown as [string, RequestInit])[1].method).toBe("POST");
+    });
+    // 取消结果如实上屏（后端确认 cancelled）
+    await waitFor(() => expect(screen.getByText(/✓ 已取消该直出渲染/)).toBeTruthy());
+  });
 });
 
 describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {

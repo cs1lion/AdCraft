@@ -25,6 +25,7 @@ import { AgentCanvasAudioPlayer } from "../canvas/AgentCanvasAudioPlayer.tsx";
 import { AudioBedEditor } from "./AudioBedEditor.tsx";
 import { DialogueAlignmentPanel } from "../canvas/DialogueAlignmentPanel.tsx";
 import { DialogueLipSyncPanel } from "../canvas/DialogueLipSyncPanel.tsx";
+import { Scene3DRenderControls } from "../canvas/Scene3DRenderControls.tsx";
 import { FourLinePromptEditor } from "./FourLinePromptEditor.tsx";
 import { NodeWorkbenchError } from "./NodeWorkbenchError.tsx";
 import { SceneImageIntake } from "../canvas/SceneImageIntake.tsx";
@@ -778,6 +779,8 @@ function Scene3DEditSection({
           null
         }
       />
+      {/* E6: 3D 渲染入口（scene-3d render/async：提交→轮询进度→真取消） */}
+      {draftScript && <Scene3DRenderControls sceneScript={draftScript} disabled={saving} />}
       {restoredDraft ? (
         <div className="scene-script-3d-editor__note" data-testid="scene3d-draft-restored">
           已恢复上次未保存的草稿；未保存前离开/刷新页面会再次提醒。

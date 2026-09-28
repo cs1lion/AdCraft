@@ -305,3 +305,66 @@ export async function applyTriggerEvent(
     operations: body.operations ?? [],
   };
 }
+
+// ---------------------------------------------------------------------------
+// E6: Scene-3D async render jobs (render/async + poll + cancel)
+//
+// The render/async family already existed on the backend (RenderJobManager:
+// progress + cooperative cancel); the workbench had no entry for it. These
+// three calls give the 3D line the same visibility the replica line has:
+// submit → job id → poll progress → cancel for real.
+// ---------------------------------------------------------------------------
+
+export interface Scene3DRenderJobStatus {
+  job_id: string;
+  status: string; // pending | running | completed | failed | cancelled
+  progress: number;
+  error?: string | null;
+  result?: {
+    output_dir?: string;
+    frame_count?: number;
+    video_path?: string | null;
+    animatic_video_path?: string | null;
+    audio_muxed?: boolean;
+    duration_seconds?: number;
+    blender_version?: string | null;
+    warnings?: string[];
+  } | null;
+}
+
+export async function submitScene3DRender(sceneScript: SceneScriptRoot): Promise<string> {
+  const response = await fetch(`${SCENE_3D_BASE}/render/async`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scene_script: JSON.parse(JSON.stringify(sceneScript)) }),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    job_id?: string;
+    detail?: unknown;
+  } | null;
+  if (response.status !== 200 || !body?.job_id) {
+    const detail = typeof body?.detail === "string" ? body.detail : "";
+    throw new Error(detail || `渲染提交失败 (HTTP ${response.status})`);
+  }
+  return String(body.job_id);
+}
+
+export async function fetchScene3DRenderJob(jobId: string): Promise<Scene3DRenderJobStatus> {
+  const response = await fetch(`${SCENE_3D_BASE}/render/${encodeURIComponent(jobId)}`);
+  const body = (await response.json().catch(() => null)) as Scene3DRenderJobStatus | null;
+  if (response.status !== 200 || !body) {
+    throw new Error(`渲染状态查询失败 (HTTP ${response.status})`);
+  }
+  return body;
+}
+
+export async function cancelScene3DRender(jobId: string): Promise<void> {
+  const response = await fetch(`${SCENE_3D_BASE}/render/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (response.status !== 200) {
+    const detail = typeof body?.detail === "string" ? body.detail : "";
+    throw new Error(detail || `取消渲染失败 (HTTP ${response.status})`);
+  }
+}
