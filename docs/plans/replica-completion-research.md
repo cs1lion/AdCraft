@@ -18,6 +18,8 @@
 > G4 narrative token 层、G5 `.adrecipe`、G6 teardown 缓存。下文矩阵与缺口清单
 > 为当日快照，保留作历史记录。
 
+> **2026-09-28 第五更（G5 增量）**：**G5 `.adrecipe` 已闭合**——六维词汇表（与样式 schema 同口径）+ `.adrecipe` 文档层 + 5 个内置配方 + 变体 = skill × recipe（确定性轮换）+ 编译层真实消费 + 工作台点选器；代表变体的字幕样式签名互不相同（测试断言）。至此 gap 分析的 P1 主项/normalized/P2 cue 时间/P2 recipes **全部落地**；仍开放：P3 fact log、P3 swap 骨架恒等断言、P4 estimate 语音时长预估、词级 karaoke 烧录（生成通道 + ASS `{\k}`）、G4 的"重新对齐"生产触发点。
+
 > **2026-09-28 第四更（G4 增量）**：**G4 narrative token 层已闭合**——`services/replica/narrative.py`（normalize/tokenize/6 种 anchor/selection 与帧时间解耦/投影）+ 锚点 token 区间绑定 + `reproject_anchor_seconds`（秒数降级为投影）；实现中修掉"token 源不一致导致 binding 必丢"的真缺陷。至此 gap 分析的 P1 主项落地；仍开放：**G5 `.adrecipe`**（风格维度表）、P1 子项 normalized匹配已随 narrative 落地、词级 karaoke 烧录（生成通道 + ASS `{\k}`）、G4 的"重新对齐"生产触发点。
 
 > **2026-09-28 第三更（G3 后半增量）**：**词级数据层已闭合**——`ReplicaBeatV2.words`（转录词窗，单归宿归属）+ 工作台词流展示；**词级 karaoke 在零模型通道被证伪**（有台词必 TTS → 不可行，通道内不存在词级对齐内容），死分支已撤、决策已记录（`replica-teardown.md` §16）；karaoke 真实归属 = 生成通道 + 剪辑域 ASS `{\k}`（需 `SubtitleCue` 词级时间，后续片）。仍开放：G4 narrative token 层、G5 `.adrecipe`。
