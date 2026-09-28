@@ -13,8 +13,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
 import tempfile
 from pathlib import Path
 from typing import Annotated, Any
@@ -39,8 +37,10 @@ from app.services.replica.teardown import (
     DEFAULT_NUM_FRAMES,
     MAX_NUM_FRAMES,
     MIN_NUM_FRAMES,
-    AnalysisError,
-    analyze_reference_teardown,
+)
+from app.services.replica.teardown_jobs import (
+    TeardownJob,
+    get_teardown_job_manager,
 )
 from app.schemas.agent_canvas import CanvasNodeCreateRequestV2
 from app.services.agent_canvas_nodes import AgentCanvasNodeService
@@ -73,6 +73,41 @@ class TeardownResponse(BaseModel):
     # G6 缓存溯源：True = 报告来自缓存（未调用 LLM）。"没花新额度"要看得见。
     cached: bool = False
     cache_key: str = ""
+
+
+class TeardownJobSubmittedResponse(BaseModel):
+    """D8：拆解是任务——提交即返回 job id，不再阻塞请求。"""
+
+    success: bool = True
+    job_id: str
+    status: str = "pending"
+
+
+class TeardownJobStatusResponse(BaseModel):
+    """D8：拆解任务状态。completed 时字段与旧 TeardownResponse 同构。"""
+
+    success: bool = True
+    job_id: str
+    status: str  # pending | running | completed | failed | cancelled
+    report: dict[str, Any] = Field(default_factory=dict)
+    frame_analyses: list[dict[str, Any]] = Field(default_factory=list)
+    video_metadata: dict[str, Any] = Field(default_factory=dict)
+    num_frames_analyzed: int = 0
+    user_description: str | None = None
+    cached: bool = False
+    cache_key: str = ""
+    error: str | None = None
+    error_type: str | None = None
+
+
+class TeardownJobCancelResponse(BaseModel):
+    """D8：取消结果。cancelled=False 时 reason 说明为什么取消不了。"""
+
+    success: bool = True
+    job_id: str
+    cancelled: bool
+    status: str
+    reason: str = ""
 
 
 class BlueprintRequest(BaseModel):
@@ -342,18 +377,24 @@ async def _save_temp_upload(file: UploadFile) -> Path:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/teardown", response_model=TeardownResponse)
+@router.post("/teardown", response_model=TeardownJobSubmittedResponse)
 async def teardown_reference_video(
     file: UploadFile | None = File(None),
     asset_id: str | None = Form(None),
     user_description: str | None = Form(None),
     num_frames: int = Form(DEFAULT_NUM_FRAMES),
     use_cache: bool = Form(True),
-) -> TeardownResponse:
-    """拉片复刻：拆解一条参考视频，产出结构化拆解报告 + 复刻分镜草稿。
+) -> TeardownJobSubmittedResponse:
+    """拉片复刻：提交一次参考视频拆解（D8：任务化，不再阻塞请求）。
 
     参考视频 → 抽帧 → 多模态 LLM 读片 → 整片解读/结构/镜头表/节奏/系统
     → 复刻分镜草稿（可直接进入正常创作流）。
+
+    D8：拆解是唯一烧 LLM 额度的步骤，此前它阻塞请求且无 job 身份——前端
+    "取消"只 abort 了 fetch，后端照烧。现在 POST 只做"入库 + 起任务"，
+    立刻返回 job_id；进度/结果走 ``GET /replica/teardown/jobs/{job_id}``，
+    取消走 ``POST /replica/teardown/jobs/{job_id}/cancel``（协作式：下一
+    次 LLM 调用前真的停）。
 
     Product boundary (also surfaced in report.constraints): the teardown
     replicates STRUCTURE AND RELATIONSHIPS, not pixels — shot boundaries and
@@ -365,45 +406,70 @@ async def teardown_reference_video(
     video_path, is_temp = await _resolve_source_path(file, asset_id)
 
     clamped_frames = max(MIN_NUM_FRAMES, min(MAX_NUM_FRAMES, int(num_frames)))
-
-    try:
-        # LLM 调用是阻塞的：放到线程池，避免拖住事件循环。
-        result = await asyncio.to_thread(
-            analyze_reference_teardown,
-            video_path=video_path,
-            num_frames=clamped_frames,
-            user_description=user_description,
-            use_cache=use_cache,
-        )
-    except AnalysisError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"error": str(exc), "error_type": exc.error_type},
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(
-            status_code=500,
-            detail=f"Teardown analysis failed: {str(exc)[:200]}",
-        )
-    finally:
-        if is_temp:
-            try:
-                os.unlink(video_path)
-            except Exception:
-                pass
-
-    return TeardownResponse(
-        success=True,
-        report=result.report.model_dump(mode="json"),
-        frame_analyses=[_frame_analysis_to_dict(f) for f in result.frame_analyses],
-        video_metadata=_video_metadata_to_dict(result.video_metadata),
-        num_frames_analyzed=result.num_frames_analyzed,
-        user_description=result.user_description,
-        cached=result.cached,
-        cache_key=result.cache_key,
+    job_id = get_teardown_job_manager().submit(
+        video_path=video_path,
+        num_frames=clamped_frames,
+        user_description=user_description,
+        use_cache=use_cache,
+        # 临时源文件的生命周期移交给任务：终态（含取消/失败）由任务回收
+        cleanup_path=video_path if is_temp else None,
     )
+    return TeardownJobSubmittedResponse(job_id=job_id, status="pending")
+
+
+@router.get("/teardown/jobs/{job_id}", response_model=TeardownJobStatusResponse)
+async def get_teardown_job(job_id: str) -> TeardownJobStatusResponse:
+    """查询拆解任务：completed 时载荷与旧 TeardownResponse 同构。"""
+    job = get_teardown_job_manager().get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Unknown teardown job: {job_id}")
+    return _teardown_job_status_response(job)
+
+
+@router.post("/teardown/jobs/{job_id}/cancel", response_model=TeardownJobCancelResponse)
+async def cancel_teardown_job(job_id: str) -> TeardownJobCancelResponse:
+    """取消拆解任务：下一次 LLM 调用前真的停（不再出现"界面取消、额度照烧"）。"""
+    manager = get_teardown_job_manager()
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Unknown teardown job: {job_id}")
+    cancelled = manager.cancel(job_id)
+    current = manager.get(job_id)
+    status = current.status if current else job.status
+    reason = ""
+    if not cancelled:
+        reason = (
+            "任务已结束，无需取消"
+            if status in ("completed", "failed", "cancelled")
+            else "取消失败"
+        )
+    return TeardownJobCancelResponse(
+        job_id=job_id,
+        cancelled=cancelled,
+        status=status,
+        reason=reason,
+    )
+
+
+def _teardown_job_status_response(job: TeardownJob) -> TeardownJobStatusResponse:
+    """任务 → 状态响应。completed 才允许带结果载荷；失败/取消带可查询错误。"""
+    response = TeardownJobStatusResponse(
+        job_id=job.job_id,
+        status=job.status,
+        error=job.error,
+        error_type=job.error_type,
+    )
+    if job.status != "completed" or job.result is None:
+        return response
+    result = job.result
+    response.report = result.report.model_dump(mode="json")
+    response.frame_analyses = [_frame_analysis_to_dict(f) for f in result.frame_analyses]
+    response.video_metadata = _video_metadata_to_dict(result.video_metadata)
+    response.num_frames_analyzed = result.num_frames_analyzed
+    response.user_description = result.user_description
+    response.cached = result.cached
+    response.cache_key = result.cache_key
+    return response
 
 
 # ---------------------------------------------------------------------------

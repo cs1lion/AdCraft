@@ -62,6 +62,20 @@ DEFAULT_MAX_TOKENS_FRAME_ANALYSIS = 3000
 DEFAULT_MAX_TOKENS_SYNTHESIS = 16000
 
 
+class TeardownCancelled(Exception):
+    """拆解被取消或耗尽总预算（D8）。
+
+    与 AnalysisError 分开：取消/超时不是"分析失败"，调用方（job 管理器）
+    据此把任务标成 cancelled/timeout，而不是给用户一个分析错误。
+    """
+
+
+def check_teardown_cancelled(cancel_check: Any) -> None:
+    """在两次 LLM 调用之间检查取消/总预算；已取消即抛出 TeardownCancelled。"""
+    if cancel_check is not None and cancel_check():
+        raise TeardownCancelled()
+
+
 # ---------------------------------------------------------------------------
 # Report schema（pydantic 校验 + normalize 兜底，沿用 SceneScript 的教训）
 # ---------------------------------------------------------------------------
@@ -621,6 +635,7 @@ def analyze_reference_teardown(
     *,
     use_cache: bool = True,
     cache_dir: Path | None = None,
+    cancel_check: Any = None,
 ) -> TeardownResult:
     """分析参考视频，产出拉片拆解报告 + 复刻分镜草稿。
 
@@ -631,9 +646,13 @@ def analyze_reference_teardown(
         use_cache: 命中内容 hash + 参数 + 模型 + 转录状态相同的缓存时直接
             复用（跳过全部 LLM 调用，结果标注 ``cached=True``）。
         cache_dir: 缓存目录（默认 ``<media_data_dir>/replica_teardown_cache``）。
+        cancel_check: 可选回调——在每次 LLM 调用前检查；返回 True 时抛
+            ``TeardownCancelled``（拆解是唯一烧 LLM 额度的步骤，点了取消必须
+            真的不再发起下一次调用；单次 httpx 超时管不住多帧总和，D8）。
 
     Raises:
         AnalysisError: 配置缺失 / 输入非法 / LLM 失败 / 报告校验失败。
+        TeardownCancelled: cancel_check 在调用间隙返回 True。
     """
     num_frames = max(MIN_NUM_FRAMES, min(MAX_NUM_FRAMES, int(num_frames)))
     video_path = Path(video_path)
@@ -707,22 +726,26 @@ def analyze_reference_teardown(
             for i in range(extracted)
         ]
 
-        # 3. LLM：逐帧分析 → 综合拆解（词级转录可用时进入综合视野）
+        # 3. LLM：逐帧分析 → 综合拆解（词级转录可用时进入综合视野）。
+        # cancel_check 在每次调用前检查：取消/总预算耗尽即停，不再烧额度。
         try:
-            frame_analyses = [
-                _analyze_teardown_frame(
-                    client=client,
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                    image_path=Path(keyframe_path),
-                    frame_index=i,
-                    timestamp_seconds=timestamps[i],
-                    total_frames=extracted,
+            frame_analyses = []
+            for i, keyframe_path in enumerate(keyframe_paths):
+                check_teardown_cancelled(cancel_check)
+                frame_analyses.append(
+                    _analyze_teardown_frame(
+                        client=client,
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=model,
+                        image_path=Path(keyframe_path),
+                        frame_index=i,
+                        timestamp_seconds=timestamps[i],
+                        total_frames=extracted,
+                    )
                 )
-                for i, keyframe_path in enumerate(keyframe_paths)
-            ]
 
+            check_teardown_cancelled(cancel_check)
             teardown_data = _synthesize_teardown(
                 client=client,
                 base_url=base_url,

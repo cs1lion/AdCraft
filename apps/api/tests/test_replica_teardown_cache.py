@@ -6,7 +6,9 @@
   的原子性与损坏降级（坏缓存 = miss，绝不是报告）；
 - 服务层：命中跳过全部 LLM 调用、cached 标注进 constraints、use_cache=False
   强制重算、内容/参数变化即 miss、损坏条目自愈（重算后覆盖）；
-- 端点层：``use_cache`` 透传 + 响应 ``cached``/``cache_key`` 溯源字段。
+- 端点层：``use_cache`` 透传 + 任务状态响应 ``cached``/``cache_key`` 溯源字段
+  （D8 起拆解是任务：POST /teardown 只返回 job_id，载荷走
+  ``GET /replica/teardown/jobs/{job_id}``）。
 
 设计依据：docs/plans/replica-completion-research.md G6（LLM 额度强依赖）。
 """
@@ -356,6 +358,7 @@ def teardown_client(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     from app.api.v1.endpoints import replica as replica_endpoint
+    from app.services.replica import teardown_jobs as teardown_jobs_module
 
     seen: dict = {}
 
@@ -373,7 +376,11 @@ def teardown_client(monkeypatch, tmp_path):
             cache_key="k" * 64,
         )
 
-    monkeypatch.setattr(replica_endpoint, "analyze_reference_teardown", fake_analyze)
+    # D8：端点不再直连 analyze；任务经 job 管理器执行——mock 打在这里。
+    monkeypatch.setattr(teardown_jobs_module, "analyze_reference_teardown", fake_analyze)
+    # 隔离的单例管理器：任务状态不跨测试泄漏（同一实例，别每次调用新建）
+    fresh_manager = teardown_jobs_module.TeardownJobManager()
+    monkeypatch.setattr(replica_endpoint, "get_teardown_job_manager", lambda: fresh_manager)
 
     stored = tmp_path / "reference.mp4"
     stored.write_bytes(b"fake")
@@ -384,19 +391,42 @@ def teardown_client(monkeypatch, tmp_path):
     return TestClient(app), seen
 
 
+def _poll_job(client, job_id: str, *, until: str = "completed") -> dict:
+    """轮询任务状态直到终态（测试里的等待助手：任务跑在线程池里）。"""
+    import time
+
+    deadline = time.time() + 10
+    body: dict = {}
+    while time.time() < deadline:
+        response = client.get(f"/replica/teardown/jobs/{job_id}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        if body["status"] in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(0.02)
+    assert body["status"] == until, body
+    return body
+
+
 def test_teardown_endpoint_forwards_use_cache_and_surfaces_cached(teardown_client) -> None:
     client, seen = teardown_client
 
+    # D8：POST 只提交任务（立刻返回 job_id），cached 溯源在任务状态里
     response = client.post("/replica/teardown", data={"asset_id": "abc", "use_cache": "true"})
-
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["cached"] is True
-    assert body["cache_key"] == "k" * 64
+    assert body["job_id"]
+    assert body["status"] in ("pending", "running", "completed")
+
+    status = _poll_job(client, body["job_id"])
+    assert status["cached"] is True
+    assert status["cache_key"] == "k" * 64
     assert seen["use_cache"] is True
 
     response_off = client.post("/replica/teardown", data={"asset_id": "abc", "use_cache": "false"})
-    assert response_off.status_code == 200, response_off.text
+    assert response_off.status_code == 200, response.text
+    status_off = _poll_job(client, response_off.json()["job_id"])
+    assert status_off["cached"] is True  # fixture 恒定 cached
     assert seen["use_cache"] is False
 
 
@@ -404,8 +434,9 @@ def test_teardown_endpoint_defaults_use_cache_on(teardown_client) -> None:
     client, seen = teardown_client
 
     response = client.post("/replica/teardown", data={"asset_id": "abc"})
-
     assert response.status_code == 200, response.text
+
+    _poll_job(client, response.json()["job_id"])
     assert seen["use_cache"] is True
 
 

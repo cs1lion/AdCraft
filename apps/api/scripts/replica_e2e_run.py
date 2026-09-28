@@ -171,6 +171,7 @@ def main() -> None:
         # 2) 真实 LLM 拉片拆解（最慢的一步）。
         # LLM 额度耗尽（429）时显式降级为样例地面真值 fixture：报告标注
         # degraded-fixture，后续链路继续被行使——不静默、不假装是 LLM 产物。
+        # D8：拆解是任务——POST 只提交（拿 job_id），轮询任务状态取结果。
         def teardown() -> dict:
             response = client.post(
                 "/api/v1/replica/teardown",
@@ -180,12 +181,23 @@ def main() -> None:
                 print("    LLM 额度耗尽（429）→ 降级为样例地面真值 fixture")
                 return _fixture_teardown(upload_result)
             assert response.status_code == 200, response.text
-            body = response.json()
-            assert body["success"] is True
-            report = body["report"]
-            assert report["shots"], "拆解应产出镜头表"
-            assert report["beats"], "拆解应产出结构段落"
-            return body
+            job_id = response.json()["job_id"]
+            deadline = time.time() + 1800  # 与后端总预算口径一致
+            while time.time() < deadline:
+                status = client.get(f"/api/v1/replica/teardown/jobs/{job_id}")
+                assert status.status_code == 200, status.text
+                body = status.json()
+                if body["status"] == "completed":
+                    assert body["report"]["shots"], "拆解应产出镜头表"
+                    assert body["report"]["beats"], "拆解应产出结构段落"
+                    return body
+                if body["status"] in ("failed", "cancelled"):
+                    raise AssertionError(
+                        f"teardown 任务 {body['status']}: "
+                        f"{body.get('error') or body.get('error_type')}"
+                    )
+                time.sleep(5)
+            raise AssertionError("teardown 任务轮询超时（30 分钟）")
 
         teardown_result = step("2.teardown 真实拉片拆解", teardown)
         report = teardown_result["report"]

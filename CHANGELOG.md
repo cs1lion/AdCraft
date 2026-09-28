@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — D8 拆解的"取消"是假的 → 可取消任务 + 总预算 timeout（demo 阻断项）
+
+- **问题**：`POST /replica/teardown` 阻塞请求跑完整拆解（多段 LLM 调用），无 job id、无结果回收、无 timeout；前端"取消等待"只 `abort()` 了 fetch——后端照烧额度。拆解是整条链路唯一烧 LLM 的步骤，演示中一次误点就白烧一次。
+- **改动（后端）**：① 新增 `teardown_jobs.TeardownJobManager`（内存任务存储 + 线程池，仿 `render_job_manager` 的最小形态）：`POST /replica/teardown` 改为"入库即返回 job_id"（临时源文件生命周期移交任务，终态回收）；新增 `GET /replica/teardown/jobs/{job_id}`（completed 时载荷与旧响应同构）与 `POST /replica/teardown/jobs/{job_id}/cancel`；② `analyze_reference_teardown` 增加 `cancel_check` 回调——**每次 LLM 调用前**咨询，协作式取消（单次 httpx 超时管不住多帧总和）；预算耗尽/取消抛 `TeardownCancelled`，任务标 `cancelled`（用户取消）或 `failed + teardown_timeout`（总预算，默认 900s，**明确失败而非无限等待**）；③ AnalysisError 的 error_type 随任务可查询。
+- **改动（前端）**：`ReplicaTeardown` 改走任务流：提交拿 job_id → 2s 轮询（上限 15 分钟，超时明确报错）→ completed 渲染报告；"取消等待"改打取消端点（真取消），取消说明如实写"后端在下次调用前已停止，不再消耗额度"——旧那句"后端可能仍在完成本次拉片"删除；失败（含 timeout）原文上屏。
+- **边界（如实标注）**：刷新页面会丢失 job 句柄（任务在后台继续，但界面追不回——未做 D7 式持久化，demo 中刷新属低频操作）；多实例部署需把任务存储移数据库（模块 docstring 已注明）。
+- **验证**：后端 `pytest replica+scene3d` **1030 passed**（0 失败；`test_replica_teardown_jobs.py` +7：提交/轮询完成、**真取消后调用数冻结**、总预算超时明确失败、AnalysisError 可查询、404、终态取消返回原因；存量端点测试同步迁到任务契约）。**服务级 mutation 校验**：把 `check_teardown_cancelled` 改成 no-op → 生产路径测试立刻变红（`取消后仍在发起 LLM 调用`），恢复后全绿。前端 `vitest ReplicaTeardown.test.tsx` **16 passed**（+3：取消打后端端点、服务端 cancelled 态、timeout 失败上屏；旧契约测试迁到任务流）。`tsc` 0 error；ruff 改动文件全绿（`gesture_performance.py` 的 F401 为存量问题，未在本次改动范围）；`check:endpoint-reachability` OK（33 条已知死端点，零新增）。
+
 ### Fixed — D4 Blender/MCP 不可用前端零提示 → 可行动说明（3D 线演示不再"看不懂的失败"）
 
 - **问题**：后端有具名错误 `scene3d_blender_unavailable`（`agent_canvas_node_execution.py` 能力探针 fail-closed）与 `mcp_unavailable`（`scene_3d.py` MCP 桥启动失败 503），前端零引用——运行期失败原样上屏（"Blender is not available: [Errno 2]…"或笼统一句），用户不知道下一步。

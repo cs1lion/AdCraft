@@ -425,12 +425,16 @@ def replica_client(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     from app.api.v1.endpoints import replica as replica_endpoint
+    from app.services.replica import teardown_jobs as teardown_jobs_module
 
+    # D8：端点提交任务，分析在 job 管理器里执行——mock 打在管理器模块上
     monkeypatch.setattr(
-        replica_endpoint,
+        teardown_jobs_module,
         "analyze_reference_teardown",
         lambda **kwargs: _mocked_result(user_description=kwargs.get("user_description")),
     )
+    fresh_manager = teardown_jobs_module.TeardownJobManager()
+    monkeypatch.setattr(replica_endpoint, "get_teardown_job_manager", lambda: fresh_manager)
 
     stored = tmp_path / "reference.mp4"
     stored.write_bytes(b"fake")
@@ -438,13 +442,31 @@ def replica_client(monkeypatch, tmp_path):
 
     app = FastAPI()
     app.include_router(replica_endpoint.router)
-    return TestClient(app)
+    client = TestClient(app)
+    yield client
+    fresh_manager.shutdown(wait=False)
+
+
+def _poll_teardown_job(client, job_id: str) -> dict:
+    """轮询拆解任务直到终态（D8：POST 只提交，结果走 GET 任务状态）。"""
+    import time
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        response = client.get(f"/replica/teardown/jobs/{job_id}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        if body["status"] in ("completed", "failed", "cancelled"):
+            assert body["status"] == "completed", body
+            return body
+        time.sleep(0.02)
+    raise AssertionError("teardown job did not settle")
 
 
 def test_teardown_endpoint_by_asset_id(replica_client) -> None:
     response = replica_client.post("/replica/teardown", data={"asset_id": "abc123"})
     assert response.status_code == 200, response.text
-    body = response.json()
+    body = _poll_teardown_job(replica_client, response.json()["job_id"])
     assert body["success"] is True
     assert body["report"]["format_name"] == "talking-head"
     assert body["report"]["replica_storyboard_draft"]
@@ -460,7 +482,7 @@ def test_teardown_endpoint_multipart(replica_client) -> None:
         data={"user_description": "换商品不换人", "num_frames": "8"},
     )
     assert response.status_code == 200, response.text
-    body = response.json()
+    body = _poll_teardown_job(replica_client, response.json()["job_id"])
     assert body["success"] is True
     assert body["user_description"] == "换商品不换人"
 
@@ -479,7 +501,7 @@ def test_teardown_endpoint_unknown_asset(replica_client, monkeypatch) -> None:
 
 
 def test_teardown_endpoint_clamps_num_frames(replica_client, monkeypatch) -> None:
-    from app.api.v1.endpoints import replica as replica_endpoint
+    from app.services.replica import teardown_jobs as teardown_jobs_module
 
     seen: dict = {}
 
@@ -487,11 +509,12 @@ def test_teardown_endpoint_clamps_num_frames(replica_client, monkeypatch) -> Non
         seen.update(kwargs)
         return _mocked_result()
 
-    monkeypatch.setattr(replica_endpoint, "analyze_reference_teardown", spy)
+    monkeypatch.setattr(teardown_jobs_module, "analyze_reference_teardown", spy)
     response = replica_client.post(
         "/replica/teardown", data={"asset_id": "abc123", "num_frames": "99"}
     )
     assert response.status_code == 200, response.text
+    _poll_teardown_job(replica_client, response.json()["job_id"])
     assert seen["num_frames"] == 16  # clamped to MAX_NUM_FRAMES
 
 

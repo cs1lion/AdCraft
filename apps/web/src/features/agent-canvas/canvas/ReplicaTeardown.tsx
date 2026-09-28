@@ -160,6 +160,11 @@ export function ReplicaTeardown({
   // G6：拆解缓存溯源（命中 = 未调用 LLM 的复用报告）
   const [cacheInfo, setCacheInfo] = useState<{ cached: boolean; cacheKey: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // D8：拆解任务句柄（提交即得，轮询/取消都用它）
+  const jobIdRef = useRef<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  // D8：取消后的说明（真取消/无需取消，替代旧那句"后端可能仍在跑"）
+  const [cancelNote, setCancelNote] = useState<string | null>(null);
   const [report, setReport] = useState<TeardownReport | null>(null);
   const [goal, setGoal] = useState<string>("");
   const [copied, setCopied] = useState(false);
@@ -186,6 +191,49 @@ export function ReplicaTeardown({
   // 卸载时断开未完成的等待，避免 setState on unmounted 组件
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // D8：拆解是任务（后端 TeardownJobManager）。POST 只提交拿 job_id，
+  // 状态/结果走轮询；取消调取消端点——协作式取消在下次 LLM 调用前真的停，
+  // 不再出现"界面取消、后端照烧额度"。
+  // 轮询上限 450 × 2s = 15 分钟，与后端总预算口径一致：超时明确失败。
+  const TEARDOWN_POLL_LIMIT = 450;
+
+  const pollTeardownJob = useCallback(async (jobId: string, signal: AbortSignal) => {
+    for (let attempt = 0; attempt < TEARDOWN_POLL_LIMIT; attempt += 1) {
+      const response = await fetch(`/api/v1/replica/teardown/jobs/${jobId}`, { signal });
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        throw new Error(`任务状态查询失败 (HTTP ${response.status})`);
+      }
+      setJobStatus(String(body.status ?? ""));
+      if (body.status === "completed") {
+        setReport(body.report as TeardownReport);
+        setVideoMeta((body.video_metadata as TeardownVideoMetadata) ?? null);
+        // G6 缓存溯源：命中时如实告知"未消耗新 LLM 额度"（缓存是优化，不是秘密）
+        setCacheInfo(
+          body.cached
+            ? { cached: true, cacheKey: typeof body.cache_key === "string" ? body.cache_key : "" }
+            : null,
+        );
+        return;
+      }
+      if (body.status === "failed") {
+        throw new Error(
+          (typeof body.error === "string" && body.error) ||
+            (typeof body.error_type === "string" && body.error_type) ||
+            "拆解失败",
+        );
+      }
+      if (body.status === "cancelled") {
+        setCancelNote("⏹ 已取消：后端在下次调用前已停止，不再消耗额度。可调整后重新拉片。");
+        return;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    }
+    throw new Error(
+      "拆解轮询超时（15 分钟）——任务可能仍在后台进行，请稍后重新拉片查看",
+    );
+  }, []);
+
   const runTeardown = useCallback(async () => {
     if (!effectiveAssetId) return;
     const controller = new AbortController();
@@ -193,10 +241,12 @@ export function ReplicaTeardown({
     setRunning(true);
     setError(null);
     setCancelled(false);
+    setCancelNote(null);
     setReport(null);
     setCacheInfo(null);
     setCopied(false);
     setBlueprintNodeId(null);
+    setJobStatus("pending");
     try {
       const formData = new FormData();
       formData.append("asset_id", effectiveAssetId);
@@ -207,7 +257,7 @@ export function ReplicaTeardown({
         signal: controller.signal,
       });
       const body = await response.json().catch(() => null);
-      if (response.status !== 200 || !body) {
+      if (response.status !== 200 || !body?.job_id) {
         const detail = body?.detail;
         throw new Error(
           (typeof detail === "object" && detail?.error) ||
@@ -215,14 +265,8 @@ export function ReplicaTeardown({
             `拉片失败 (HTTP ${response.status})`,
         );
       }
-      setReport(body.report as TeardownReport);
-      setVideoMeta((body.video_metadata as TeardownVideoMetadata) ?? null);
-      // G6 缓存溯源：命中时如实告知"未消耗新 LLM 额度"（缓存是优化，不是秘密）
-      setCacheInfo(
-        body.cached
-          ? { cached: true, cacheKey: typeof body.cache_key === "string" ? body.cache_key : "" }
-          : null,
-      );
+      jobIdRef.current = String(body.job_id);
+      await pollTeardownJob(String(body.job_id), controller.signal);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setCancelled(true);
@@ -232,7 +276,34 @@ export function ReplicaTeardown({
     } finally {
       setRunning(false);
     }
-  }, [effectiveAssetId, goal]);
+  }, [effectiveAssetId, goal, pollTeardownJob]);
+
+  // D8：真取消——告诉后端停（下次 LLM 调用前生效），同时停前端轮询。
+  const cancelTeardown = useCallback(async () => {
+    const jobId = jobIdRef.current;
+    abortRef.current?.abort();
+    if (!jobId) {
+      setCancelled(true);
+      return;
+    }
+    try {
+      const response = await fetch(`/api/v1/replica/teardown/jobs/${jobId}/cancel`, {
+        method: "POST",
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        setError(`取消失败 (HTTP ${response.status})——后台任务可能仍在进行，可等待完成`);
+        return;
+      }
+      if (body.cancelled) {
+        setCancelNote("⏹ 已取消：后端在下次调用前已停止，不再消耗额度。可调整后重新拉片。");
+      } else {
+        setCancelNote(`⏹ 无需取消：${body.reason || "任务已结束"}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "取消失败");
+    }
+  }, []);
 
   const createBlueprintNode = useCallback(async () => {
     if (!report || !workflowId) return;
@@ -457,9 +528,10 @@ export function ReplicaTeardown({
           正在读片：抽帧 → 逐帧分析 → 综合拆解 → 生成复刻草稿
           <br />
           已进行 <span style={{ color: "#8cf" }}>{elapsedSeconds}s</span>
+          {jobStatus === "running" ? "（分析中）" : jobStatus ? `（${jobStatus}）` : ""}
           （通常 1-3 分钟；期间可以继续其他操作，完成后报告出现在这里）
           <button
-            onClick={() => abortRef.current?.abort()}
+            onClick={() => void cancelTeardown()}
             style={{
               marginLeft: 8,
               background: "transparent",
@@ -476,9 +548,13 @@ export function ReplicaTeardown({
         </div>
       )}
 
-      {cancelled && (
+      {cancelNote && (
+        <div style={{ color: "#ca8", fontSize: 10, marginBottom: 8 }}>{cancelNote}</div>
+      )}
+
+      {cancelled && !cancelNote && (
         <div style={{ color: "#ca8", fontSize: 10, marginBottom: 8 }}>
-          ⏹ 已取消等待（后端可能仍在完成本次拉片，可重新点击拉片）。
+          ⏹ 已取消等待：前端已停止轮询，后端任务如仍在跑会在下次调用前停止。
         </div>
       )}
 
