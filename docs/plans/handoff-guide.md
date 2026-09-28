@@ -134,7 +134,19 @@
 
 ---
 
-### E 阶段（演示保障）
+#### **D8 · 拆解的"取消"是假的**
+
+| | |
+|---|---|
+| **问题** | `ReplicaTeardown.tsx:462` 的取消只做 `abortRef.current?.abort()`——那只是 abort 前端 fetch；后端 `replica.py:372` 用 `asyncio.to_thread` 跑 `analyze_reference_teardown`，无 job id、无结果回收、无 timeout |
+| **先读** | `apps/web/src/features/agent-canvas/canvas/ReplicaTeardown.tsx:160-230`（abort 逻辑）、`:455-485`（取消按钮）<br>`apps/api/app/api/v1/endpoints/replica.py` 的 `/teardown`（:345-411）<br>`apps/api/app/services/replica/teardown.py` 的 `analyze_reference_teardown`（:617） |
+| **改哪** | 后端：返回 job id、支持查询与取消、给 teardown 加 timeout；前端：取消改为真取消 + 超时明确失败 |
+| **怎么验** | 触发一次耗时拆解 → 点取消 → **观察后端日志不再有 LLM 调用**；或不实现取消、至少要验证 timeout 会明确失败而非无限等待 |
+| **完成判据** | 点了取消，后端真的停；或在超时时明确失败。不能再出现"界面说取消了、额度还在烧" |
+
+> 演示风险：拆解是唯一耗 LLM 额度的步骤，演示中一次误点就白烧一次额度。
+
+
 
 | 任务 | 先读 | 改哪 | 怎么验 |
 |---|---|---|---|
@@ -144,6 +156,7 @@
 | **E4** 多轮记忆接线 | `LocalEngineWorkbench.tsx:742` vs `:732`；`TransitionProposalsPanel.tsx:183-191` | 给 `SceneScript3DEditor` 补传 `workflowId`/`nodeId`/`initialEngagedIds` | 提案 → 刷新 → 保留集还在 |
 | **E5** 错误可行动 | `replica.py` 结构漂移错误（:730）；`ReplicaBlueprintPanel.tsx:391-404` | 逐条展示漂移清单；展开 422 细节 | 故意触发结构漂移 → 看到逐条可行动的说明 |
 | **E6** 进度与取消 | `apps/api/app/services/scene3d/render_job_manager.py`；`scene_3d.py:602-700` | 前端接 `render/async` + 轮询 + 取消 | 触发预演 → 有进度 → 能取消 |
+| **E8** 配方静默降级 | `ReplicaBlueprintPanel.tsx:246-258` | 保留"不让可选可不强的配方绊倒直出"的意图，但失败必须**可见**（提示"配方库不可用，已用默认形态"） | 断网/端点失败 → 用户看得见降级，且可查询 |
 
 ---
 

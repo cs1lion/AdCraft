@@ -40,18 +40,20 @@
 | **D5** | 三处保存**静默失败** | `LocalEngineWorkbench.tsx:551/577/595` `.catch(() => {})` | take/分句/变体存不上，无感知 |
 | **D6** | 3D 草稿**刷新即丢** | 全仓无 `beforeunload`；localStorage 不存脚本草稿 | 演示中误刷新 → 当场重做 |
 | **D7** | 直出**无幂等**、renderId 刷新丢失 | `ReplicaBlueprintPanel.tsx:214-215` 仅组件 state | 刷新后正在跑的渲染查不回来 |
+| **D8** | **拆解的"取消"是假的** | `ReplicaTeardown.tsx:462` 只 `abortRef.current?.abort()`（前端 fetch）；后端 `replica.py:372` 用 `asyncio.to_thread` 跑，无 job id、无结果回收、无 timeout | 点了取消后端仍在烧 LLM——演示中一次误点就白烧额度 |
 
 ### 1.2 可见缺陷（S2）—— 演示中会被问住
 
 | # | 问题 | 证据 |
 |---|---|---|
-| E1 | 复刻 4 个端点无前端入口 | `resolve-library` / `variant-render-plans` / `recipe/export` / `recipe/import` |
-| E2 | 3D 16 个端点无前端入口 | 含 `render/async` 系列（后端有进度与取消，前端零引用） |
+| E1 | 复刻 4 个端点无前端入口 | `resolve-library` / `variant-render-plans` / `recipe/export` / `recipe/import`（DEAD）<br>另有 2 条 UI-MISSING（仅 `apps/api/scripts` 调用）：`direct-execute` / `direct-execute-plan` |
+| E2 | 3D 17 个端点无前端入口 | 含 `render`、`render/async`、`render/jobs`、`render/{job_id}`、`render/{job_id}/cancel`（后端有进度与取消，前端零引用——工作台本身没有渲染按钮，渲染只走节点执行器） |
 | E3 | 分镜 finding 算了不返回 | `check_storyboard_span` 16 条测试，`/storyboard` 只调 `build_storyboard`（`scene_3d.py:1738`） |
 | E4 | 多轮记忆"已落地"实为未接线 | `LocalEngineWorkbench.tsx:742` 未传 `workflowId`/`nodeId`（对比 `:732`） |
 | E5 | 白模开关绕过 ops 闸门 | `LocalEngineWorkbench.tsx:633-650` 直接 `patchNode` |
-| E6 | 错误不可行动 | 结构漂移逐条清单、422 细节未展开 |
+| E6 | 错误不可行动 | 结构漂移逐条清单、422 细节未展开；blockers 清单只在 `error_type === "direct_execute_not_feasible"` 时渲染 |
 | E7 | 端点吞异常 | `scene_3d.py:2772` `except Exception: pass`（注释却写着 never-silent） |
+| E8 | **配方库静默降级** | `ReplicaBlueprintPanel.tsx:256-258` `catch {}` 吞掉拉取失败，直出静默退回默认形态。注释写明是"有意不让可选可不强的配方绊倒直出"——**意图合理，但违反工程标准 §4（降级必须可查询）**：用户以为选中了配方，实际没有 |
 
 ### 1.3 体验债（S3）—— 演示时口头说明即可
 
@@ -72,7 +74,7 @@
 | `apps/web` typecheck | 0 error | |
 | `apps/web` vitest | **2516 passed / 80 failed**（15 文件） | 交接文档记 38 失败 → **恶化一倍以上** |
 | `apps/api` replica+scene3d | **1028 passed / 1 failed** | 唯一失败即 D1 |
-| 端点可达性 | 205 路由 / **31 死端点** | 首次量化 |
+| 端点可达性 | 205 路由 / **33 死端点** | 首次量化；修正前缀误判后 +2 |
 
 前端失败最集中：`AgentCanvasInlineWorkbench.test.tsx` **22/83 失败**
 → 工作台这一层**当前没有可信回归保护**，动它之前必须先解决。
@@ -84,7 +86,7 @@
 | 文件 | 作用 |
 |---|---|
 | `apps/web/scripts/check-backend-endpoint-reachability.mjs` | 205 路由 × 5 类消费方，三档输出 |
-| `endpoint-reachability-baseline.json` | 31 条已知死端点 |
+| `endpoint-reachability-baseline.json` | 33 条已知死端点 |
 | `endpoint-reachability-exemptions.json` | 1 条外部 webhook 豁免 |
 
 ```bash
@@ -92,7 +94,13 @@ npm run report:endpoint-reachability    # 报告
 npm run check:endpoint-reachability     # CI 闸，已验证 exit 1
 ```
 
-**死端点分组**：A 接入口即可用（4 条复刻）· B 需先定夺语义（10 条 3D）· C 疑似 v1 遗留（17 条）。
+**死端点分组**：A 接入口即可用（4 条复刻）· B 需先定夺语义（17 条 3D）· C 疑似 v1 遗留（12 条）。
+
+**工具自身修过的三个坑**（都会产生误报，误报比没检查更糟）：
+
+1. 前端 URL 有三种拼法——字面量绝对路径、`${SCENE_3D_BASE}/x` 常量拼接（base 常声明在别的模块）、`request("/asset-library/entities")` 相对路径（前缀由 helper 加）。只认一种 → 100+ 误报。
+2. 模板插值**不能截断到 `${`**——`/workflows/${id}/x` 会退化成 `/workflows/`，丢掉全部 workflow 作用域路由。必须整体替换成无斜杠占位符。
+3. **路由匹配必须做尾部锚定**。否则 `/blueprint/direct-execute` 会匹配上 `/blueprint/direct-execute/render` 这个字面量，被误判成"可达"。修正后又暴露：占位符不能用 `__p__` 这类以 `_` 开头的写法——它会被尾部锚定的 `\w` 判定为"路径续写"，制造新的漏报（`asset_references` 一度从可达变成死端点）。占位符改用 `~p~`。修正前后死端点 31 → 33。
 
 > 它解决的是一整类问题：**后端完成 + 测试全绿 + 文档标 ✅，但用户永远看不到。**
 
@@ -110,7 +118,8 @@ npm run check:endpoint-reachability     # CI 闸，已验证 exit 1
 | **D4** | Blender 不可用给可行动提示 | 3D 线演示到渲染不再"看不懂的失败" |
 | **D5** | 三处 `.catch(() => {})` → 可见错误 + 可重试 | take/分句/变体保存失败用户看得见 |
 | **D6** | 3D 草稿持久化（beforeunload 提示 + localStorage 恢复） | 刷新不丢未保存编辑 |
-| **D7** | 直出幂等键 + renderId 落盘可恢复 | 重复点击不重复渲染；刷新能查回任务 |
+| **D7** | 直出幂等键 + renderId 落盘可恢复；补渲染取消入口 | 重复点击不重复渲染；刷新能查回任务；能中断 |
+| **D8** | 拆解改为**可取消的任务**：后端返回 job id，轮询/取消，teardown 加 timeout；前端"取消等待"改为真取消 | 点了取消后端真的停；或在超时时明确失败而非无限等待 |
 
 > **D1 是地基**：它同时验证了"最后一米"最核心的一句承诺。
 > 在 D1 通过之前，不要对外声称"零模型费直出可用"。
@@ -125,6 +134,7 @@ npm run check:endpoint-reachability     # CI 闸，已验证 exit 1
 | **E4** | 补传 `workflowId`/`nodeId`/`initialEngagedIds` | 刷新后保留集恢复 |
 | **E5** | 结构漂移逐条展示 + 422 细节展开 | 每条错误能指向下一步 |
 | **E6** | 渲染进度 + 取消（接 `render/async` 系列） | 长任务可见、可中断 |
+| **E8** | 配方拉取失败改为可见降级（保留"不让配方绊倒直出"的意图，但必须告知用户"配方库不可用，已用默认形态"） | 降级可感知、可查询（工程标准 §4） |
 
 ### P 阶段 · 产品完善（演示之后）
 

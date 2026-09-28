@@ -139,7 +139,7 @@ function collectStringConstants(source) {
  * matters: truncating at `${` instead turns `/workflows/${id}/canvas/runtime`
  * into `/workflows/` and silently loses every workflow-scoped route.
  */
-const PARAM_PLACEHOLDER = "__p__";
+const PARAM_PLACEHOLDER = "~p~";
 function neutraliseTemplateExpressions(text) {
   let out = "";
   for (let i = 0; i < text.length; i += 1) {
@@ -202,7 +202,15 @@ function extractUrls(source, constants = collectStringConstants(source)) {
   return { absolute: [...absolute], relative: [...relative] };
 }
 
-/** Turn a route template into a matcher regex: {param} matches one path segment. */
+/**
+ * Turn a route template into a matcher regex: {param} matches one path segment.
+ *
+ * The trailing lookahead matters. Without it, route `/blueprint/direct-execute`
+ * matches the consumer literal `/blueprint/direct-execute/render` as a prefix
+ * substring and is reported REACHABLE even though nothing calls it. Anchoring on
+ * "not followed by another path segment" is what separates a route from its own
+ * sub-routes.
+ */
 function routeMatcher(fullPath) {
   const escaped = fullPath
     .split("/")
@@ -210,7 +218,7 @@ function routeMatcher(fullPath) {
     .join("/")
     // A template segment collapses the two slashes around it.
     .replaceAll("//+", "/");
-  return new RegExp(escaped.replace(/\/\[^\/]+\//g, "/[^/]+/"));
+  return new RegExp(`${escaped.replace(/\/\[^\/]+\//g, "/[^/]+/")}(?![/\\w-])`);
 }
 
 async function collectConsumerUrls() {
