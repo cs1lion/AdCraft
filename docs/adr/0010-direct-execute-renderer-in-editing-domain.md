@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-09-27）。等待剪辑域（editing/时间线）owner 确认排期后转 Accepted。
+Partially Accepted（2026-09-27）。R1（字幕轨直出）已实现并 E2E 验收：占位画面兜底、`replica/blueprint/direct-execute` 编译端点、`resolve-library` 人工解析回填、E2E 渲染验收步。R3 后端半边 + 前端入口已交付（2026-09-28）：`/replica/blueprint/direct-execute/render` 渲染桥（编译时间线 → 工作流 final 时间线 → 复用 `start_render`）+ 工作台「零模型费直出」按钮 + 渲染轮询 + 成片预览——R3 的"用户真正用上直出"已闭环。R2（MG 组件）仍待剪辑域排期。
 本 ADR 由拉片复刻路线图 P3 项"direct-execute 快车道"的**可行性门交付**触发
 （`services/replica/direct_execute.py` + `POST /replica/blueprint/direct-execute-plan`），
 用于回答渲染器本体"谁做、接口是什么、按什么顺序做"。
@@ -58,9 +58,10 @@ Proposed（2026-09-27）。等待剪辑域（editing/时间线）owner 确认排
 
 ### 4. 验收
 
-- `tests/test_replica_direct_execute.py` 判定的 feasible 案例
-  （纯字幕片）经剪辑域 R1 链路端到端零模型费出片（media 标记测试）；
-- non-feasible 蓝图被入口拒绝并展示 blockers + generation_steps 清单。
+- `tests/test_replica_direct_execute_render_media.py`（media 标记）：feasible 案例
+  经渲染器端到端零模型费出片（占位画面自动补齐，输出探针断言）✅ 已交付；
+- non-feasible 蓝图被入口拒绝并展示 blockers + generation_steps 清单 ✅ 已交付
+  （`/blueprint/direct-execute-plan` + 渲染端点 rejected 字段）。
 
 ## Consequences
 

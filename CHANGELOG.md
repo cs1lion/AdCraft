@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 R3 最后一公里：渲染桥 + 工作台直出入口，G7 音频测试抓到真 bug
+
+- **渲染桥**（`services/replica/direct_execute_bridge.py`，纯编排、服务以参数注入）：可行性门 → 编译 → 可选 `library_resolutions` 回填 → **剥未解析哨兵 clip** → `save_timeline`（`expected_version` 取自当前时间线）→ 复用剪辑域 `start_render`（detached 耐久渲染，可轮询/可取消）。不建第二执行链（ADR 0010）。非可行蓝图在服务层即抛 `ReplicaRenderNotFeasible`，rejected 缺失清单原样透出——门不降级。
+- **端点**：`POST /api/v1/replica/blueprint/direct-execute/render`（12 条 replica 路由 +1）：非可行 422（`error_type=direct_execute_not_feasible` + rejected）；坏解析条目 422（不静默跳过）；时间线服务错误按 v2 约定映射（code/message/status）。响应诚实透出三件事：`previous_timeline_version`（写盘会替换用户此前的 final 时间线）、`dropped_unresolved_clip_ids`（哨兵 clip 不是真实资产，进 v2 时间线会被 `_validate_clip_source` 404 拒，故写盘前剥掉）、`unresolved_assets`。
+- **前端**：`ReplicaBlueprintPanel` 源码 tab 顶部「⚡ 零模型费直出」区——发起前先落盘（节点是真相源，与"一键生成"同纪律）；门拒绝时逐条列缺失清单并指路完整生成流；轮询 `/api/v2/workflows/{id}/final-composition/renders/{render_id}`（2s 间隔、卸载即停、~5 分钟未终态明确失败而非无限轮）；成片 `<video>` 预览；替换版本与未解析库素材以备注说出口。
+- **G7 抓到真 bug**：补"真实音频资产 → resolve-library → 渲染 → 成片有音轨"media 测试（无 ffmpeg 环境 skip）。静态核查该路径发现剪辑域 `build_audio_filter_graph` 按 `metadata.role` 识别 BGM，而复刻编译层的 BGM/SFX 意图 clip 没打 role——**bgm_only 模式下 BGM 会被音频图静默跳过**（"启用 BGM"只在文本上成立）。已修编译层（`role: bgm/sfx`），并补两条常驻守护：role 标记断言 + 音频图集成断言（后者纯函数、不依赖 ffmpeg）。
+- **文档**（G2）：`replica-teardown.md` §11 路线表 direct-execute 行从"Proposed 待排期"更新为 R1+R3 已交付、ADR 0010 同步 Partially Accepted 并记录 R3 闭环、新增 §13 记录本增量；`replica-completion-research.md` 中 G1/G7 的状态以本条目为准。
+- **测试**：后端 +14（桥 11 含端点契约 5、role 1、音频图 1、media 1）；replica 全套 **146 collected**（本机无 ffmpeg：140 passed / 6 skipped，skip 全为 media 与 transcribe 的 ffmpeg 依赖）；`ruff`（E4/E7/E9/F）`app/` 全绿；`check:agent-canvas-contract` 对导出 OpenAPI 通过（185 paths）；全量后端 **1968 passed**（4 失败 = depth-image 既有基线，零新增）。前端 +2；`ReplicaBlueprintPanel` 17 passed；tsc/eslint 0 error；canvas 目录全量零新增失败（既有基线 AgentCanvasNode 15 / Picker 1）。
+
+### Added — direct-execute 收尾四件：占位画面、库素材人解析、变体渲染计划、纯字幕 E2E 验收（C'→A→F→B→D→E 顺序执行）
+
+- **C'（契约现状）**：核实前端对 `DirectExecuteRenderResponse` **零消费**（`total_duration_seconds` 命中全是 storyboard 文档 schema 撞名）——无断引用可修；`check:agent-canvas-contract` 对导出 OpenAPI 通过（182 paths）
+- **A（占位画面落地）**：编译层把 `needs_placeholder_video` 打进 timeline.metadata；`V2FinalCompositionRenderer` 据此在纯字幕片缺画面源时**自动生成纯色占位视频**（ffmpeg color 源、跟随 toolchain 编码器、落在渲染产物目录）并作为 enabled video clip 参与合成——不再 `composition_input_missing` 硬拒。无标记时维持原约束。产物溯源用 `__placeholder_video__` 哨兵（不伪造素材身份）
+- **F（验收钉死）**：样例构建器新增 `sample_caption_only.mp4`（全镜头纯屏上文字，feasible）；E2E 运行器新增「7.5 渲染验收」步——编译走 HTTP、渲染走进程内剪辑域渲染器（工作流桥接归 R3），成片 + 占位片落盘并探针断言（720×1280、时长≈时间线）。LLM 额度耗尽（429）时拆解步**显式降级**为样例地面真值 fixture（报告标注），链路其余部分仍被行使
+- **B v1（库素材人解析）**：render 响应新增 `unresolved_assets`（待解析 clip 的意图/hint/时长）；新端点 `/replica/blueprint/direct-execute/resolve-library`——纯函数 `resolve_library_clip` 把指定 clip 绑到人工挑选的真实库素材并启用（防误覆盖：只接受哨兵且未启用的 clip），时长口径与 validator 对齐。自动匹配（搜索/标签/置信度）留 v2——匹配语义未定前不做猜测式解析
+- **D（变体 × 直出汇合点）**：`POST /replica/blueprint/variant-render-plans`——Top-N 风格变体各编译一份渲染计划（风格替换进 style 槽位重新过门+编译）；**只返回计划，前 `render_representatives`（默认 2）个代表携带时间线**，其余置 null——低成本审片原则，不为 N 个变体全渲染
+- **修复（E2E 抓到的第四个真实缺陷）**：`ck_agent_canvas_nodes_type` CHECK 约束漏 `replica`——replica 节点在任何库上都建不出来（此前全靠 mock 测试未暴露）。迁移 `20260927_01_add_replica_node_type`（batch 重建约束，仿 20260919_01 voice-cast 先例）+ ORM 模型同步
+- **测试**：后端 +19（render media 2：纯字幕端到端出片/无标记维持拒绝；B v1 4：意图透出/回填启用/防误覆盖/未知恒等；D 2；既有补齐）；replica 全套 **147 passed**；ruff 0 error
+- **E2E 终态**：11 步全通（上传→拆解[fixture 降级显式标注]→蓝图→导出→手改导入→变体→直出门→**渲染验收成片**→建项目/节点→手写文档导入→实例化绑定/指针校验），产物落 `e2e_output/replica_e2e/runs/`
+
 ### Added — v0.2 接手会话：两项未完成作业落地（单句重合成 + 跨会话保留集）
 
 - **单句重合成端点**：`POST /scene-3d/voice-cast-resynth-line`（`VoiceCastResynthLineRequest`）。读节点存储的 `dialogue_lines`，对目标句重做（`emotion_override` / `force_remake`），其余句沿用内容寻址缓存，拼接 take 后发布新资产版本，更新节点 `dialogue_line_manifest` / `regenerated_line_ids` / `reused_line_ids`。这是交接文档「二.3」要求的一步："读节点上已存的分句 → 只合成目标句 → 重新拼接" 的 API 面

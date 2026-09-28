@@ -26,7 +26,6 @@ from app.schemas.agent_canvas_ad_media import ReplicaBlueprintContentV2
 from app.schemas.workflow_v2 import (
     WorkflowV2Timeline,
     WorkflowV2TimelineClip,
-    WorkflowV2TimelineRenderSettings,
     WorkflowV2TimelineSubtitleStyle,
     WorkflowV2TimelineTrack,
 )
@@ -67,6 +66,8 @@ class DirectExecuteRenderPlan:
     rejected: tuple[str, ...]
     needs_placeholder_video: bool
     subtitle_cue_count: int
+    #: 库素材待解析意图（B v1：透出给调用方人工解析；自动匹配留 v2）
+    unresolved: tuple[dict, ...] = ()
 
 
 def plan_direct_execute_render(
@@ -85,6 +86,7 @@ def plan_direct_execute_render(
             rejected=gate.blockers + gate.generation_steps,
             needs_placeholder_video=False,
             subtitle_cue_count=0,
+            unresolved=(),
         )
 
     total = _content_duration(blueprint)
@@ -135,11 +137,15 @@ def plan_direct_execute_render(
             "origin": "replica-direct-execute",
             "source_video_asset_id": blueprint.source_video_asset_id,
             "replica_goal": blueprint.replica_goal,
+            # 本编译层只产出 subtitle/audio 轨——纯字幕片没有画面源，
+            # 此标记随时间线进入剪辑域渲染器：补一个占位 video clip
+            # （纯色源），让 feasible 蓝图能走完渲染（ADR 0010 R1 验收）。
+            "needs_placeholder_video": True,
         },
     )
     # 渲染器硬约束：canonical timeline 需至少一个 enabled video clip。
-    # 纯字幕片没有画面源——此处如实标注，由调用方决定是否补占位 video clip
-    # （剪辑域决策，不在此层造假画面）。
+    # 纯字幕片没有画面源——needs_placeholder_video 随时间线元数据传递，
+    # 渲染器据此补占位 clip；本层保持诚实（不造假画面）。
     has_video = any(c.clip_type == "video" for c in timeline.clips)
     return DirectExecuteRenderPlan(
         feasible=True,
@@ -147,6 +153,7 @@ def plan_direct_execute_render(
         rejected=(),
         needs_placeholder_video=not has_video,
         subtitle_cue_count=len(cue_clips),
+        unresolved=unresolved_intents_of(timeline),
     )
 
 
@@ -323,6 +330,9 @@ def _bgm_clips(
                 "label": "bgm-library-intent",
                 "library_hint": blueprint.systems_music,
                 "library_resolved": False,
+                # 剪辑域音频图按 role 识别 BGM（bgm_only 模式只混 BGM）——
+                # 不打标记的"音乐意图"在成片里哑掉，等于替用户做了一个静音决定
+                "role": "bgm",
             },
         )
     ]
@@ -348,9 +358,67 @@ def _sfx_clips(
                 "label": "sfx-library-intent",
                 "library_hint": list(blueprint.systems_sfx),
                 "library_resolved": False,
+                "role": "sfx",
             },
         )
     ]
+
+
+def unresolved_intents_of(timeline: WorkflowV2Timeline) -> tuple[dict, ...]:
+    """收集待人工解析的库素材意图（B v1：人解析；自动匹配 v2）。"""
+    return tuple(
+        {
+            "clip_id": clip.clip_id,
+            "track_id": clip.track_id,
+            "intent": clip.text,
+            "library_hint": clip.metadata.get("library_hint"),
+            "duration_seconds": clip.duration,
+        }
+        for clip in timeline.clips
+        if not clip.enabled and clip.source_asset_id == UNRESOLVED_LIBRARY_ASSET_ID
+    )
+
+
+def resolve_library_clip(
+    timeline: WorkflowV2Timeline,
+    *,
+    clip_id: str,
+    asset_id: str,
+    version_id: str,
+) -> WorkflowV2Timeline:
+    """人工解析回填：把一个待解析 clip 绑到真实库素材并启用（纯函数）。
+
+    未命中 clip_id 时原样返回；已启用或非哨兵 clip 不接受回填（防误覆盖）。
+    """
+    updated: list[WorkflowV2TimelineClip] = []
+    changed = False
+    for clip in timeline.clips:
+        if clip.clip_id != clip_id:
+            updated.append(clip)
+            continue
+        if clip.enabled or clip.source_asset_id != UNRESOLVED_LIBRARY_ASSET_ID:
+            updated.append(clip)
+            continue
+        changed = True
+        updated.append(
+            clip.model_copy(
+                update={
+                    "source_asset_id": asset_id,
+                    "source_version_id": version_id,
+                    "enabled": True,
+                    "metadata": {**clip.metadata, "library_resolved": True},
+                }
+            )
+        )
+    if not changed:
+        return timeline
+    # 启用可能改变 enabled 末端，时长口径与 validator 对齐
+    return timeline.model_copy(
+        update={
+            "clips": updated,
+            "duration_seconds": _enabled_content_end(updated),
+        }
+    )
 
 
 def _empty_timeline(blueprint: ReplicaBlueprintContentV2) -> WorkflowV2Timeline:

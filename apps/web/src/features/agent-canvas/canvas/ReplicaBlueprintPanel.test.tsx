@@ -196,8 +196,103 @@ describe("ReplicaBlueprintPanel", () => {
   });
 });
 
-describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {
+describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出)", () => {
   function openSourceTab() {
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("源码 .adreplica"));
+  }
+
+  function stubBridgeAndRender(
+    bridge: Record<string, unknown>,
+    renderState: Record<string, unknown>,
+  ) {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/final-composition/renders/")) {
+        return { status: 200, json: async () => renderState };
+      }
+      return { status: 200, json: async () => bridge };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("saves edits first, starts the bridge render, polls to a previewable video", async () => {
+    const fetchMock = stubBridgeAndRender(
+      {
+        success: true,
+        feasible: true,
+        render_id: "render_bridge01",
+        status: "queued",
+        timeline_id: "replica-direct-execute-1",
+        timeline_version: 4,
+        previous_timeline_version: 3,
+        subtitle_cue_count: 1,
+        needs_placeholder_video: true,
+        dropped_unresolved_clip_ids: ["bgm_system", "sfx_system"],
+      },
+      {
+        status: "completed",
+        progress_percent: 100,
+        output_url: "https://cdn.example/final-replica.mp4",
+      },
+    );
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    // 1) 发车前先落盘（节点是真相源，不含未保存编辑）
+    await waitFor(() => expect(patchNode).toHaveBeenCalledWith("wf-1", "node_replica", expect.anything()));
+    // 2) 桥端点：workflow_id + 生效蓝图
+    const [bridgeUrl, bridgeInit] = (fetchMock as unknown as {
+      mock: { calls: [string, RequestInit][] };
+    }).mock.calls[0];
+    expect(bridgeUrl).toBe("/api/v1/replica/blueprint/direct-execute/render");
+    const bridgeBody = JSON.parse(bridgeInit.body as string);
+    expect(bridgeBody.workflow_id).toBe("wf-1");
+    expect(bridgeBody.blueprint.shots.length).toBeGreaterThan(0);
+    // 3) 轮询 v2 渲染状态端点
+    await waitFor(() => {
+      const urls = (fetchMock as unknown as { mock: { calls: [string][] } }).mock.calls.map((c) => c[0]);
+      expect(
+        urls.some((u) =>
+          String(u).includes("/api/v2/workflows/wf-1/final-composition/renders/render_bridge01"),
+        ),
+      ).toBe(true);
+    });
+    // 4) 成片预览 + 诚实备注（替换了哪版时间线 / 哪些库素材未计入）
+    await waitFor(() => expect(screen.getByText(/成片已产出/)).toBeTruthy());
+    const video = document.querySelector("video");
+    expect(video?.getAttribute("src")).toBe("https://cdn.example/final-replica.mp4");
+    expect(screen.getByText(/已替换工作流此前的 final-composition 时间线（版本 3 → 4）/)).toBeTruthy();
+    expect(screen.getByText(/库素材未解析，未计入本次直出：bgm_system、sfx_system/)).toBeTruthy();
+  });
+
+  it("surfaces the feasibility gate blockers instead of rendering", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 422,
+        json: async () => ({
+          detail: {
+            error: "Blueprint is not direct-execute feasible.",
+            error_type: "direct_execute_not_feasible",
+            rejected: ["shot_2 有动作镜头，需生成", "voice 需 TTS 配音"],
+          },
+        }),
+      }),
+    );
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    await waitFor(() => expect(screen.getByText(/不能零模型费直出/)).toBeTruthy());
+    expect(screen.getByText(/shot_2 有动作镜头，需生成/)).toBeTruthy();
+    expect(screen.getByText(/voice 需 TTS 配音/)).toBeTruthy();
+    expect(screen.getByText(/可改用/)).toBeTruthy();
+  });
+});
+
+describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {  function openSourceTab() {
     const node = replicaNode();
     render(<ReplicaBlueprintPanel node={node} />);
     fireEvent.click(screen.getByText("源码 .adreplica"));

@@ -159,6 +159,7 @@ TeardownResponse{report, frame_analyses, video_metadata}
 - **链接下载**：`/replica/ingest-link`——yt-dlp 下载后走**与本地上传同一套校验/存储**（≤60s/抽帧/asset_id），链接不是旁路；四条结构化降级（ytdlp_missing / download_failed / invalid_url / invalid_download_*）；前端拉片入口加链接行（无上传可用）
 - **direct-execute 可行性门**：`/replica/blueprint/direct-execute-plan`——确定性分类零模型费环节（纯屏上文字镜头/音效/音乐库/剪辑）与必须生成环节（动作镜头/TTS/已应用主体），`feasible` 门 + 成本清单喂给既有工作流。**边界**：直出渲染器属剪辑域（ADR 0008），不建第二执行链
 - **测试**：后端 +31、前端 +4；replica 全套 110 passed
+- **direct-execute 收尾四件（同日追加，C'→A→F→B→D 顺序）**：占位画面（needs_placeholder_video → 渲染器自动补纯色 clip，`__placeholder_video__` 溯源）；纯字幕样片 `sample_caption_only.mp4` + E2E「7.5 渲染验收」步（成片落盘，LLM 429 时拆解显式降级为地面真值 fixture）；库素材人解析（render 响应 `unresolved_assets` + `/blueprint/direct-execute/resolve-library` 回填端点，自动匹配 v2）；变体重编译计划端点（`/blueprint/variant-render-plans`，前 2 个代表携带时间线）。E2E 抓到并修复第四个真实缺陷：`ck_agent_canvas_nodes_type` 漏 replica（迁移 20260927_01）。E2E 11 步全通，replica 全套 147 passed
 - **源码 tab 增强 + ADR 0010**（同日追加）：`ReplicaSourceEditor.tsx`（四类词汇表着色 underlay 编辑器 + 行内锚点击）、锚点行「📍 源码定位」反向跳转；direct-execute 渲染器归属剪辑域的决策与分期见 [ADR 0010](../adr/0010-direct-execute-renderer-in-editing-domain.md)
 
 ## 11. 已知限制与后续迭代（对齐调研档 P2/P3）
@@ -170,10 +171,49 @@ TeardownResponse{report, frame_analyses, video_metadata}
 | P2 | 实例化扩展 | **已交付（见 §10）**：绑定自动创建 + 指针写回；storyboard/image 节点组由既有生成流承接 |
 | P2 | 风格混搭变体引擎 | **已交付（见 §10）**：确定性风格导演 + 单风格应用；多风格一键混搭应用待"多风格并行激活"改造（调研 §5 风险 4） |
 | P3 | 参考片链接下载 | **已交付（见 §10）**；yt-dlp 未安装时显式降级提示 |
-| P3 | direct-execute 快车道 | **可行性门已交付（见 §10）**；渲染器归属与接口已决策——[ADR 0010](../adr/0010-direct-execute-renderer-in-editing-domain.md)（Proposed，待剪辑域确认排期） |
+| P3 | direct-execute 快车道 | **R1+R3 已交付（见 §10 与 §13）**：可行性门 → 编译 → 渲染桥（`/replica/blueprint/direct-execute/render` 写进工作流 final 时间线并复用剪辑域 `start_render`）→ 工作台「⚡ 零模型费直出」入口 + 轮询 + 成片预览；ADR 0010 Partially Accepted——R2（MG 组件）仍待剪辑域排期 |
+| P3 | R2 MG 组件直出 | 未启动：`screen_overlay`/MG 类组件的编译目标与素材来源未定（ADR 0010 R2，待剪辑域排期） |
+| P2 | karaoke cue 模型 / narrative token 层 / `.adrecipe` | 未启动：hypit 差距分析（`replica-hypit-gap-analysis.md`）的 P1 主项（token 层）与 P2（caption 语义/可见时间分离、recipes 维度表）——按完成度研究（`replica-completion-research.md`）优先级排在 R3 之后 |
 
 ## 12. 测试与验证
 
 - 后端：`tests/test_replica_teardown.py` **15 passed**（LLM 边界整体 monkeypatch，无网络/无 ffmpeg 依赖）；`app.api.v1.router` 导入通过；全量套件 1738 passed（5 个失败为沙箱预存环境问题：缺 torch/ffmpeg，与本次无关）；ruff 默认规则集（E4/E7/E9/F）0 error
 - 前端：`ReplicaTeardown.test.tsx` **5 passed**；`tsc --noEmit` 0 error；eslint 0 error
 - 前端画布目录全量：622 passed / 16 failed（失败集中于工作树在途改动 `AgentCanvasNode*`，与本次无关）
+
+## 13. 已交付：R3 渲染桥 + 工作台直出入口 + G7 音频渲染测试（2026-09-28）
+
+**闭环**：复刻蓝图（replica 节点）→ 工作台「⚡ 零模型费直出」→ 可行性门 → 编译
+→ 写进工作流 final-composition 时间线 → 复用剪辑域 `start_render` 耐久渲染 →
+轮询 → 成片预览。此前"后端编译→渲染→占位→解析全通"但用户无入口、渲染只是
+进程内验收（完成度研究 G1）；本节把最后一公里接上。
+
+- **渲染桥**（`services/replica/direct_execute_bridge.py`，纯编排、服务注入）：
+  门 → 编译 → 可选 `library_resolutions` 回填 → **剥未解析哨兵 clip**（哨兵不是
+  真实资产，写进 v2 时间线会被 `_validate_clip_source` 404 拒；被剥 clip id 随
+  响应透出）→ `save_timeline`（`expected_version` 取自当前时间线）→ `start_render`。
+  **不建第二执行链**（ADR 0010）。
+- **端点**：`POST /replica/blueprint/direct-execute/render`——非可行返回 422 +
+  `rejected` 缺失清单（不渲染）；时间线服务错误按 v2 约定映射（code/message）；
+  响应透出 `previous_timeline_version`（写盘替换用户此前的 final 时间线，不隐瞒）。
+- **前端**：`ReplicaBlueprintPanel` 源码 tab 顶部直出区——发起前先落盘（节点是
+  真相源）；409/422 拒绝清单逐条展示；轮询 `/api/v2/workflows/{id}/final-
+  composition/renders/{render_id}`（卸载停、~5 分钟超时明确失败）；成片 `<video>`
+  预览；替换版本与未解析库素材两件事以备注说出口。
+- **G7（抓到真 bug）**：补 `test_resolved_bgm_renders_real_audio_into_final_video`
+  （真实音频资产 → resolve-library → 渲染 → 断言成片有音轨；无 ffmpeg 环境 skip）。
+  静态核查该路径时发现：剪辑域 `build_audio_filter_graph` 按 `metadata.role`
+  识别 BGM，而编译层的 BGM/SFX 意图 clip 没打 role——bgm_only 模式下 BGM 会被
+  音频图静默跳过（"启用 BGM"只在文本上成立）。已修编译层（`role: bgm/sfx`），
+  并补两条常驻守护：role 标记断言 + 音频图集成断言（后者不依赖 ffmpeg，处处可跑）。
+- **测试**：后端 +14（桥 11 含端点契约 5、render role 1、音频图 1、media 1）；
+  replica 全套 **146 collected**（本机无 ffmpeg：140 passed / 6 skipped，skip 全为
+  media 与 transcribe 的 ffmpeg 依赖项；有 ffmpeg 的机器上全跑）；  `ruff`（E4/E7/E9/F）全绿；`check:agent-canvas-contract` 对导出 OpenAPI 通过
+  （185 paths）；全量后端 1968 passed（4 失败 = depth-image 既有基线，零新增）。
+  前端 +2（桥端点请求体/成片预览/门拒绝清单）；`ReplicaBlueprintPanel` 17 passed；
+  tsc/eslint 0 error；canvas 目录全量零新增失败（既有基线 AgentCanvasNode 15 /
+  Picker 1）。
+- **E2E 跟进（未做，诚实记录）**：`replica_e2e_run.py` 尚未加"渲染桥"步（HTTP 调
+  `/replica/blueprint/direct-execute/render` → 断言 render_id → 轮询到终态）。本
+  增量开发环境无 ffmpeg/后端服务/LLM 额度，按"未跑过不写已验证"的纪律留到完整
+  栈机器上补；端点逻辑已由 11 条单测（含 dependency_overrides 契约测试）覆盖。

@@ -10,8 +10,6 @@ no IO, no LLM, no HTTP.
 
 from __future__ import annotations
 
-import pytest
-
 from app.schemas.agent_canvas_ad_media import (
     ReplicaAnchorEventV2,
     ReplicaBeatV2,
@@ -21,6 +19,7 @@ from app.schemas.agent_canvas_ad_media import (
 )
 from app.schemas.workflow_v2 import WorkflowV2Timeline
 from app.services.replica.direct_execute import DirectExecutePlan, plan_direct_execute
+from app.services.replica import direct_execute_render as de
 from app.services.replica.direct_execute_render import (
     BGM_TRACK_ID,
     SFX_TRACK_ID,
@@ -385,3 +384,152 @@ def test_blueprint_with_generation_slot_is_non_feasible() -> None:
     plan = plan_direct_execute_render(blueprint, gate)
     assert plan.feasible is False
     assert plan.timeline.clips == []
+
+
+# ---------------------------------------------------------------------------
+# B v1：库素材待解析意图透出 + 人工解析回填
+# ---------------------------------------------------------------------------
+
+
+def test_render_plan_exposes_unresolved_library_intents() -> None:
+    blueprint = _blueprint(beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+                           shots=[ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=3.0,
+                                                on_screen_text="HALF PRICE SALE")],
+                           systems_music="促销电子", systems_sfx=["whoosh"])
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+    unresolved = plan.unresolved
+    kinds = {u["clip_id"].split("_")[0] for u in unresolved}
+    assert kinds == {"bgm", "sfx"}  # 两个意图 clip 都待解析
+    for entry in unresolved:
+        assert entry["duration_seconds"] > 0
+        assert entry["library_hint"]
+        assert entry["intent"]
+
+
+def test_resolve_library_clip_fills_and_enables() -> None:
+    blueprint = _blueprint(beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+                           shots=[ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=3.0,
+                                                on_screen_text="HALF PRICE SALE")],
+                           systems_music="促销电子", systems_sfx=["whoosh"])
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+    timeline = plan.timeline
+
+    resolved = de.resolve_library_clip(
+        timeline,
+        clip_id="bgm_system",
+        asset_id="asset_bgm_1",
+        version_id="ver_bgm_1",
+    )
+    clip = next(c for c in resolved.clips if c.clip_id == "bgm_system")
+    assert clip.enabled is True
+    assert clip.source_asset_id == "asset_bgm_1"
+    assert clip.source_version_id == "ver_bgm_1"
+    assert clip.metadata["library_resolved"] is True
+    # 纯函数：原时间线不变
+    original = next(c for c in timeline.clips if c.clip_id == "bgm_system")
+    assert original.enabled is False
+    # 解析后的意图不再出现在待解析清单
+    assert all(u["clip_id"] != "bgm_system" for u in de.unresolved_intents_of(resolved))
+
+
+def test_resolve_library_clip_rejects_non_sentinel() -> None:
+    """已启用/非哨兵 clip 不接受回填（防误覆盖）。"""
+    blueprint = _blueprint(beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+                           shots=[ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=3.0,
+                                                on_screen_text="HALF PRICE SALE")],
+                           systems_music="促销电子", systems_sfx=["whoosh"])
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+    timeline = plan.timeline
+    subtitle = next(c for c in timeline.clips if c.clip_type == "subtitle")
+    unchanged = de.resolve_library_clip(
+        timeline, clip_id=subtitle.clip_id, asset_id="a", version_id="v"
+    )
+    assert unchanged is timeline  # 原样返回
+
+
+def test_resolve_unknown_clip_is_identity() -> None:
+    blueprint = _blueprint(beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+                           shots=[ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=3.0,
+                                                on_screen_text="HALF PRICE SALE")],
+                           systems_music="促销电子", systems_sfx=["whoosh"])
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+    assert (
+        de.resolve_library_clip(
+            plan.timeline, clip_id="nope", asset_id="a", version_id="v"
+        )
+        is plan.timeline
+    )
+
+
+def test_library_intent_clips_carry_audio_roles() -> None:
+    """BGM/SFX 意图 clip 必须带 role 标记（剪辑域音频图按 role 识别 BGM）。
+
+    G7 媒介测试静态核查抓到的真 bug：bgm_only 模式下不带 role="bgm" 的
+    音频 clip 会被 build_audio_filter_graph 跳过——"启用 BGM"只在文本上
+    成立，成片里哑掉。锁住标记，防回归。
+    """
+    blueprint = _blueprint(beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+                           shots=[ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=3.0,
+                                                on_screen_text="HALF PRICE SALE")],
+                           systems_music="促销电子", systems_sfx=["whoosh"])
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+
+    by_id = {c.clip_id: c for c in plan.timeline.clips}
+    assert by_id["bgm_system"].metadata["role"] == "bgm"
+    assert by_id["sfx_system"].metadata["role"] == "sfx"
+    # role 在 resolve 回填后仍然在（回填只换资产身份与启用态）
+    resolved = de.resolve_library_clip(
+        plan.timeline, clip_id="bgm_system", asset_id="a1", version_id="v1"
+    )
+    bgm = next(c for c in resolved.clips if c.clip_id == "bgm_system")
+    assert bgm.metadata["role"] == "bgm"
+    assert bgm.enabled is True
+
+
+def test_resolved_bgm_enters_editing_domain_audio_graph() -> None:
+    """resolve 后的 BGM 必须进入剪辑域音频图（bgm_only 混合，none 静音）。
+
+    G7 媒介测试静态核查抓到的真 bug 的廉价守护：不需要 ffmpeg——直接对
+    build_audio_filter_graph 断言 role 标记的语义效果。混音标签为空 = 成片
+    没有音轨，"启用 BGM" 就只是文本上的谎言。
+    """
+    from app.services.v2_final_composition_filters import build_audio_filter_graph
+    from app.services.v2_final_composition_renderer import V2ResolvedTimelineClip
+
+    blueprint = _blueprint(beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+                           shots=[ReplicaShotV2(index=1, start_seconds=0.0, end_seconds=3.0,
+                                                on_screen_text="HALF PRICE SALE")],
+                           systems_music="促销电子", systems_sfx=["whoosh"])
+    gate = plan_direct_execute(blueprint)
+    plan = de.plan_direct_execute_render(blueprint, gate)
+    timeline = de.resolve_library_clip(
+        plan.timeline, clip_id="bgm_system", asset_id="asset_bgm_1", version_id="ver_bgm_1"
+    )
+
+    resolved_clips = [
+        V2ResolvedTimelineClip(
+            input_index=index,
+            clip=clip,
+            track_order=0,
+            source_has_audio=clip.clip_type == "audio",
+            source_duration_seconds=clip.duration,
+        )
+        for index, clip in enumerate(timeline.clips)
+        if clip.enabled
+    ]
+
+    mixed = build_audio_filter_graph(
+        resolved_clips, timeline_duration_seconds=timeline.duration_seconds, audio_mode="bgm_only"
+    )
+    assert mixed.audio_label is not None
+    assert "amix" in mixed.filter_complex
+
+    silent = build_audio_filter_graph(
+        resolved_clips, timeline_duration_seconds=timeline.duration_seconds, audio_mode="none"
+    )
+    assert silent.audio_label is None

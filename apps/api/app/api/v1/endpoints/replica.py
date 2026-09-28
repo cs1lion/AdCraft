@@ -17,11 +17,12 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from app.core.config import Settings, get_settings
 from app.services.replica.adreplica import (
     AdReplicaParseError,
     adreplica_filename,
@@ -44,6 +45,13 @@ from app.services.replica.teardown import (
 from app.schemas.agent_canvas import CanvasNodeCreateRequestV2
 from app.services.agent_canvas_nodes import AgentCanvasNodeService
 from app.services.scene3d.reference_upload import get_reference_video_path
+from app.services.v2_final_composition_render_service import (
+    V2FinalCompositionRenderService,
+)
+from app.services.v2_final_composition_timeline import (
+    V2FinalCompositionTimelineError,
+    V2FinalCompositionTimelineService,
+)
 
 router = APIRouter(prefix="/replica", tags=["replica"])
 
@@ -138,6 +146,28 @@ class DirectExecuteResponse(BaseModel):
     generation_steps: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class VariantRenderPlansRequest(BaseModel):
+    """变体 → 重编译渲染计划（低成本审片：只出前 N 个代表的计划，不渲染）。"""
+
+    blueprint: dict[str, Any]
+    n: int = Field(default=5, ge=1, le=12)
+    render_representatives: int = Field(default=2, ge=1, le=4)
+
+
+class VariantRenderPlansResponse(BaseModel):
+    success: bool
+    variants: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DirectExecuteLibraryResolveRequest(BaseModel):
+    """人工解析回填请求（B v1）。"""
+
+    timeline: dict[str, Any]
+    clip_id: str = Field(min_length=1)
+    asset_id: str = Field(min_length=1)
+    version_id: str = Field(min_length=1)
+
+
 class DirectExecuteRenderRequest(BaseModel):
     """复刻蓝图 + 可行性判定结果 → 零模型费渲染计划（ADR 0010 R1）。"""
 
@@ -153,6 +183,38 @@ class DirectExecuteRenderResponse(BaseModel):
     # 渲染器要求至少一个 enabled video clip；纯字幕片此处诚实标注
     needs_placeholder_video: bool = False
     subtitle_cue_count: int = 0
+    rejected: list[str] = Field(default_factory=list)
+    # B v1：库素材待解析意图（人解析回填；自动匹配留 v2）
+    unresolved_assets: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DirectExecuteRenderBridgeRequest(BaseModel):
+    """复刻蓝图 → 工作流 final 时间线 → 耐久渲染（R3 渲染桥）。"""
+
+    workflow_id: str = Field(min_length=1)
+    blueprint: dict[str, Any]
+    # 可选：人工库素材解析（clip_id → 真实 asset/version；resolve-library 的产物）
+    library_resolutions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DirectExecuteRenderBridgeResponse(BaseModel):
+    success: bool
+    feasible: bool = False
+    workflow_id: str = ""
+    render_id: str = ""
+    status: str = ""
+    timeline_id: str = ""
+    timeline_version: int = 0
+    # 诚实边界：写盘替换了工作流此前的 final 时间线（版本号透出）
+    previous_timeline_version: int = 0
+    subtitle_cue_count: int = 0
+    needs_placeholder_video: bool = False
+    # B v1：仍未解析的库素材意图（未计入本次渲染）
+    unresolved_assets: list[dict[str, Any]] = Field(default_factory=list)
+    # 写盘前剥掉的未解析哨兵 clip（不是真实资产，进了 v2 时间线会被 404 拒）
+    dropped_unresolved_clip_ids: list[str] = Field(default_factory=list)
+    events_cursor: int = 0
+    output_url: str | None = None
     rejected: list[str] = Field(default_factory=list)
 
 
@@ -475,6 +537,235 @@ async def plan_blueprint_direct_execute_render(
         needs_placeholder_video=render_plan.needs_placeholder_video,
         subtitle_cue_count=render_plan.subtitle_cue_count,
         rejected=list(render_plan.rejected),
+        unresolved_assets=[dict(u) for u in render_plan.unresolved],
+    )
+
+
+@router.post("/blueprint/direct-execute/resolve-library")
+async def resolve_direct_execute_library(
+    request: DirectExecuteLibraryResolveRequest,
+) -> DirectExecuteRenderResponse:
+    """人工解析回填：把一个待解析 clip 绑到真实库素材并启用（B v1）。
+
+    纯转换：不查库、不猜匹配——匹配语义（搜索/标签/置信度）留 v2；当前
+    由调用方（前端从资产库挑选）给出确定的 asset/version。未命中 clip 或
+    目标不可回填时原样返回，不静默改写。
+    """
+    from app.schemas.workflow_v2 import WorkflowV2Timeline
+    from app.services.replica.direct_execute_render import (
+        resolve_library_clip,
+        unresolved_intents_of,
+    )
+
+    try:
+        timeline = WorkflowV2Timeline.model_validate(request.timeline)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid timeline: {exc}")
+    updated = resolve_library_clip(
+        timeline,
+        clip_id=request.clip_id,
+        asset_id=request.asset_id,
+        version_id=request.version_id,
+    )
+    return DirectExecuteRenderResponse(
+        success=True,
+        feasible=True,
+        timeline=updated.model_dump(),
+        needs_placeholder_video=False,
+        subtitle_cue_count=sum(
+            1 for c in updated.clips if c.clip_type == "subtitle" and c.enabled
+        ),
+        rejected=[],
+        unresolved_assets=[dict(u) for u in unresolved_intents_of(updated)],
+    )
+
+
+@router.post("/blueprint/variant-render-plans", response_model=VariantRenderPlansResponse)
+async def plan_blueprint_variant_render_plans(
+    request: VariantRenderPlansRequest,
+) -> VariantRenderPlansResponse:
+    """风格变体 → 重编译渲染计划（组件化替换 × direct-execute 的汇合点）。
+
+    对 Top-N 风格变体各编译一份 direct-execute 渲染计划（纯转换，零模型
+    费）：风格替换进 style 槽位后重新走可行性门与编译层。**只返回计划不
+    渲染**——低成本审片原则下由前端挑 1-2 个代表真正出片。
+    """
+    from app.schemas.agent_canvas_ad_media import ReplicaBlueprintContentV2
+    from app.services.replica.direct_execute import plan_direct_execute
+    from app.services.replica.direct_execute_render import plan_direct_execute_render
+    from app.services.replica.variants import StyleVariantError, plan_style_variants
+
+    try:
+        blueprint = ReplicaBlueprintContentV2.model_validate(request.blueprint)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid replica blueprint content: {exc}",
+        )
+    try:
+        variants = plan_style_variants(blueprint, n=request.n)
+    except StyleVariantError as exc:
+        raise HTTPException(status_code=422, detail={"error": str(exc)})
+
+    gate = plan_direct_execute(blueprint)
+    variants_out: list[dict[str, Any]] = []
+    for index, variant in enumerate(variants):
+        applied = blueprint.model_copy(
+            update={
+                "slots": [
+                    slot.model_copy(
+                        update={
+                            "replace_with": "+".join(variant.skill_ids),
+                            "applied": True,
+                        }
+                    )
+                    if slot.kind == "style"
+                    else slot
+                    for slot in blueprint.slots
+                ]
+            }
+        )
+        render_plan = plan_direct_execute_render(applied, gate)
+        entry = {
+            "variant_id": variant.variant_id,
+            "skill_ids": list(variant.skill_ids),
+            "names": list(variant.names),
+            "score": variant.score,
+            "mixable_applied": variant.mixable_applied,
+            "feasible": render_plan.feasible,
+            "subtitle_cue_count": render_plan.subtitle_cue_count,
+            "needs_placeholder_video": render_plan.needs_placeholder_video,
+            "unresolved_assets": [dict(u) for u in render_plan.unresolved],
+            # 低成本审片：只为前 render_representatives 个代表携带时间线
+            "timeline": (
+                render_plan.timeline.model_dump()
+                if index < request.render_representatives
+                else None
+            ),
+        }
+        variants_out.append(entry)
+    return VariantRenderPlansResponse(success=True, variants=variants_out)
+
+
+# ---------------------------------------------------------------------------
+# direct-execute 渲染桥（R3：把零模型费时间线接进剪辑域耐久渲染）
+# ---------------------------------------------------------------------------
+
+
+def get_replica_final_timeline_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> V2FinalCompositionTimelineService:
+    """Dependency: the workflow final-composition timeline service."""
+    return V2FinalCompositionTimelineService(settings)
+
+
+def get_replica_final_render_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> V2FinalCompositionRenderService:
+    """Dependency: the durable detached final-composition render service."""
+    return V2FinalCompositionRenderService(settings)
+
+
+@router.post("/blueprint/direct-execute/render")
+async def render_blueprint_direct_execute(
+    request: DirectExecuteRenderBridgeRequest,
+    timeline_service: Annotated[
+        V2FinalCompositionTimelineService,
+        Depends(get_replica_final_timeline_service),
+    ],
+    render_service: Annotated[
+        V2FinalCompositionRenderService,
+        Depends(get_replica_final_render_service),
+    ],
+) -> DirectExecuteRenderBridgeResponse:
+    """拉片蓝图 → 一键零模型费直出（ADR 0010 R3 渲染桥）。
+
+    复用剪辑域既有链路，不建第二执行链：
+
+    1. 可行性门 + 编译层 → canonical timeline（零模型费，纯函数）；
+    2. 可选人工库素材解析回填（``library_resolutions``）；
+    3. 写进工作流 final-composition 时间线（乐观锁 ``expected_version``，
+       版本从当前时间线读取——**这会替换用户此前的 final 时间线**，响应
+       透出 ``previous_timeline_version``，不隐瞒）；
+    4. ``start_render`` 发起耐久渲染——前端轮询
+       ``GET /api/v2/workflows/{id}/final-composition/renders/{render_id}``。
+
+    未过可行性门的蓝图返回 422 + ``rejected`` 缺失清单（不渲染）；未解析的
+    库素材哨兵 clip 在写盘前剥掉（进了 v2 时间线会被 404 拒），被剥的
+    clip id 随响应透出——"BGM/SFX 未计入本次直出"必须说得出口。
+    """
+    from app.schemas.agent_canvas_ad_media import ReplicaBlueprintContentV2
+    from app.services.replica.direct_execute_bridge import (
+        ReplicaLibraryResolution,
+        ReplicaRenderNotFeasible,
+        render_replica_blueprint,
+    )
+
+    try:
+        blueprint = ReplicaBlueprintContentV2.model_validate(request.blueprint)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid replica blueprint content: {exc}",
+        )
+
+    resolutions: list[ReplicaLibraryResolution] = []
+    for entry in request.library_resolutions:
+        clip_id = str(entry.get("clip_id") or "").strip()
+        asset_id = str(entry.get("asset_id") or "").strip()
+        version_id = str(entry.get("version_id") or "").strip()
+        if not clip_id or not asset_id or not version_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Each library resolution needs clip_id, asset_id and version_id "
+                    f"(got {entry!r})"
+                ),
+            )
+        resolutions.append(
+            ReplicaLibraryResolution(
+                clip_id=clip_id, asset_id=asset_id, version_id=version_id
+            )
+        )
+
+    try:
+        outcome = render_replica_blueprint(
+            request.workflow_id,
+            blueprint,
+            library_resolutions=tuple(resolutions),
+            timeline_service=timeline_service,
+            render_service=render_service,
+        )
+    except ReplicaRenderNotFeasible as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Blueprint is not direct-execute feasible.",
+                "error_type": "direct_execute_not_feasible",
+                "rejected": list(exc.rejected),
+            },
+        )
+    except V2FinalCompositionTimelineError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        )
+
+    return DirectExecuteRenderBridgeResponse(
+        success=True,
+        feasible=True,
+        workflow_id=outcome.workflow_id,
+        render_id=outcome.render_id,
+        status=outcome.status,
+        timeline_id=outcome.timeline_id,
+        timeline_version=outcome.timeline_version,
+        previous_timeline_version=outcome.previous_timeline_version,
+        subtitle_cue_count=outcome.subtitle_cue_count,
+        needs_placeholder_video=outcome.needs_placeholder_video,
+        unresolved_assets=[dict(entry) for entry in outcome.unresolved_assets],
+        dropped_unresolved_clip_ids=list(outcome.dropped_unresolved_clip_ids),
+        events_cursor=outcome.events_cursor,
+        output_url=outcome.output_url,
     )
 
 

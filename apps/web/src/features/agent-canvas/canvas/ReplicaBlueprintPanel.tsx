@@ -28,6 +28,9 @@ export interface ReplicaBlueprintPanelProps {
 
 type TabKey = "slots" | "anchors" | "shots" | "source";
 
+/** 零模型费直出的前端阶段机（ADR 0010 R3）：idle → starting → polling → 终态。 */
+type RenderPhase = "idle" | "starting" | "polling" | "completed" | "failed";
+
 /** 从节点内容解析蓝图；容忍空/半成品内容（新建节点的默认态）。 */
 function parseBlueprint(node: CanvasNodeV2): ReplicaBlueprintContentV2 {
   const content = (node.structured_content ?? {}) as Partial<ReplicaBlueprintContentV2>;
@@ -205,6 +208,19 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
   const [sourceJumpEventId, setSourceJumpEventId] = useState<string | null>(null);
 
+  // --- 零模型费直出（ADR 0010 R3：渲染桥 → 耐久渲染 → 轮询 → 成片预览）----
+  // 桥端点把编译时间线写进工作流 final 时间线并复用剪辑域 start_render；
+  // 渲染是 detached 的，这里只轮询状态、不持有渲染进程。
+  const [renderPhase, setRenderPhase] = useState<RenderPhase>("idle");
+  const [renderId, setRenderId] = useState<string | null>(null);
+  const [renderProgress, setRenderProgress] = useState<number | null>(null);
+  const [renderVideoUrl, setRenderVideoUrl] = useState<string | null>(null);
+  const [renderFailure, setRenderFailure] = useState<string | null>(null);
+  // 门拒绝的缺失清单（这片子有什么必须生成，不能零模型费直出）
+  const [renderBlockers, setRenderBlockers] = useState<string[]>([]);
+  // 直出的诚实备注（替换了哪版时间线 / 哪些库素材未计入）
+  const [renderNotes, setRenderNotes] = useState<string[]>([]);
+
   // 高亮行滚动到可见（jsdom 无 scrollIntoView，需守卫）
   useEffect(() => {
     if (!highlightedEventId || tab !== "anchors") return;
@@ -295,6 +311,120 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       setSourceBusy(false);
     }
   }, [node, setAgentCanvasWorkflow, sourceText]);
+
+  // --- 零模型费直出（R3 渲染桥）------------------------------------------
+  // 1) 先落盘当前编辑（与"一键生成"同纪律：节点是真相源，不含未保存编辑）；
+  // 2) 桥端点内部跑可行性门——非可行即 422 + rejected 缺失清单，不渲染；
+  // 3) 渲染是 detached 的：拿到 render_id 后轮询 v2 渲染状态端点。
+  const startDirectRender = useCallback(async () => {
+    setRenderPhase("starting");
+    setRenderFailure(null);
+    setRenderBlockers([]);
+    setRenderNotes([]);
+    setRenderVideoUrl(null);
+    setRenderProgress(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const content = buildContent();
+      const patchResponse = await agentCanvasApi.patchAgentCanvasNode(
+        node.workflow_id,
+        node.node_id,
+        { structured_content: content as unknown as Record<string, unknown> },
+      );
+      setAgentCanvasWorkflow(patchResponse.value.workflow);
+
+      const response = await fetch("/api/v1/replica/blueprint/direct-execute/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflow_id: node.workflow_id, blueprint: content }),
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        const detail = body?.detail;
+        const errorType =
+          typeof detail === "object" && detail?.error_type ? String(detail.error_type) : "";
+        if (errorType === "direct_execute_not_feasible") {
+          setRenderBlockers(
+            Array.isArray(detail?.rejected) ? detail.rejected.map((item: unknown) => String(item)) : [],
+          );
+          setRenderPhase("failed");
+          return;
+        }
+        throw new Error(
+          (typeof detail === "object" && detail?.error) ||
+            (typeof detail === "string" && detail) ||
+            `直出失败 (HTTP ${response.status})`,
+        );
+      }
+
+      const notes: string[] = [];
+      if (typeof body.previous_timeline_version === "number" && body.previous_timeline_version > 0) {
+        notes.push(
+          `已替换工作流此前的 final-composition 时间线（版本 ${body.previous_timeline_version} → ${body.timeline_version}）`,
+        );
+      }
+      if (Array.isArray(body.dropped_unresolved_clip_ids) && body.dropped_unresolved_clip_ids.length > 0) {
+        notes.push(
+          `库素材未解析，未计入本次直出：${body.dropped_unresolved_clip_ids.join("、")}`,
+        );
+      }
+      setRenderNotes(notes);
+      setRenderId(String(body.render_id ?? ""));
+      setRenderPhase("polling");
+    } catch (err) {
+      setRenderFailure(err instanceof Error ? err.message : "直出失败");
+      setRenderPhase("failed");
+    }
+  }, [buildContent, node, setAgentCanvasWorkflow]);
+
+  // 轮询渲染状态（组件卸载自动停；超过 ~5 分钟未终态则明确失败，不无限轮）
+  useEffect(() => {
+    if (renderPhase !== "polling" || !renderId) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tick = async () => {
+      attempts += 1;
+      try {
+        const response = await fetch(
+          `/api/v2/workflows/${node.workflow_id}/final-composition/renders/${renderId}`,
+        );
+        const body = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (response.status !== 200 || !body) {
+          setRenderFailure(`渲染状态查询失败 (HTTP ${response.status})`);
+          setRenderPhase("failed");
+          return;
+        }
+        if (typeof body.progress_percent === "number") {
+          setRenderProgress(body.progress_percent);
+        }
+        if (body.status === "completed") {
+          setRenderVideoUrl(typeof body.output_url === "string" ? body.output_url : null);
+          setRenderPhase("completed");
+        } else if (body.status === "failed") {
+          setRenderFailure(body.error_message || body.error_code || "渲染失败");
+          setRenderPhase("failed");
+        } else if (body.status === "cancelled") {
+          setRenderFailure("渲染已取消");
+          setRenderPhase("failed");
+        } else if (attempts >= 150) {
+          setRenderFailure("渲染轮询超时——请到工作流的 final-composition 面板查看渲染状态");
+          setRenderPhase("failed");
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setRenderFailure(err instanceof Error ? err.message : "渲染状态查询失败");
+        setRenderPhase("failed");
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [renderPhase, renderId, node.workflow_id]);
 
   if (!hasBlueprint) {
     return (
@@ -553,6 +683,97 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
 
       {tab === "source" && (
         <div>
+          <div
+            style={{
+              border: "1px solid #3a3a5a",
+              borderRadius: 4,
+              padding: 8,
+              marginBottom: 10,
+            }}
+          >
+            <div style={{ color: "#9df", fontSize: 10, marginBottom: 6, lineHeight: 1.6 }}>
+              ⚡ 零模型费直出（ADR 0010 R3）：纯字幕/音效/配乐/剪辑环节直接出片，
+              不调生成模型。有动作镜头、台词或已应用主体替换的片子会被可行性门
+              拒绝（缺什么会列出来）。直出会替换该工作流当前的 final-composition
+              时间线——面板关闭后渲染仍在工作流内继续。
+            </div>
+            <button
+              onClick={() => void startDirectRender()}
+              disabled={renderPhase === "starting" || renderPhase === "polling"}
+              style={{
+                background:
+                  renderPhase === "starting" || renderPhase === "polling" ? "#2a2a4a" : "#3a5a8a",
+                border: "none",
+                color: renderPhase === "starting" || renderPhase === "polling" ? "#666" : "#fff",
+                padding: "4px 12px",
+                borderRadius: 3,
+                cursor:
+                  renderPhase === "starting" || renderPhase === "polling" ? "default" : "pointer",
+                fontSize: 10,
+              }}
+            >
+              {renderPhase === "starting"
+                ? "⏳ 发起中…"
+                : renderPhase === "polling"
+                  ? "⏳ 渲染中…"
+                  : "⚡ 零模型费直出"}
+            </button>
+            {renderPhase === "polling" && (
+              <div style={{ marginTop: 6, fontSize: 10, color: "#8cf" }}>
+                渲染中…{" "}
+                {renderProgress !== null ? `${Math.round(renderProgress)}%` : "已进入渲染队列"}
+              </div>
+            )}
+            {renderPhase === "completed" && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 10, color: "#4f4", marginBottom: 4 }}>
+                  ✓ 成片已产出（工作流 final-composition 候选）
+                </div>
+                {renderVideoUrl ? (
+                  <video
+                    src={renderVideoUrl}
+                    controls
+                    style={{
+                      width: "100%",
+                      maxWidth: 240,
+                      borderRadius: 3,
+                      background: "#000",
+                    }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 10, color: "#888" }}>
+                    （预览地址未返回——到工作流的 final-composition 面板查看候选）
+                  </div>
+                )}
+              </div>
+            )}
+            {renderPhase === "failed" && (
+              <div style={{ marginTop: 6, fontSize: 10, color: "#f88", lineHeight: 1.6 }}>
+                {renderBlockers.length > 0 ? (
+                  <>
+                    <div>这片子有必须生成的环节，不能零模型费直出：</div>
+                    <ul style={{ margin: "2px 0", paddingLeft: 16 }}>
+                      {renderBlockers.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                    <div style={{ color: "#888" }}>
+                      可改用「⚡ 一键生成复刻工作流」走完整生成流。
+                    </div>
+                  </>
+                ) : (
+                  <div>直出失败：{renderFailure ?? "未知错误"}</div>
+                )}
+              </div>
+            )}
+            {renderNotes.length > 0 && (
+              <div style={{ marginTop: 6, fontSize: 9, color: "#888", lineHeight: 1.6 }}>
+                {renderNotes.map((note) => (
+                  <div key={note}>· {note}</div>
+                ))}
+              </div>
+            )}
+          </div>
           <div style={{ color: "#888", fontSize: 10, marginBottom: 6, lineHeight: 1.6 }}>
             .adreplica = 蓝图的标记语言形态（hypit "文件即真相源"）：导出后可交给
             Agent 或自己手改，再粘贴回来重编译——改几行 = 换槽位/增删锚点。
