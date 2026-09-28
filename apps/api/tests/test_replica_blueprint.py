@@ -590,3 +590,175 @@ def test_adreplica_roundtrip_drops_derived_word_timings() -> None:
     assert all(beat.words == [] for beat in reimported.beats)
     # 台词文本（绑定）不丢
     assert any(beat.line.strip() for beat in reimported.beats)
+
+
+# ---------------------------------------------------------------------------
+# G4 narrative token 层：锚点 binding + 时间投影（hypit P1 主项接线）
+# ---------------------------------------------------------------------------
+
+
+def _token_blueprint():
+    """一条带台词 + 一个词级锚点的蓝图（+ 转录词流由调用方给）。"""
+    from app.schemas.agent_canvas_ad_media import (
+        ReplicaAnchorEventV2,
+        ReplicaBeatV2,
+        ReplicaBlueprintContentV2,
+    )
+
+    return ReplicaBlueprintContentV2(
+        beats=[
+            ReplicaBeatV2(
+                beat_id="b1",
+                role="hook",
+                start_seconds=0.0,
+                end_seconds=3.0,
+                line="别再这样洗脸了",
+            )
+        ],
+        anchor_events=[
+            ReplicaAnchorEventV2(event_id="e1", kind="sfx", beat_id="b1", trigger="这样洗脸"),
+        ],
+    )
+
+
+def test_resolve_word_anchors_records_token_range() -> None:
+    """锚点除词文本+秒数外，还记与帧时间解耦的 token 区间（binding）。"""
+    resolved = bp.resolve_word_anchors(_token_blueprint(), _WORDS)
+
+    event = resolved.anchor_events[0]
+    assert event.word == "这样洗脸"
+    assert (event.word_start_seconds, event.word_end_seconds) == (0.5, 1.4)
+    assert (event.start_token_id, event.end_token_id) == ("b1#2", "b1#5")
+
+
+def test_reproject_anchor_seconds_recovers_from_dirty_times() -> None:
+    """秒数是投影：被改脏后从当前词流重算（binding 不变）。"""
+    resolved = bp.resolve_word_anchors(_token_blueprint(), _WORDS)
+    dirty = resolved.model_copy(
+        update={
+            "anchor_events": [
+                resolved.anchor_events[0].model_copy(
+                    update={"word_start_seconds": 99.0, "word_end_seconds": 100.0}
+                )
+            ]
+        }
+    )
+
+    clean = bp.reproject_anchor_seconds(dirty)
+
+    event = clean.anchor_events[0]
+    assert (event.start_token_id, event.end_token_id) == ("b1#2", "b1#5")
+    assert (event.word_start_seconds, event.word_end_seconds) == (0.5, 1.4)
+    assert event.word == "这样洗脸"
+
+
+def test_binding_survives_redubbing_times_are_reprojected() -> None:
+    """重配音（词流时间整体后移，段落窗随之移动）：binding 存活、秒数重算。"""
+    from app.services.replica import narrative as nar
+
+    resolved = bp.resolve_word_anchors(_token_blueprint(), _WORDS)
+    shifted = [
+        {**word, "start_seconds": word["start_seconds"] + 10.0,
+         "end_seconds": word["end_seconds"] + 10.0}
+        for word in _WORDS
+    ]
+    rewindowed = resolved.model_copy(
+        update={
+            "beats": [
+                beat.model_copy(update={"start_seconds": 10.0, "end_seconds": 13.0})
+                for beat in resolved.beats
+            ]
+        }
+    )
+
+    re_resolved = bp.resolve_word_anchors(rewindowed, shifted)
+
+    event = re_resolved.anchor_events[0]
+    # binding 逐字节不变（授权序与帧时间解耦）
+    assert (event.start_token_id, event.end_token_id) == ("b1#2", "b1#5")
+    # 秒数是新词流的投影
+    assert (event.word_start_seconds, event.word_end_seconds) == (10.5, 11.4)
+    # 授权序本身也不变（同一条 line）
+    assert len(nar.narrative_from_blueprint(re_resolved).tokens) == 7
+
+
+def test_reproject_clears_binding_when_projection_is_impossible() -> None:
+    """投不出时间（无转录）→ 清除词级绑定退回段落级，不保留过期秒数。"""
+    from app.schemas.agent_canvas_ad_media import (
+        ReplicaBeatV2,
+    )
+
+    resolved = bp.resolve_word_anchors(_token_blueprint(), _WORDS)
+    without_words = resolved.model_copy(
+        update={
+            "beats": [
+                ReplicaBeatV2(
+                    beat_id="b1", role="hook", start_seconds=0.0, end_seconds=3.0,
+                    line="别再这样洗脸了",
+                )
+            ]
+        }
+    )
+
+    clean = bp.reproject_anchor_seconds(without_words)
+
+    event = clean.anchor_events[0]
+    assert event.word == ""
+    assert (event.word_start_seconds, event.word_end_seconds) == (0.0, 0.0)
+
+
+def test_reproject_keeps_legacy_anchors_without_token_range() -> None:
+    """无 token 区间的旧锚点（旧节点内容）原样保留——向后兼容。"""
+    from app.schemas.agent_canvas_ad_media import (
+        ReplicaAnchorEventV2,
+        ReplicaBeatV2,
+        ReplicaBlueprintContentV2,
+    )
+
+    legacy = ReplicaBlueprintContentV2(
+        beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0, line="别再这样洗脸了")],
+        anchor_events=[
+            ReplicaAnchorEventV2(
+                event_id="e1", kind="caption", beat_id="b1", trigger="别再",
+                word="别再", word_start_seconds=0.2, word_end_seconds=0.5,
+            )
+        ],
+    )
+
+    same = bp.reproject_anchor_seconds(legacy)
+
+    assert same.anchor_events == legacy.anchor_events
+
+
+def test_teardown_report_anchors_carry_token_range_end_to_end() -> None:
+    """teardown → 蓝图全链：带转录的报告里锚点带 token 区间（不变量强制后仍在）。"""
+    blueprint = bp.blueprint_from_teardown(
+        _report_with_transcript(),
+        source_asset_id="asset-1",
+        duration_seconds=12.0,
+    )
+
+    anchors = [a for a in blueprint.anchor_events if a.start_token_id]
+    assert anchors, "带转录的拆解应产出 token 区间锚点"
+    for anchor in anchors:
+        # 绑定与投影自洽：token 区间文本 == 词面，秒数来自词流
+        assert anchor.word
+        assert anchor.word_end_seconds >= anchor.word_start_seconds
+
+
+def test_adreplica_roundtrip_drops_token_ids_like_times() -> None:
+    """token id 与秒数一样是派生数据：不进 .adreplica（导入后按文本重新绑定）。"""
+    from app.services.replica import adreplica as adr
+
+    blueprint = bp.blueprint_from_teardown(
+        _report_with_transcript(),
+        source_asset_id="asset-1",
+        duration_seconds=12.0,
+    )
+    assert any(a.start_token_id for a in blueprint.anchor_events)
+
+    reimported = adr.blueprint_from_adreplica(adr.adreplica_from_blueprint(blueprint))
+
+    assert all(a.start_token_id == "" for a in reimported.anchor_events)
+    # 文本绑定（文档的真相源形态）不丢
+    assert any(a.word for a in reimported.anchor_events)

@@ -277,3 +277,19 @@ TeardownResponse{report, frame_analyses, video_metadata}
   writer（`timeline_subtitle_writer.cues_to_ass`）发射 `{\k}` 高亮——需要
   cue 模型带词级时间（`SubtitleCue` 当前无此字段），是编辑域 schema 的
   加法变更。两条都未启动，不做浑水摸鱼的中间态。
+
+## 17. 已交付：G4 narrative token 层——锚定从时间上移到授权序（hypit P1 主项，2026-09-28）
+
+- **`narrative.py`（纯函数层）**：normalize + tokenize（CJK 字符级/拉丁词级）+
+  Narrative（segments/tokens）+ 6 种 anchor（program/segment/token 起止）+
+  selection（anchor 对 → token 区间，不查时间线）+ 投影（token 区间 → 秒数）。
+- **接线**：锚点 += `start_token_id`/`end_token_id`；`resolve_word_anchors`
+  记录 binding；`reproject_anchor_seconds` 把秒数降级为投影；teardown 全链
+  以它做不变量强制。
+- **实现中修掉的真缺陷**：token 源"词流优先"造成解析/重投影两套 id 空间，
+  binding 必丢——改为 token 只来自授权文本（line），词流仅作对齐源
+  （hypit Script↔media 模型）。纯字幕片（无 line）不进授权序，走兼容路径。
+- **标志性性质（测试锁定）**：秒数全改脏 → selection 不变；重配音后 binding
+  存活、秒数重投影；投不出时间 → 清除绑定（不保留过期秒数）。
+- **边界**：token id 不进 `.adreplica`（派生数据）；reproject 的生产触发
+  （"重新对齐"入口）留给生成通道/TTS 片——语义与纯函数本增量已交付。

@@ -4318,6 +4318,11 @@ export interface ReplicaAnchorEventV2 {
   word?: string;
   word_start_seconds?: number;
   word_end_seconds?: number;
+  /** G4 narrative token 层：与帧时间解耦的授权序区间（token id 对）；秒数是它的投影 */
+  start_token_id?: string;
+  end_token_id?: string;
+  /** 词锚窗口的端点亲和性（hypit left/right 语义） */
+  affinity?: "left" | "right";
 }
 
 export interface ReplicaBeatV2 {

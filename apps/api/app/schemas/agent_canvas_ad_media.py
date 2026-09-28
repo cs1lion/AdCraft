@@ -299,6 +299,12 @@ class ReplicaAnchorEventV2(_AdMediaModel):
     # left = 取前一词尾（间隙归后一事件所有）。
     # 仅对词级锚点（word 非空）有实际影响；段落级锚点忽略。
     affinity: Literal["left", "right"] = "right"
+    # narrative token 层（G4，hypit P1 主项）：锚点绑定的**授权序区间**
+    # （token id 对）——与帧时间解耦，改台词/重转写后 binding 天然存活，
+    # 秒数是从词流重算的投影（reproject_anchor_seconds）。默认空 = 无
+    # token 层的旧锚点（纯文本 + 已解析秒数，向后兼容）。
+    start_token_id: str = Field(default="", max_length=96)
+    end_token_id: str = Field(default="", max_length=96)
 
 
 class ReplicaBeatWordV2(_AdMediaModel):

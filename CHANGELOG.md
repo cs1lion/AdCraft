@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 G4：narrative token 层（hypit P1 主项）——锚定从时间上移到授权序
+
+- **`services/replica/narrative.py`（新模块，纯函数）**：normalize（授权拼写：去标点/大小写/空白/NFKC）+ tokenize（CJK 字符级、拉丁词级，无分词依赖）+ `Narrative`（segments/tokens）+ **6 种 anchor**（program/segment/token × 起止，对齐 hypit `SemanticAnchor`）+ `narrative_selection_tokens`（anchor 对 → token 区间，**不查时间线**）+ `token_range_for_text`（normalized 定位，occurrence 可指向重复子串的第 N 次）+ `project_seconds`（token 区间 → 秒数，词流投影）。
+- **接线**：`ReplicaAnchorEventV2` += `start_token_id`/`end_token_id`（加法，默认空 = 旧锚点原样）；`resolve_word_anchors` 在记录词文本+秒数的同时记录 token 区间；新增 `reproject_anchor_seconds`——秒数是投影，被改脏/换词流后从当前授权序+词流重算；`blueprint_from_teardown` 以它做**不变量强制**（"节点里存的秒数永远是当前 binding 的投影"由构造保证）。
+- **实现中抓到并修掉的真缺陷**：token 源最初用"词流优先"，导致解析时（words 未填，行切分）与重投影时（words 已填，词级切分）是**两套 token id 空间**，binding 必然丢失。改为 token 只来自授权文本（line）、词流只是对齐源——这正是 hypit 的 Script↔media 模型；测试锁定（含空 line 的纯字幕段落不进授权序的兼容路径）。
+- **标志性性质（测试锁定）**：把蓝图上所有秒数字段改脏，selection 的 token 区间逐字节不变；重配音（词流时间整体后移 + 段落窗移动）后 binding 存活、秒数重投影（10.5–11.4）；投不出时间时**清除**词级绑定退回段落级（不保留过期秒数）。
+- **文档纪律**：token id 与秒数同为派生数据，不进 `.adreplica`（导入后按文本绑定重新解析）——往返测试锁定。
+- **边界（如实记录）**：token 层只覆盖台词段落；纯字幕片（无 line）没有授权序，锚点走既有"文本+秒数"路径。reproject 的生产触发（"重新对齐"入口）属于生成通道/TTS 片的前置工作，本增量交付语义 + 纯函数 + 不变量，UI 触发点在路线图 §17。
+- **测试**：+21（narrative 13：normalize/tokenize/六 anchor/selection/time-decoupling/occurrence/投影 None；接线 8：token 区间记录/脏秒数恢复/重配音存活/投不出即清/旧锚点兼容/全链/id 不入文档）。replica 全套 **189 passed / 3 skip**；全量后端 **2027 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查 185 paths 通过；前端 tsc/eslint 0 error、replica 前端 31 passed。
+
 ### Added — 拉片复刻 G3 后半：词级数据层（段落词窗 + 工作台词流）；词级 karaoke 的死路已证伪并记录
 
 - **数据层**：`ReplicaBeatV2.words`（加法字段，无转录时为空 = 行级字幕，向后兼容）+ `resolve_word_anchors` 从转录词流按段落窗归集词面与实测时间。归属规则是**单归宿** `[start, end)`（收尾段闭口）——锚点解析共享的包含端点会把边界词同时归两段（匹配无害，但词级字幕会重复渲染同一个词）。坏词条目逐项跳过（转录数据不可信）。前端镜像类型同步。

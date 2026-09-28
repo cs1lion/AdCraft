@@ -27,6 +27,15 @@ from app.schemas.agent_canvas_ad_media import (
     ReplicaShotV2,
     ReplicaSlotV2,
 )
+from app.services.replica.narrative import (
+    narrative_from_blueprint,
+    narrative_selection_tokens,
+    project_seconds,
+    selection_text,
+    token_end_anchor,
+    token_range_for_text,
+    token_start_anchor,
+)
 
 BLUEPRINT_VERSION = "replica-blueprint-v1"
 
@@ -101,7 +110,10 @@ def blueprint_from_teardown(
         constraints=[str(c) for c in (report.get("constraints") or [])],
         instantiated_script_node_id=None,
     )
-    return resolve_word_anchors(blueprint, transcript_words)
+    # G4：token 区间绑定 + 秒数投影。reproject 在这里是**不变量强制**——
+    # "节点里存的秒数永远是当前词流对 binding 的投影"由构造保证（新鲜路径
+    # 上幂等；将来重新对齐/重配音触发重投影时，同一个函数就是入口）。
+    return reproject_anchor_seconds(resolve_word_anchors(blueprint, transcript_words))
 
 
 def _transcript_words(report: dict) -> list[dict]:
@@ -275,6 +287,9 @@ def resolve_word_anchors(
         return blueprint
     events_by_id = {e.event_id: e for e in blueprint.anchor_events}
     new_events: list[ReplicaAnchorEventV2] = []
+    # G4：授权序一次性建好——锚点除了记"词文本 + 秒数"（投影的当前值），
+    # 还记 token 区间（与帧时间解耦的 binding）。秒数会过期，binding 不会。
+    narrative = narrative_from_blueprint(blueprint)
     for event in blueprint.anchor_events:
         needle = event.trigger.strip()
         beat = next(
@@ -295,12 +310,21 @@ def resolve_word_anchors(
             new_events.append(event)
             continue
         word_start, word_end = span
+        token_range = token_range_for_text(narrative, beat.beat_id, needle)
         new_events.append(
             event.model_copy(
                 update={
                     "word": needle,
                     "word_start_seconds": round(word_start, 3),
                     "word_end_seconds": round(word_end, 3),
+                    **(
+                        {
+                            "start_token_id": token_range[0],
+                            "end_token_id": token_range[1],
+                        }
+                        if token_range
+                        else {}
+                    ),
                 }
             )
         )
@@ -358,6 +382,87 @@ def resolve_word_anchors(
     return blueprint.model_copy(
         update={"anchor_events": new_events, "beats": new_beats}
     )
+
+
+def reproject_anchor_seconds(
+    blueprint: ReplicaBlueprintContentV2,
+) -> ReplicaBlueprintContentV2:
+    """把锚点秒数从**当前**授权序 + 词流重算（hypit "时间是投影"的兑付）。
+
+    解决的正是锚定与时间耦合的老问题：改台词/重转写/换词流之后，锚点
+    的 binding（token 区间）不变，秒数是重新投影的结果——
+
+    - token 区间能在当前授权序里取到、且能在当前词流里投出时间 → 更新
+      秒数，并用 token 区间的文本刷新词面绑定（词面也是投影）；
+    - 投不出（词不在新词流里/无转录/区间失效）→ **清除词级绑定**退回
+      段落级。不保留过期秒数——"看起来对的时间"比"没有时间"更坏。
+
+    纯函数；无 token 区间的旧锚点原样保留（向后兼容）。
+    """
+    narrative = narrative_from_blueprint(blueprint)
+    beats_by_id = {beat.beat_id: beat for beat in blueprint.beats}
+    new_events: list[ReplicaAnchorEventV2] = []
+    for event in blueprint.anchor_events:
+        if not (event.start_token_id and event.end_token_id):
+            new_events.append(event)
+            continue
+        start_token = narrative.token(event.start_token_id)
+        end_token = narrative.token(event.end_token_id)
+        if start_token is None or end_token is None:
+            new_events.append(
+                event.model_copy(
+                    update={
+                        "word": "",
+                        "word_start_seconds": 0.0,
+                        "word_end_seconds": 0.0,
+                        "start_token_id": "",
+                        "end_token_id": "",
+                    }
+                )
+            )
+            continue
+        try:
+            tokens = narrative_selection_tokens(
+                narrative,
+                token_start_anchor(event.start_token_id),
+                token_end_anchor(event.end_token_id),
+            )
+        except (KeyError, ValueError):
+            new_events.append(
+                event.model_copy(
+                    update={
+                        "word": "",
+                        "word_start_seconds": 0.0,
+                        "word_end_seconds": 0.0,
+                        "start_token_id": "",
+                        "end_token_id": "",
+                    }
+                )
+            )
+            continue
+        beat = beats_by_id.get(start_token.segment_id)
+        projected = project_seconds(beat, tokens) if beat is not None else None
+        if projected is None:
+            new_events.append(
+                event.model_copy(
+                    update={
+                        "word": "",
+                        "word_start_seconds": 0.0,
+                        "word_end_seconds": 0.0,
+                    }
+                )
+            )
+            continue
+        new_events.append(
+            event.model_copy(
+                update={
+                    "word": selection_text(tokens),
+                    "word_start_seconds": projected[0],
+                    "word_end_seconds": projected[1],
+                }
+            )
+        )
+    return blueprint.model_copy(update={"anchor_events": new_events})
 
 
 def _words_in_window(
