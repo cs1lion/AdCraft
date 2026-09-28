@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **改动**:两处 `ok: true` → `ok: false`,并保留 `gate.error` 文案(红字里点名被拒原因/op)。乐观预览(`onApply(previewScript)`)行为不变,只是把"未过闸门"如实升级为错误通道,不再欺骗用户。
 - **验收/验证(诚实)**:ENV-SKIP——本机**无 node**,无法跑 `vitest src/.../DirectorCommandBar.test.tsx`,也未能渲染组件取证"红色报错";代码改动为确定性的布尔纠正。**遗留(需有 node 环境回填)**:补一条组件回归测试——mock `applyDirectorMotion` 返回 `{ok:false,error}` → 选对象/指令 → 点执行 → 断言错误文案渲染在 **error 通道**(非灰 note),跑通 vitest 后回填结果。
 
+### Fixed — E7 多轮记忆持久化失败不再静默（§4 可观测降级）
+
+- **问题**：`scene_3d.py` 的 `_persist_retained_readings` 在 DB 写失败时 `except Exception: pass`——多轮记忆保留集静默丢失,用户刷新后回到"记忆为空",无从得知发生过写入失败(代码注释却写着 never-silent,自相矛盾)。
+- **改动**:① except 内 `logging.getLogger(__name__).warning(...)`(带 workflow_id/node_id + `exc_info=True`,可查询,沿用仓内 logging 惯例);② 返回用户可见的 warning 字符串,由 `/transition-proposals` endpoint 并入既有 `warnings` 字段——**不改响应契约**。
+- **验证**:`python3 -m pytest test_scene3d_transition_proposals.py test_scene3d_transition_narratives.py test_v02_handover_endpoints.py` → **78 passed**,成功路径无回归。**遗留(建议)**:补一条 DB-fault 注入测试(monkeypatch `create_v2_database` 抛错 → 断言响应 `warnings` 含该提示)以锁定 §4 行为。
+
+
 ### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
 
 - **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。

@@ -2694,11 +2694,14 @@ async def propose_shot_transitions(request: TransitionProposalsRequest) -> Trans
     # currently showing (V0.2 §13 第 5 问). Computed here because this is
     # where the applied speech timeline arrives.
     if request.workflow_id and request.node_id:
-        _persist_retained_readings(
+        persist_warning = _persist_retained_readings(
             request,
             node_id=request.node_id,
             workflow_id=request.workflow_id,
         )
+        # E7/§4 never-silent：持久化失败可见化，并入响应 warnings（而非静默丢多轮记忆）
+        if persist_warning:
+            warnings.append(persist_warning)
 
     return TransitionProposalsResponse(
         success=True,
@@ -2770,6 +2773,14 @@ def _persist_retained_readings(request, node_id, workflow_id, settings=None):
                 connection.rollback()
                 raise
     except Exception:
-        pass  # persistence failure must not block the response
+        # E7 / §4 可观测降级：持久化失败不阻断响应，但也绝不静默 pass
+        import logging
+        logging.getLogger(__name__).warning(
+            "retained_readings persist failed (workflow=%s node=%s); multi-round memory will not survive a reload",
+            workflow_id,
+            node_id,
+            exc_info=True,
+        )
+        return "多轮记忆保留集持久化失败（本次会话有效，刷新后可能丢失；详见后端日志）。"
     finally:
         database.dispose()
