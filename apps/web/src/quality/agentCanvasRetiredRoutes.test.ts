@@ -15,7 +15,10 @@ const retiredRoutePatterns = [
   /chat-target/,
   /chat-actions/,
   /free-nodes?/,
-  /final-composition/,
+  // 只匹配**路由段**（前后带斜杠）："/final-composition/renders/…" 是路由引用；
+  // "final-composition 面板/时间线" 是产品文案术语（域词汇），不是路由。
+  // 原无斜杠模式把文案也判违规——误报比没检查更糟（可达性工具的同样教训）。
+  /\/final-composition\//,
   /\/provider-tasks\//,
   /continue_planning/,
 ];

@@ -18,6 +18,7 @@ import {
 
 import { useApp } from "../../../AppContextValue.ts";
 import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
+import { finalRenderCancelPath, finalRenderStatePath } from "../../../api/finalRenderPaths.ts";
 import type {
   CanvasNodeV2,
   ReplicaAnchorEventV2,
@@ -635,9 +636,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
     const tick = async () => {
       attempts += 1;
       try {
-        const response = await fetch(
-          `/api/v2/workflows/${node.workflow_id}/final-composition/renders/${renderId}`,
-        );
+        const response = await fetch(finalRenderStatePath(node.workflow_id, renderId));
         const body = await response.json().catch(() => null);
         if (cancelled) return;
         if (response.status !== 200 || !body) {
@@ -715,10 +714,9 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       return;
     }
     try {
-      const response = await fetch(
-        `/api/v2/workflows/${node.workflow_id}/final-composition/renders/${currentRenderId}/cancel`,
-        { method: "POST" },
-      );
+      const response = await fetch(finalRenderCancelPath(node.workflow_id, currentRenderId), {
+        method: "POST",
+      });
       const body = await response.json().catch(() => null);
       if (response.status !== 200) {
         setNotice(

@@ -411,9 +411,13 @@ describe("Agent Canvas client", () => {
             text: ["text", "script"],
             script: ["text", "script"],
             image: ["text", "script", "image"],
-            video: ["text", "script", "image", "video", "audio", "editing"],
+            video: ["text", "script", "image", "video", "audio", "editing", "scene-3d"],
             audio: ["text", "script"],
             editing: ["video", "audio", "editing"],
+            // 与后端 agent_canvas_connection_policy._target_node_types 同口径
+            "scene-3d": ["text", "script", "image", "video"],
+            "voice-cast": ["text", "script"],
+            replica: ["script"],
           },
           input_roles: [
             {
@@ -434,6 +438,12 @@ describe("Agent Canvas client", () => {
             video: "video_reference",
             audio: "audio_reference",
             editing: "video_reference",
+            // 与后端 agent_canvas_connection_policy._binding_kinds 同口径：
+            // frozen 契约要求全部节点类型都在（scene-3d/voice-cast/replica
+            // 是后加的，fixture 曾漏配 3 个 → normalizer 拒收）
+            "scene-3d": "video_reference",
+            "voice-cast": "audio_reference",
+            replica: "text_context",
           },
           model_validation: {
             explicit_model: "authoring_and_run",

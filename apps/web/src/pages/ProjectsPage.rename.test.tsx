@@ -70,7 +70,10 @@ describe("ProjectsPage project rename", () => {
     const createProjectCard = screen.getByRole("button", { name: "New Project" });
     expect(createProjectCard.classList.contains("create-card--new-project")).toBe(true);
     expect(createProjectCard.classList.contains("clear-glass-control")).toBe(true);
-    expect(screen.getByText("7/24/2026")).toBeTruthy();
+    // 组件用浏览器默认 locale 格式化更新日期；测试不得硬编码 en-US 格式
+    // （zh-CN 等 locale 下 "7/24/2026" 会变成 "2026/7/24"——P5 台账里的
+    // 环境耦合失败）。期望值与组件同一算法，locale 无关。
+    expect(screen.getByText(new Date("2026-07-24T08:00:00Z").toLocaleDateString())).toBeTruthy();
     expect(screen.queryByText(/Last worked/i)).toBeNull();
     expect(screen.queryByText("Draft")).toBeNull();
     expect(screen.queryByText("Open")).toBeNull();
