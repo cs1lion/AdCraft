@@ -1,0 +1,9 @@
+素材：videos/rep_action_9x16_12s.mp4
+真值：12 秒 / 9:16 / 八镜快切（1.5 秒一切），急推急拉交替，屏上文字 GO / FASTER / NOW 循环
+用法：作为 POST /api/v1/replica/teardown 的 user_description 字段，或工作台「复刻目标」
+
+—— 粘贴以下内容 ——
+换人物：原片是 12 秒八镜运动风快切（GO / FASTER / NOW 循环），急推急拉运镜、
+每镜约 1.5 秒。要求：保留快切节奏与运镜强度，人物替换为资产库样例
+sample_host.png，屏上文字改为中文三字短句循环（冲 / 再快 / 现在），结尾加
+品牌定格。

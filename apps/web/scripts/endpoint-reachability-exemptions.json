@@ -1,0 +1,9 @@
+{
+  "$comment": "Endpoints intentionally unreachable from any in-repo consumer. Each entry needs a reason a reviewer can check. Anything not listed here and not called by anyone is reported DEAD by check-backend-endpoint-reachability.mjs.",
+  "endpoints": [
+    {
+      "key": "v2:POST /api/v2/provider-callbacks/tianpuyue/instrumental/{workflow_id}/{callback_id}",
+      "reason": "Outbound webhook target — called by the external Tianpuyue audio provider, not by AdCraft code. No in-repo caller is correct."
+    }
+  ]
+}

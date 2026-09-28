@@ -1,0 +1,36 @@
+<advideo version="1" kind="replica-blueprint" aspect="1:1" duration="10">
+  <meta source="rep_textonly_1x1_10s.mp4" format="text-only">
+    <goal>纯字幕直出验证：全部镜头为零生成成本</goal>
+    <reading>方形四段纯文字片，静态纯色底，无实拍主体，无口播。</reading>
+  </meta>
+  <cast>
+    <slot kind="character" label="人物" source="无" replace-with="" />
+    <slot kind="product" label="商品" source="无" replace-with="" />
+    <slot kind="script" label="台词" source="无口播" replace-with="" />
+    <slot kind="style" label="风格" source="极简打卡风" replace-with="" />
+    <slot kind="voice" label="声音" source="无" replace-with="" />
+    <slot kind="scene" label="场景" source="纯色底" replace-with="" />
+  </cast>
+  <script>
+    <beat id="tb1" role="hook" dur="0-2.5"><line>第一天 坚持早起</line></beat>
+    <beat id="tb2" role="proof" dur="2.5-5"><line>第七天 看得见变化</line></beat>
+    <beat id="tb3" role="proof" dur="5-7.5"><line>第三十天 习惯成型</line></beat>
+    <beat id="tb4" role="cta" dur="7.5-10"><line>现在轮到你了</line></beat>
+  </script>
+  <timeline>
+    <shot id="ts1" size="wide" motion="static" start="0" dur="2.5" cut="cut" text="第一天 坚持早起" recreate="" during="tb1">纯色底字幕</shot>
+    <shot id="ts2" size="wide" motion="static" start="2.5" dur="2.5" cut="cut" text="第七天 看得见变化" recreate="" during="tb2">纯色底字幕</shot>
+    <shot id="ts3" size="wide" motion="static" start="5" dur="2.5" cut="cut" text="第三十天 习惯成型" recreate="" during="tb3">纯色底字幕</shot>
+    <shot id="ts4" size="wide" motion="static" start="7.5" dur="2.5" cut="cut" text="现在轮到你了" recreate="" during="tb4">纯色底字幕</shot>
+  </timeline>
+  <events>
+    <caption id="tc1" during="tb1" trigger="第一天" keep="true">首段大字幕</caption>
+  </events>
+  <rhythm avg-shot="2.5" curve="平直" cuts="0,2.5,5,7.5" />
+  <systems captions="全屏大字" music="无">
+    <graphics>无</graphics>
+  </systems>
+  <constraints>
+    <constraint>手写正例样例：预期 direct-execute 可行性门判定 feasible</constraint>
+  </constraints>
+</advideo>

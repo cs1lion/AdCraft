@@ -1,0 +1,478 @@
+{
+  "generated_at": "2026-09-27T15:10:03.237705+00:00",
+  "base_url": "http://127.0.0.1:8000",
+  "results": [
+    {
+      "id": "MD-01",
+      "suite": "media",
+      "title": "视频真值校验 rep_fastcut_9x16_15s.mp4",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": {
+          "duration": 15.02322,
+          "size": "540x960",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-02",
+      "suite": "media",
+      "title": "视频真值校验 rep_luxury_16x9_30s.mp4",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": {
+          "duration": 30.02322,
+          "size": "1280x720",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-03",
+      "suite": "media",
+      "title": "视频真值校验 rep_dialogue_9x16_20s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 20.02322,
+          "size": "540x960",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-04",
+      "suite": "media",
+      "title": "视频真值校验 rep_textonly_1x1_10s.mp4",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": {
+          "duration": 10.02322,
+          "size": "720x720",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-05",
+      "suite": "media",
+      "title": "视频真值校验 rep_action_9x16_12s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 12.02322,
+          "size": "540x960",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-06",
+      "suite": "media",
+      "title": "视频真值校验 rep_silent_16x9_8s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 8.0,
+          "size": "640x360",
+          "audio": false
+        }
+      }
+    },
+    {
+      "id": "MD-07",
+      "suite": "media",
+      "title": "视频真值校验 rep_edge_4s_9x16.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 4.02322,
+          "size": "360x640",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-08",
+      "suite": "media",
+      "title": "视频真值校验 rep_overlong_16x9_61s.mp4",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": {
+          "duration": 61.0,
+          "size": "320x180",
+          "audio": false
+        }
+      }
+    },
+    {
+      "id": "MD-09",
+      "suite": "media",
+      "title": "视频真值校验 rep_compare_9x16_16s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 16.02322,
+          "size": "540x960",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-10",
+      "suite": "media",
+      "title": "视频真值校验 rep_vlogtour_9x16_18s.mp4",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": {
+          "duration": 18.02322,
+          "size": "540x960",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-11",
+      "suite": "media",
+      "title": "视频真值校验 rep_tutorial_1x1_16s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 16.02322,
+          "size": "720x720",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-12",
+      "suite": "media",
+      "title": "视频真值校验 rep_beatsync_9x16_16s.mp4",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": {
+          "duration": 16.0,
+          "size": "540x960",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-13",
+      "suite": "media",
+      "title": "视频真值校验 s3d_refroom_16x9_8s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 8.0,
+          "size": "960x540",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-14",
+      "suite": "media",
+      "title": "视频真值校验 slice_ref_16x9_40s.mp4",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": {
+          "duration": 40.02322,
+          "size": "480x270",
+          "audio": true
+        }
+      }
+    },
+    {
+      "id": "MD-I01",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_room_800x600.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "800x600"
+      }
+    },
+    {
+      "id": "MD-I02",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_panorama_2048x1024.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "2048x1024"
+      }
+    },
+    {
+      "id": "MD-I03",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_corridor_depth_800x600.png",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": "800x600"
+      }
+    },
+    {
+      "id": "MD-I04",
+      "suite": "media",
+      "title": "图片尺寸校验 ref_product_3x4_768x1024.png",
+      "status": "PASS",
+      "seconds": 0.11,
+      "detail": {
+        "actual": "768x1024"
+      }
+    },
+    {
+      "id": "MD-I05",
+      "suite": "media",
+      "title": "图片尺寸校验 ref_turnaround_3view_1536x512.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "1536x512"
+      }
+    },
+    {
+      "id": "MD-I06",
+      "suite": "media",
+      "title": "图片尺寸校验 ref_ultrawide_1024x288.png",
+      "status": "PASS",
+      "seconds": 0.11,
+      "detail": {
+        "actual": "1024x288"
+      }
+    },
+    {
+      "id": "MD-I07",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_orbit_1_512x512.png",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": "512x512"
+      }
+    },
+    {
+      "id": "MD-I08",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_orbit_2_512x512.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "512x512"
+      }
+    },
+    {
+      "id": "MD-I09",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_orbit_3_512x512.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "512x512"
+      }
+    },
+    {
+      "id": "MD-I10",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_orbit_4_512x512.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "512x512"
+      }
+    },
+    {
+      "id": "MD-I11",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_orbit_5_512x512.png",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": "512x512"
+      }
+    },
+    {
+      "id": "MD-I12",
+      "suite": "media",
+      "title": "图片尺寸校验 s3d_orbit_6_512x512.png",
+      "status": "PASS",
+      "seconds": 0.12,
+      "detail": {
+        "actual": "512x512"
+      }
+    },
+    {
+      "id": "AD-01",
+      "suite": "adreplica",
+      "title": "3 个正例导入并落槽正确",
+      "status": "PASS",
+      "seconds": 0.75,
+      "detail": {
+        "actual": {
+          "valid_luxury_16x9.adreplica": {
+            "slots": 6,
+            "beats": 4,
+            "applied": 3
+          },
+          "valid_textonly_1x1.adreplica": {
+            "slots": 6,
+            "beats": 4,
+            "applied": 0
+          },
+          "valid_dialogue_cjk_anchors.adreplica": {
+            "slots": 6,
+            "beats": 5,
+            "applied": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "AD-02",
+      "suite": "adreplica",
+      "title": "导出→再解析往返锁定",
+      "status": "PASS",
+      "seconds": 0.0,
+      "detail": {
+        "actual": "parse→export→parse 幂等"
+      }
+    },
+    {
+      "id": "AD-03",
+      "suite": "adreplica",
+      "title": "反例被拒 invalid_hypit_host_slot.adreplica",
+      "status": "PASS",
+      "seconds": 0.0,
+      "detail": {
+        "actual": "Unknown slot kind 'host' (known: character, product, script, style, voice, scene)"
+      }
+    },
+    {
+      "id": "AD-04",
+      "suite": "adreplica",
+      "title": "反例被拒 invalid_ghost_anchor.adreplica",
+      "status": "PASS",
+      "seconds": 0.0,
+      "detail": {
+        "actual": "Inline anchor @{gcap1} references unknown event"
+      }
+    },
+    {
+      "id": "AD-05",
+      "suite": "adreplica",
+      "title": "反例被拒 invalid_unknown_event.adreplica",
+      "status": "PASS",
+      "seconds": 0.0,
+      "detail": {
+        "actual": "Unknown event element <stinger> (known: broll, caption, sfx, mg, transition)"
+      }
+    },
+    {
+      "id": "AD-06",
+      "suite": "adreplica",
+      "title": "反例被拒 invalid_version_2.adreplica",
+      "status": "PASS",
+      "seconds": 0.0,
+      "detail": {
+        "actual": "Unsupported .adreplica version: '2' (supported: 1)"
+      }
+    },
+    {
+      "id": "BT-01",
+      "suite": "beats",
+      "title": "节拍检测真值 beat_120bpm_20s.wav",
+      "status": "PASS",
+      "seconds": 0.32,
+      "detail": {
+        "actual": "bpm=120.2 conf=1.0 beats=41"
+      }
+    },
+    {
+      "id": "BT-02",
+      "suite": "beats",
+      "title": "节拍检测真值 beat_90bpm_20s.wav",
+      "status": "PASS",
+      "seconds": 0.15,
+      "detail": {
+        "actual": "bpm=90.7 conf=1.0 beats=31"
+      }
+    },
+    {
+      "id": "BT-03",
+      "suite": "beats",
+      "title": "节拍检测真值 beat_140bpm_accent_30s.wav",
+      "status": "PASS",
+      "seconds": 0.16,
+      "detail": {
+        "actual": "bpm=139.7 conf=1.0 beats=71"
+      }
+    },
+    {
+      "id": "BT-04",
+      "suite": "beats",
+      "title": "节拍检测真值 beat_60bpm_20s.wav",
+      "status": "PASS",
+      "seconds": 0.16,
+      "detail": {
+        "actual": "bpm=60.1 conf=1.0 beats=21"
+      }
+    },
+    {
+      "id": "BT-05",
+      "suite": "beats",
+      "title": "节拍检测真值 beat_170bpm_20s.wav",
+      "status": "PASS",
+      "seconds": 0.16,
+      "detail": {
+        "actual": "bpm=84.7 conf=1.0 beats=29"
+      }
+    },
+    {
+      "id": "BT-06",
+      "suite": "beats",
+      "title": "变速轨不崩溃且不误报真值",
+      "status": "PASS",
+      "seconds": 0.15,
+      "detail": {
+        "actual": "bpm=74.9"
+      }
+    },
+    {
+      "id": "BT-07",
+      "suite": "beats",
+      "title": "过短轨报 too_short（<2s 下限）",
+      "status": "PASS",
+      "seconds": 0.13,
+      "detail": {
+        "actual": "Audio must be at least 2 seconds for beat analysis."
+      }
+    },
+    {
+      "id": "BT-08",
+      "suite": "beats",
+      "title": "静音轨报无稳定节拍",
+      "status": "PASS",
+      "seconds": 0.14,
+      "detail": {
+        "actual": "Could not detect a steady beat in the audio."
+      }
+    }
+  ]
+}

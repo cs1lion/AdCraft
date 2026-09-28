@@ -1,0 +1,1322 @@
+{
+  "videos": [
+    {
+      "id": "fastcut",
+      "unit": "replica-fastcut",
+      "cn": "快剪带货",
+      "path": "units/replica-fastcut/rep_fastcut_9x16_15s.mp4",
+      "w": 540,
+      "h": 960,
+      "fps": 30,
+      "duration": 15.0,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 2.5,
+          "color": [
+            215,
+            38,
+            61
+          ],
+          "text": "STOP SCROLLING",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            27,
+            42,
+            107
+          ],
+          "text": "3 SECOND HACK",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            20,
+            107,
+            58
+          ],
+          "text": "IT JUST WORKS",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            179,
+            84,
+            30
+          ],
+          "text": "REAL RESULTS",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            106,
+            27,
+            77
+          ],
+          "text": "HALF PRICE TODAY",
+          "text_color": [
+            255,
+            255,
+            0
+          ],
+          "tag": "yellow"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            36,
+            21,
+            160
+          ],
+          "text": "BUY NOW",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "luxury",
+      "unit": "replica-luxury",
+      "cn": "高级慢节奏质感",
+      "path": "units/replica-luxury/rep_luxury_16x9_30s.mp4",
+      "w": 1280,
+      "h": 720,
+      "fps": 24,
+      "duration": 30.0,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 7.5,
+          "color": [
+            10,
+            13,
+            18
+          ],
+          "text": "TIMELESS",
+          "text_color": [
+            221,
+            221,
+            221
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 7.5,
+          "color": [
+            23,
+            30,
+            41
+          ],
+          "text": "CRAFTED BY HAND",
+          "text_color": [
+            221,
+            221,
+            221
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 7.5,
+          "color": [
+            42,
+            53,
+            71
+          ],
+          "text": "SINCE 1931",
+          "text_color": [
+            221,
+            221,
+            221
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 7.5,
+          "color": [
+            18,
+            23,
+            33
+          ],
+          "text": "REDISCOVER SLOW",
+          "text_color": [
+            221,
+            221,
+            221
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "dialogue",
+      "unit": "replica-dialogue",
+      "cn": "中文对话小剧场",
+      "path": "units/replica-dialogue/rep_dialogue_9x16_20s.mp4",
+      "w": 540,
+      "h": 960,
+      "fps": 30,
+      "duration": 20,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 4,
+          "color": [
+            122,
+            59,
+            46
+          ],
+          "text": "A：你敢信？",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            46,
+            90,
+            122
+          ],
+          "text": "B：我不信。",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            122,
+            59,
+            46
+          ],
+          "text": "A：它真的有用！",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            46,
+            90,
+            122
+          ],
+          "text": "B：那我试试！",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            90,
+            42,
+            122
+          ],
+          "text": "合：冲！！",
+          "text_color": [
+            255,
+            255,
+            0
+          ],
+          "tag": "yellow"
+        }
+      ]
+    },
+    {
+      "id": "textonly",
+      "unit": "replica-textonly",
+      "cn": "纯字幕直出",
+      "path": "units/replica-textonly/rep_textonly_1x1_10s.mp4",
+      "w": 720,
+      "h": 720,
+      "fps": 30,
+      "duration": 10.0,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 2.5,
+          "color": [
+            245,
+            230,
+            211
+          ],
+          "text": "第一天 坚持早起",
+          "text_color": [
+            51,
+            51,
+            51
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            217,
+            236,
+            245
+          ],
+          "text": "第七天 看得见变化",
+          "text_color": [
+            34,
+            51,
+            68
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            236,
+            221,
+            245
+          ],
+          "text": "第三十天 习惯成型",
+          "text_color": [
+            51,
+            34,
+            68
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 2.5,
+          "color": [
+            34,
+            40,
+            49
+          ],
+          "text": "现在轮到你了",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "action",
+      "unit": "replica-action",
+      "cn": "动作快切运镜",
+      "path": "units/replica-action/rep_action_9x16_12s.mp4",
+      "w": 540,
+      "h": 960,
+      "fps": 30,
+      "duration": 12.0,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 1.5,
+          "color": [
+            230,
+            57,
+            70
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            42,
+            157,
+            143
+          ],
+          "text": "FASTER",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            233,
+            196,
+            106
+          ],
+          "text": "NOW",
+          "text_color": [
+            34,
+            34,
+            34
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            38,
+            70,
+            83
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            231,
+            111,
+            81
+          ],
+          "text": "FASTER",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            138,
+            177,
+            125
+          ],
+          "text": "NOW",
+          "text_color": [
+            34,
+            34,
+            34
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            43,
+            45,
+            66
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.5,
+          "color": [
+            239,
+            71,
+            111
+          ],
+          "text": "NOW",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "beatsync",
+      "unit": "replica-beatsync",
+      "cn": "卡点混剪",
+      "path": "units/replica-beatsync/rep_beatsync_9x16_16s.mp4",
+      "w": 540,
+      "h": 960,
+      "fps": 30,
+      "duration": 16.0,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 1.0,
+          "color": [
+            230,
+            57,
+            70
+          ],
+          "text": "ONE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            42,
+            157,
+            143
+          ],
+          "text": "TWO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            233,
+            196,
+            106
+          ],
+          "text": "THREE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            38,
+            70,
+            83
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            230,
+            57,
+            70
+          ],
+          "text": "ONE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            42,
+            157,
+            143
+          ],
+          "text": "TWO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            233,
+            196,
+            106
+          ],
+          "text": "THREE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            38,
+            70,
+            83
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            230,
+            57,
+            70
+          ],
+          "text": "ONE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            42,
+            157,
+            143
+          ],
+          "text": "TWO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            233,
+            196,
+            106
+          ],
+          "text": "THREE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            38,
+            70,
+            83
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            230,
+            57,
+            70
+          ],
+          "text": "ONE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            42,
+            157,
+            143
+          ],
+          "text": "TWO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            233,
+            196,
+            106
+          ],
+          "text": "THREE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 1.0,
+          "color": [
+            38,
+            70,
+            83
+          ],
+          "text": "GO",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "compare",
+      "unit": "replica-compare",
+      "cn": "对比测评",
+      "path": "units/replica-compare/rep_compare_9x16_16s.mp4",
+      "w": 540,
+      "h": 960,
+      "fps": 30,
+      "duration": 16,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 4,
+          "color": [
+            138,
+            138,
+            138
+          ],
+          "text": "BEFORE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            244,
+            168,
+            50
+          ],
+          "text": "AFTER",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            42,
+            111,
+            78
+          ],
+          "text": "3X FASTER",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 4,
+          "color": [
+            27,
+            58,
+            92
+          ],
+          "text": "VERDICT WORTH IT",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "vlogtour",
+      "unit": "replica-vlogtour",
+      "cn": "探店vlog",
+      "path": "units/replica-vlogtour/rep_vlogtour_9x16_18s.mp4",
+      "w": 540,
+      "h": 960,
+      "fps": 30,
+      "duration": 18,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 3,
+          "color": [
+            201,
+            111,
+            58
+          ],
+          "text": "COME WITH ME",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 3,
+          "color": [
+            58,
+            111,
+            201
+          ],
+          "text": "THIS PLACE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 3,
+          "color": [
+            201,
+            165,
+            58
+          ],
+          "text": "ONLY 10 YUAN",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 3,
+          "color": [
+            122,
+            58,
+            201
+          ],
+          "text": "SO CROWDED",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 3,
+          "color": [
+            58,
+            201,
+            122
+          ],
+          "text": "MUST TRY",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 3,
+          "color": [
+            201,
+            58,
+            111
+          ],
+          "text": "SAVE THIS",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "tutorial",
+      "unit": "replica-tutorial",
+      "cn": "教程步骤",
+      "path": "units/replica-tutorial/rep_tutorial_1x1_16s.mp4",
+      "w": 720,
+      "h": 720,
+      "fps": 30,
+      "duration": 16,
+      "audio": true,
+      "shots": [
+        {
+          "dur": 4,
+          "color": [
+            245,
+            234,
+            208
+          ],
+          "text": "STEP 1 PREP",
+          "text_color": [
+            51,
+            51,
+            51
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 4,
+          "color": [
+            216,
+            238,
+            221
+          ],
+          "text": "STEP 2 MIX",
+          "text_color": [
+            51,
+            51,
+            51
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 4,
+          "color": [
+            214,
+            226,
+            245
+          ],
+          "text": "STEP 3 COOK",
+          "text_color": [
+            51,
+            51,
+            51
+          ],
+          "tag": "dark"
+        },
+        {
+          "dur": 4,
+          "color": [
+            242,
+            220,
+            234
+          ],
+          "text": "STEP 4 PLATE",
+          "text_color": [
+            51,
+            51,
+            51
+          ],
+          "tag": "dark"
+        }
+      ]
+    },
+    {
+      "id": "silent",
+      "unit": null,
+      "cn": "silent",
+      "path": "fixtures/videos/rep_silent_16x9_8s.mp4",
+      "w": 640,
+      "h": 360,
+      "fps": 24,
+      "duration": 8,
+      "audio": false,
+      "text_spot": null,
+      "shots": [
+        {
+          "dur": 8,
+          "color": [
+            28,
+            28,
+            28
+          ],
+          "text": "SILENT TAKE",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "edge4",
+      "unit": null,
+      "cn": "edge4",
+      "path": "fixtures/videos/rep_edge_4s_9x16.mp4",
+      "w": 360,
+      "h": 640,
+      "fps": 24,
+      "duration": 4,
+      "audio": true,
+      "text_spot": null,
+      "shots": [
+        {
+          "dur": 4,
+          "color": [
+            51,
+            51,
+            51
+          ],
+          "text": "SHORT CLIP",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    },
+    {
+      "id": "overlong",
+      "unit": null,
+      "cn": "overlong",
+      "path": "fixtures/videos/rep_overlong_16x9_61s.mp4",
+      "w": 320,
+      "h": 180,
+      "fps": 24,
+      "duration": 61,
+      "audio": false,
+      "text_spot": null,
+      "shots": [
+        {
+          "dur": 61,
+          "color": [
+            43,
+            43,
+            43
+          ],
+          "text": null,
+          "text_color": null,
+          "tag": null
+        }
+      ]
+    },
+    {
+      "id": "s3d-refroom",
+      "unit": null,
+      "cn": "s3d-refroom",
+      "path": "fixtures/videos/s3d_refroom_16x9_8s.mp4",
+      "w": 960,
+      "h": 540,
+      "fps": 24,
+      "duration": 8,
+      "audio": true,
+      "text_spot": {
+        "t": 2.0,
+        "text_color": [
+          255,
+          255,
+          255
+        ]
+      },
+      "shots": null
+    },
+    {
+      "id": "slice-ref",
+      "unit": null,
+      "cn": "slice-ref",
+      "path": "fixtures/videos/slice_ref_16x9_40s.mp4",
+      "w": 480,
+      "h": 270,
+      "fps": 24,
+      "duration": 40,
+      "audio": true,
+      "text_spot": null,
+      "shots": [
+        {
+          "dur": 5,
+          "color": [
+            68,
+            85,
+            170
+          ],
+          "text": "1",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            68,
+            170,
+            85
+          ],
+          "text": "2",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            170,
+            68,
+            85
+          ],
+          "text": "3",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            170,
+            170,
+            68
+          ],
+          "text": "4",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            68,
+            170,
+            170
+          ],
+          "text": "5",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            170,
+            68,
+            170
+          ],
+          "text": "6",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            85,
+            136,
+            170
+          ],
+          "text": "7",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        },
+        {
+          "dur": 5,
+          "color": [
+            170,
+            136,
+            85
+          ],
+          "text": "8",
+          "text_color": [
+            255,
+            255,
+            255
+          ],
+          "tag": "white"
+        }
+      ]
+    }
+  ],
+  "images": [
+    {
+      "path": "fixtures/images/ref_product_3x4_768x1024.png",
+      "w": 768,
+      "h": 1024
+    },
+    {
+      "path": "fixtures/images/ref_turnaround_3view_1536x512.png",
+      "w": 1536,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/ref_ultrawide_1024x288.png",
+      "w": 1024,
+      "h": 288
+    },
+    {
+      "path": "fixtures/images/s3d_corridor_depth_800x600.png",
+      "w": 800,
+      "h": 600
+    },
+    {
+      "path": "fixtures/images/s3d_orbit_1_512x512.png",
+      "w": 512,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/s3d_orbit_2_512x512.png",
+      "w": 512,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/s3d_orbit_3_512x512.png",
+      "w": 512,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/s3d_orbit_4_512x512.png",
+      "w": 512,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/s3d_orbit_5_512x512.png",
+      "w": 512,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/s3d_orbit_6_512x512.png",
+      "w": 512,
+      "h": 512
+    },
+    {
+      "path": "fixtures/images/s3d_panorama_2048x1024.png",
+      "w": 2048,
+      "h": 1024
+    },
+    {
+      "path": "fixtures/images/s3d_room_800x600.png",
+      "w": 800,
+      "h": 600
+    }
+  ],
+  "audio": [
+    {
+      "path": "fixtures/audio/beat_120bpm_20s.wav",
+      "bpm": 120,
+      "duration": 20
+    },
+    {
+      "path": "fixtures/audio/beat_90bpm_20s.wav",
+      "bpm": 90,
+      "duration": 20
+    },
+    {
+      "path": "fixtures/audio/beat_140bpm_accent_30s.wav",
+      "bpm": 140,
+      "duration": 30
+    },
+    {
+      "path": "fixtures/audio/beat_mixed_120to150_20s.wav",
+      "bpm": null,
+      "duration": 20
+    },
+    {
+      "path": "fixtures/audio/beat_tooshort_1s.wav",
+      "bpm": 120,
+      "duration": 1
+    },
+    {
+      "path": "fixtures/audio/beat_60bpm_20s.wav",
+      "bpm": 60,
+      "duration": 20
+    },
+    {
+      "path": "fixtures/audio/beat_170bpm_20s.wav",
+      "bpm": 170,
+      "duration": 20
+    },
+    {
+      "path": "fixtures/audio/beat_silent_10s.wav",
+      "bpm": null,
+      "duration": 10
+    },
+    {
+      "path": "fixtures/audio/ref_music_15s.wav",
+      "bpm": null,
+      "duration": 15
+    }
+  ]
+}

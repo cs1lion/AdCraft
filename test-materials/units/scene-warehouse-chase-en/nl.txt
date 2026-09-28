@@ -1,0 +1,18 @@
+用例：3D 预演 · 自然语言输入 · 英文模板（语言覆盖）
+入口：scene-3d 节点 → 自然语言描述
+预期：英文输入同样产出结构化 SceneScript；空间词（left/right/deep）正确落位
+
+SCENE: A dim warehouse with tall storage racks forming narrow aisles. A single
+overhead work light in the middle. Cold industrial lighting.
+
+CHARACTERS: A courier in an orange vest starts near the light. A chaser in a
+dark hoodie starts at the far end of the central aisle.
+
+ACTION: The chaser runs down the aisle toward the courier. The courier dodges
+behind a rack and peeks out.
+
+CAMERA: Start with a low angle at the aisle end looking up at the racks. Cut
+to a tracking shot following the chaser. Finish on a close-up of the courier
+peeking.
+
+STYLE: Tense, industrial thriller mood.

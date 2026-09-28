@@ -1,0 +1,10 @@
+素材：videos/rep_vlogtour_9x16_18s.mp4
+真值：18 秒 / 9:16 / 六镜探店节奏（COME WITH ME → THIS PLACE → ONLY 10 YUAN → SO CROWDED → MUST TRY → SAVE THIS），每镜 3 秒
+用法：作为 POST /api/v1/replica/teardown 的 user_description 字段，或工作台「复刻目标」
+
+—— 粘贴以下内容 ——
+换场景不换节奏。原片是 18 秒六镜头探店 vlog：邀请跟随（COME WITH ME）→
+场景亮相（THIS PLACE）→ 价格钩子（ONLY 10 YUAN）→ 人气证明（SO CROWDED）→
+推荐（MUST TRY）→ 收藏号召（SAVE THIS），平均每镜 3 秒。要求：保留 vlog
+第一视角节奏与情绪递进，把店铺场景换成夜市小吃摊，屏上文字改为对应六拍的
+中文短句，价格钩子与收藏号召保留。
