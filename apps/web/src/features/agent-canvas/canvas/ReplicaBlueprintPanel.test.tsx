@@ -14,7 +14,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CanvasNodeV2, ReplicaBlueprintContentV2 } from "../../../types-v2.ts";
-import { ReplicaBlueprintPanel } from "./ReplicaBlueprintPanel.tsx";
+import { ReplicaBlueprintPanel, describeReplicaError } from "./ReplicaBlueprintPanel.tsx";
 
 const BLUEPRINT: ReplicaBlueprintContentV2 = {
   blueprint_version: "replica-blueprint-v1",
@@ -1086,6 +1086,98 @@ describe("ReplicaBlueprintPanel style variants (Jev 式风格导演)", () => {
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
     fireEvent.click(screen.getByText("🎲 风格推荐"));
     await waitFor(() => expect(screen.getByText(/n out of range/)).toBeTruthy());
+  });
+});
+
+describe("ReplicaBlueprintPanel actionable errors (E5)", () => {
+  it("expands FastAPI 422 validation arrays item by item", () => {
+    const items = describeReplicaError(422, [
+      { loc: ["body", "library_resolutions", 0, "asset_id"], msg: "field required", type: "missing" },
+      { loc: ["body", "blueprint", "aspect"], msg: "extra fields not permitted", type: "forbidden" },
+    ]);
+    expect(items).toEqual([
+      "body.library_resolutions.0.asset_id: field required",
+      "body.blueprint.aspect: extra fields not permitted",
+    ]);
+  });
+
+  it("expands structure-drift payloads per drift with the named code", () => {
+    const items = describeReplicaError(500, {
+      code: "replica_structure_drift",
+      message: "Variant derivation changed the replica structure.",
+      variant_id: "v1",
+      drifts: ["aspect: '9:16' → '16:9'", "shot topology: 2 → 3 shots"],
+    });
+    expect(items).toEqual([
+      "Variant derivation changed the replica structure.",
+      "aspect: '9:16' → '16:9'",
+      "shot topology: 2 → 3 shots",
+      "（replica_structure_drift）",
+    ]);
+  });
+
+  it("keeps a backend-written string detail and never collapses to a bare status", () => {
+    expect(describeReplicaError(422, "Each library resolution needs clip_id, asset_id and version_id")).toEqual([
+      "Each library resolution needs clip_id, asset_id and version_id",
+    ]);
+    expect(describeReplicaError(500, null)).toEqual(["请求失败 (HTTP 500)"]);
+    expect(describeReplicaError(500, {})).toEqual(["请求失败 (HTTP 500)"]);
+  });
+
+  it("renders structure drift per item in the direct-execute failure block", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/api/v1/replica/blueprint/recipes")) {
+        return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+      }
+      return {
+        status: 500,
+        json: async () => ({
+          detail: {
+            code: "replica_structure_drift",
+            message: "Variant derivation changed the replica structure.",
+            variant_id: "v1",
+            drifts: ["aspect: '9:16' → '16:9'", "shot topology: 2 → 3 shots"],
+          },
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("源码 .adreplica"));
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    await waitFor(() => expect(screen.getByText(/直出失败，逐条说明/)).toBeTruthy());
+    // 每条 drift 逐条可见（不是一句 HTTP 500）
+    expect(screen.getByText("aspect: '9:16' → '16:9'")).toBeTruthy();
+    expect(screen.getByText("shot topology: 2 → 3 shots")).toBeTruthy();
+    expect(screen.getByText("（replica_structure_drift）")).toBeTruthy();
+    expect(screen.queryByText(/HTTP 500/)).toBeNull();
+  });
+
+  it("expands 422 validation details in the direct-execute failure block", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/api/v1/replica/blueprint/recipes")) {
+        return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+      }
+      return {
+        status: 422,
+        json: async () => ({
+          detail: [
+            { loc: ["body", "library_resolutions", 0, "asset_id"], msg: "field required", type: "missing" },
+          ],
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("源码 .adreplica"));
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    await waitFor(() =>
+      expect(screen.getByText("body.library_resolutions.0.asset_id: field required")).toBeTruthy(),
+    );
   });
 });
 

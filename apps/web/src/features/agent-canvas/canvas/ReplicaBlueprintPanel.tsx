@@ -63,6 +63,59 @@ function parseBlueprint(node: CanvasNodeV2): ReplicaBlueprintContentV2 {
   };
 }
 
+/**
+ * E5: 后端错误 → 可行动的逐条说明（替代本文件 7 处内联提取）。
+ *
+ * 覆盖三种载荷：
+ * - FastAPI 422 校验数组 `[{loc,msg,type}]`——逐条展开（"loc: msg"）；
+ * - 对象 detail `{code,message,drifts|rejected,…}`——message + 每条 drift/
+ *   rejected + 具名 code（结构漂移这类错误因此逐条可行动）；
+ * - 字符串 detail——原样返回（后端已写好的可读文案）。
+ */
+export function describeReplicaError(status: number, detail: unknown): string[] {
+  const fallback = `请求失败 (HTTP ${status})`;
+  if (Array.isArray(detail)) {
+    const items = detail.map((entry) => {
+      if (entry && typeof entry === "object") {
+        const record = entry as Record<string, unknown>;
+        const loc = Array.isArray(record.loc) ? record.loc.join(".") : "";
+        const message = String(record.msg ?? record.message ?? JSON.stringify(record));
+        return loc ? `${loc}: ${message}` : message;
+      }
+      return String(entry);
+    });
+    return items.length > 0 ? items : [fallback];
+  }
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    const lines: string[] = [];
+    const message =
+      typeof record.message === "string"
+        ? record.message
+        : typeof record.error === "string"
+          ? record.error
+          : "";
+    if (message) lines.push(message);
+    for (const key of ["drifts", "rejected"] as const) {
+      if (Array.isArray(record[key])) {
+        for (const entry of record[key]) {
+          lines.push(typeof entry === "string" ? entry : JSON.stringify(entry));
+        }
+      }
+    }
+    const code =
+      typeof record.code === "string"
+        ? record.code
+        : typeof record.error_type === "string"
+          ? record.error_type
+          : "";
+    if (code && !lines.some((line) => line.includes(code))) lines.push(`（${code}）`);
+    return lines.length > 0 ? lines : [fallback];
+  }
+  if (typeof detail === "string" && detail.trim()) return [detail];
+  return [fallback];
+}
+
 export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPanelProps) {
   const blueprint = useMemo(() => parseBlueprint(node), [node]);
   const { setAgentCanvasWorkflow } = useApp();
@@ -181,12 +234,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       });
       const body = await response.json().catch(() => null);
       if (response.status !== 200 || !body) {
-        const detail = body?.detail;
-        throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `实例化失败 (HTTP ${response.status})`,
-        );
+        // E5: 逐条展开（422 数组 / {code,message,drifts} / 字符串）——每条都能指向下一步
+        throw new Error(describeReplicaError(response.status, body?.detail).join("；"));
       }
       setScriptText(body.script_text ?? "");
       setScriptNodeId(body.script_node_id ?? "");
@@ -225,6 +274,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const [renderElapsed, setRenderElapsed] = useState(0);
   // 门拒绝的缺失清单（这片子有什么必须生成，不能零模型费直出）
   const [renderBlockers, setRenderBlockers] = useState<string[]>([]);
+  // E5: 其余失败的逐条说明（422 校验数组 / 结构漂移 drifts / 具名错误）
+  const [renderErrorItems, setRenderErrorItems] = useState<string[]>([]);
   // 直出的诚实备注（替换了哪版时间线 / 哪些库素材未计入）
   const [renderNotes, setRenderNotes] = useState<string[]>([]);
   // P4 pace 预检告警（台词预估时长超窗：删词 or 加窗，合成前说）
@@ -322,12 +373,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       });
       const body = await response.json().catch(() => null);
       if (response.status !== 200 || !body) {
-        const detail = body?.detail;
-        throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `配方导出失败 (HTTP ${response.status})`,
-        );
+        // E5: 逐条展开（422 数组 / {code,message,drifts} / 字符串）——每条都能指向下一步
+        throw new Error(describeReplicaError(response.status, body?.detail).join("；"));
       }
       setRecipeText(body.adrecipe ?? "");
       setNotice(
@@ -356,12 +403,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       });
       const body = await response.json().catch(() => null);
       if (response.status !== 200 || !body) {
-        const detail = body?.detail;
-        throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `配方导入失败 (HTTP ${response.status})`,
-        );
+        // E5: 逐条展开（422 数组 / {code,message,drifts} / 字符串）——每条都能指向下一步
+        throw new Error(describeReplicaError(response.status, body?.detail).join("；"));
       }
       // 导入即选为直出配方——改完的样式下一次直出生效
       setSelectedRecipe(body.recipe as Record<string, unknown>);
@@ -394,12 +437,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       });
       const body = await response.json().catch(() => null);
       if (response.status !== 200 || !body) {
-        const detail = body?.detail;
-        throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `导出失败 (HTTP ${response.status})`,
-        );
+        // E5: 逐条展开（422 数组 / {code,message,drifts} / 字符串）——每条都能指向下一步
+        throw new Error(describeReplicaError(response.status, body?.detail).join("；"));
       }
       setSourceText(body.adreplica ?? "");
       setSourceCopied(false);
@@ -438,12 +477,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       });
       const body = await response.json().catch(() => null);
       if (response.status !== 200 || !body) {
-        const detail = body?.detail;
-        throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `导入失败 (HTTP ${response.status})`,
-        );
+        // E5: 逐条展开（422 数组 / {code,message,drifts} / 字符串）——每条都能指向下一步
+        throw new Error(describeReplicaError(response.status, body?.detail).join("；"));
       }
       const imported = body.blueprint as ReplicaBlueprintContentV2;
       // 2) 本地编辑态切换为导入蓝图
@@ -474,6 +509,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
     setRenderPhase("starting");
     setRenderFailure(null);
     setRenderBlockers([]);
+    setRenderErrorItems([]);
     setRenderNotes([]);
     setRenderPaceWarnings([]);
     setRenderUnresolved([]);
@@ -521,11 +557,10 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
           setRenderPhase("failed");
           return;
         }
-        throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `直出失败 (HTTP ${response.status})`,
-        );
+        // E5: 结构漂移 / 422 校验 / 具名错误都逐条落状态（失败块按条目渲染）
+        setRenderErrorItems(describeReplicaError(response.status, detail));
+        setRenderPhase("failed");
+        return;
       }
 
       const notes: string[] = [];
@@ -1166,6 +1201,17 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                       可改用「⚡ 一键生成复刻工作流」走完整生成流。
                     </div>
                   </>
+                ) : renderErrorItems.length > 0 ? (
+                  <>
+                    {/* E5: 逐条可行动——结构漂移每条点名维度+期望/实际，
+                        422 校验每条 loc: msg，而不是"HTTP 422"一句 */}
+                    <div>直出失败，逐条说明：</div>
+                    <ul style={{ margin: "2px 0", paddingLeft: 16 }}>
+                      {renderErrorItems.map((item, index) => (
+                        <li key={`${index}_${item}`}>{item}</li>
+                      ))}
+                    </ul>
+                  </>
                 ) : (
                   <div>直出失败：{renderFailure ?? "未知错误"}</div>
                 )}
@@ -1540,11 +1586,8 @@ function StyleVariantPicker({
       ]);
       const body = await variantsResponse.json().catch(() => null);
       if (variantsResponse.status !== 200 || !body) {
-        const detail = body?.detail;
         throw new Error(
-          (typeof detail === "object" && detail?.error) ||
-            (typeof detail === "string" && detail) ||
-            `风格推荐失败 (HTTP ${variantsResponse.status})`,
+          describeReplicaError(variantsResponse.status, body?.detail).join("；"),
         );
       }
       setVariants(body.variants ?? []);

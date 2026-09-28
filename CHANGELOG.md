@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E5 错误不可行动 → 逐条展开（结构漂移 / 422 校验 / 具名错误）
+
+- **问题**：`ReplicaBlueprintPanel` 7 处内联错误提取只认 `detail.error` 或字符串 detail——FastAPI 422 的 `[{loc,msg,type}]` 数组和结构漂移的 `{code,message,drifts}` 全部退化成"直出失败 (HTTP 422)"一句，用户看不出哪条字段、哪个维度出了问题。
+- **改动**（纯前端）：① 新增共享 helper `describeReplicaError(status, detail)`：422 数组逐条展开为 `loc: msg`；对象 detail 输出 message + 每条 drift/rejected + 具名 code；字符串 detail 原样；都不匹配才退回状态码。② 直出失败块新增"逐条说明"列表渲染（结构漂移每条点名维度+期望→实际）；③ instantiate / 蓝图导出导入 / 配方导出导入 / 风格推荐 6 处改走同一 helper（单串槽位以"；"连接，信息不丢）。
+- **边界（如实标注）**：结构漂移目前只由 `/variant-render-plans` 产生，而该端点前端暂无调用方（变体走 `/style-variants`）——本提交让**任何到达前端的漂移载荷**逐条可读；要给该端点加 UI 入口属 E1 的延伸，未在本次做。
+- **验证**：`vitest ReplicaBlueprintPanel.test.tsx` **32 passed**（+5：helper 三种载荷单测 ×3 + 直出漂移逐条渲染 + 422 逐条渲染）。`tsc` 0 error；eslint 0 error。
+
 ### Fixed — E4 多轮记忆"已落地"实为未接线 → 补传 workflowId/nodeId/initialEngagedIds
 
 - **问题**：`TransitionProposalsPanel` 与后端持久化（V0.2 §14.5）都在，但 `LocalEngineWorkbench` 的 `<SceneScript3DEditor>` 没传 `workflowId`/`nodeId`/`initialEngagedIds`——面板条件发送（两个 id 缺一即静默不持久化），且无任何代码读 `structured_content.retained_reading_ids`，"刷新后保留集恢复"实际不成立。
