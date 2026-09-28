@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **改动**：三处 `.catch(() => {})` → `.catch((e) => setError(...))`，复用组件既有 `error` 状态（`SceneScript3DEditor` 的红色 error 槽渲染）；文案带"请重试"，Error 实例显示原始信息（如"网络中断"）。乐观草稿保留，用户重做即重试。
 - **验证**：`vitest LocalEngineWorkbench.test.tsx` → **33 passed**；新增回归测试「dialogue-line 持久化失败必须可见」——patchNode reject「网络中断」→ 断言错误出现（修复前 `.catch(() => {})` 吞掉则 red）。`tsc -p tsconfig.json` **0 error**。
 
+### Fixed — D6 3D 草稿刷新即丢 → localStorage 持久化 + 未保存提醒
+
+- **问题**：`LocalEngineWorkbench` 的 3D 草稿只在 React state（`draftScript`），无 `beforeunload`、无 localStorage——演示中误刷新即丢且无感知。
+- **改动**：新增 `scene3dDraft.ts`（沿用 `agentCanvasViewport.ts` 的 `adcraft:agent-canvas:` 命名空间 + 可注入 storage + 一次性写入，永不阻断编辑）。组件层：① 挂载按节点 key 从 localStorage 恢复草稿并显示"已恢复上次未保存的草稿"提示；② 编辑即写入；③ 草稿等于已保存节点（保存/回退）即清除；④ dirty 时挂 `beforeunload` 防误离开。
+- **验证**：`vitest scene3dDraft.test.ts` **4 passed**（往返/损坏不崩/清除/写入可弃）；`vitest LocalEngineWorkbench.test.tsx` **35 passed**（+2：恢复→提示→回退清除；编辑→落盘）；`tsc -p tsconfig.json` **0 error**。ENV 说明：`beforeunload` 原生弹窗属浏览器行为，未在 jsdom 中断言（其余可验证点已覆盖）。
+
 ### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
 
 - **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。

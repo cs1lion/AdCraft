@@ -30,6 +30,11 @@ import { NodeWorkbenchError } from "./NodeWorkbenchError.tsx";
 import { SceneImageIntake } from "../canvas/SceneImageIntake.tsx";
 import { WhiteModelOpLog } from "../canvas/WhiteModelOpLog.tsx";
 import {
+  clearScene3dDraft,
+  readScene3dDraft,
+  writeScene3dDraft,
+} from "../canvas/scene3dDraft.ts";
+import {
   DIRECTOR_TAKES_CONTENT_KEY,
   parseDirectorTakes,
   serializeDirectorTakes,
@@ -513,7 +518,15 @@ function Scene3DEditSection({
   referenceBindings?: readonly ReferenceBinding[] | null;
 }) {
   const persisted = useMemo(() => parseSceneScript(node), [node]);
-  const [draftScript, setDraftScript] = useState<SceneScriptRoot | null>(persisted);
+  const [draftScript, setDraftScript] = useState<SceneScriptRoot | null>(() =>
+    (node.workflow_id ? readScene3dDraft(node.workflow_id, node.node_id) : null) ?? persisted,
+  );
+  // D6: was the initial draft restored from a prior unsaved session? Drives the notice.
+  const [restoredDraft, setRestoredDraft] = useState<boolean>(() => {
+    if (!persisted || !node.workflow_id) return false;
+    const stored = readScene3dDraft(node.workflow_id, node.node_id);
+    return stored != null && JSON.stringify(stored) !== JSON.stringify(persisted);
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Re-sync from the node when its content changes upstream (rerun/replace),
@@ -526,6 +539,38 @@ function Scene3DEditSection({
         : persisted,
     );
   }, [persisted]);
+
+  // D6: mirror the unsaved draft to localStorage; clear it once it matches the saved
+  // node (explicit save/revert) so a reload restores only real, unsaved edits.
+  useEffect(() => {
+    if (!node.workflow_id || !draftScript || !persisted) return;
+    if (JSON.stringify(draftScript) === JSON.stringify(persisted)) {
+      clearScene3dDraft(node.workflow_id, node.node_id);
+    } else {
+      writeScene3dDraft(node.workflow_id, node.node_id, draftScript);
+    }
+  }, [draftScript, persisted, node.workflow_id, node.node_id]);
+
+  const draftDirty =
+    draftScript !== null &&
+    persisted !== null &&
+    JSON.stringify(draftScript) !== JSON.stringify(persisted);
+
+  // D6: guard navigation/refresh only while there are unsaved edits (repeatable, honest).
+  useEffect(() => {
+    if (!draftDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [draftDirty]);
+
+  // The "restored draft" notice clears itself once the edits are saved or reverted.
+  useEffect(() => {
+    if (!draftDirty) setRestoredDraft(false);
+  }, [draftDirty]);
 
   const [fullscreen, setFullscreen] = useState(false);
   const [focusShotId, setFocusShotId] = useState<string | null>(null);
@@ -722,6 +767,14 @@ function Scene3DEditSection({
           null
         }
       />
+      {restoredDraft ? (
+        <div className="scene-script-3d-editor__note" data-testid="scene3d-draft-restored">
+          已恢复上次未保存的草稿；未保存前离开/刷新页面会再次提醒。
+          <button type="button" onClick={() => setRestoredDraft(false)}>
+            知道了
+          </button>
+        </div>
+      ) : null}
       {draftScript && (
         <DialogueLipSyncPanel
           sceneScript={draftScript}

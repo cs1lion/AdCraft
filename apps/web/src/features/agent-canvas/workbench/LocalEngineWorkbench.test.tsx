@@ -777,3 +777,44 @@ describe("LocalEngineWorkbench — silent persistence is a defect (D5, §4)", ()
   });
 });
 
+
+describe("LocalEngineWorkbench — 3D draft persistence (D6)", () => {
+  const DRAFT_KEY = "adcraft:agent-canvas:scene3d-draft:workflow-1:scene-node";
+
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("restores an unsaved draft on load, shows the notice, and clears both on revert-to-saved", async () => {
+    const stale = sceneScript();
+    stale.scene = { ...stale.scene, name: "草稿-未保存" };
+    window.localStorage.setItem(DRAFT_KEY, JSON.stringify(stale));
+
+    render(<LocalEngineWorkbench node={makeNode()} draft={draft} patchNode={vi.fn().mockResolvedValue(undefined)} />);
+    await editorMounted();
+
+    expect((editorProps.sceneScript as { scene: { name: string } }).scene.name).toBe("草稿-未保存");
+    expect(screen.getByTestId("scene3d-draft-restored")).toBeTruthy();
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "editor-revert" }));
+    await waitFor(() => {
+      expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull();
+    });
+    expect(screen.queryByTestId("scene3d-draft-restored")).toBeNull();
+  });
+
+  it("persists edits into the localStorage draft so a refresh keeps them", async () => {
+    render(<LocalEngineWorkbench node={makeNode()} draft={draft} patchNode={vi.fn().mockResolvedValue(undefined)} />);
+    await editorMounted();
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "make-dirty" }));
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(DRAFT_KEY);
+      expect(stored).toBeTruthy();
+      expect(JSON.parse(stored as string).scene.name).toBe("edited");
+    });
+  });
+});
+
