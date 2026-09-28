@@ -2257,7 +2257,9 @@ export function AgentCanvasPage() {
           onFocusNode={focusNode}
           onActionReceipt={placeReceiptNodes}
           onWorkflowRefresh={refreshWorkflow}
-          onRuntimeRefresh={refreshRuntime}
+          onRuntimeRefresh={() => {
+            void refreshRuntime();
+          }}
           onAssetsRefresh={refreshAssets}
           onProjectsRefresh={refreshProjects}
           collapsed={chatCollapsed}

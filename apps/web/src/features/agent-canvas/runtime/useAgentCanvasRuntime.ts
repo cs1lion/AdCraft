@@ -27,7 +27,10 @@ import {
 import { resolvePublishedAssets } from "./publishedAssets.ts";
 import { nodeRunRequest } from "./runRequest.ts";
 import { modelResolutionFromEvent } from "./modelResolution.ts";
-import { runtimeEventPolicy } from "./runtimeEventPolicy.ts";
+import {
+  runtimeEventPolicy,
+  type AgentCanvasRuntimeRefreshPolicy,
+} from "./runtimeEventPolicy.ts";
 
 /**
  * Structured reason why a node run was blocked (not executed).
@@ -50,9 +53,16 @@ export class NodeRunBlockedError extends Error {
   }
 }
 import {
+  isTerminalRuntimeEvent,
   runtimeRefreshIdentity,
+  runtimeReflectsTerminalEvent,
   sameRuntimePresentation,
 } from "./runtimeRefreshIdentity.ts";
+
+/** 非终态事件（进度类）的合批刷新窗口：连发的 progress 只重读一次运行投影。 */
+const NON_TERMINAL_RUNTIME_REFRESH_WINDOW_MS = 120;
+/** 终态事件后补偿重读的宽限：运行投影可能比事件慢一拍，250ms 后仍不一致再读。 */
+const TERMINAL_RECONCILE_DELAY_MS = 250;
 
 type RuntimeCallbacks = {
   applyWorkflow: (workflow: AgentCanvasWorkflowV2) => void;
@@ -89,7 +99,7 @@ export function useAgentCanvasRuntime(
   const [modelResolutionsByNodeId, setModelResolutionsByNodeId] = useState<Record<string, CanvasRuntimeModelResolutionV2>>({});
   const [inputReadinessIssue, setInputReadinessIssue] = useState<UpstreamInputReadinessIssueV2 | null>(null);
   const cursorRef = useRef(0);
-  const runtimeRefreshRef = useRef<Promise<void> | null>(null);
+  const runtimeRefreshRef = useRef<Promise<CanvasRuntimeSnapshotV2 | null> | null>(null);
   const workflowRefreshRef = useRef<Promise<void> | null>(null);
   const assetsRefreshRef = useRef<Promise<void> | null>(null);
   const runtimeRefreshQueuedRef = useRef(false);
@@ -98,6 +108,9 @@ export function useAgentCanvasRuntime(
   const pendingAssetPublishesRef = useRef<Map<string, string | null>>(new Map());
   const seenTransitionKeysRef = useRef<Set<string>>(new Set());
   const lastRuntimeRefreshIdentityRef = useRef<string | null>(null);
+  // 非终态合批 + 终态补偿：重构期间被连带删除的两个活性机制（tests 是规格）
+  const runtimeRefreshTimerRef = useRef<number | null>(null);
+  const terminalReconcileTimersRef = useRef<Map<string, number>>(new Map());
 
   const workflowId = workflow?.workflow_id ?? null;
   const activeWorkflowIdRef = useRef<string | null>(workflowId);
@@ -113,6 +126,15 @@ export function useAgentCanvasRuntime(
     pendingAssetPublishesRef.current.clear();
     seenTransitionKeysRef.current.clear();
     lastRuntimeRefreshIdentityRef.current = null;
+    // 工作流切换：取消所有在途的合批/补偿刷新（旧工作流的重读没有意义）
+    if (runtimeRefreshTimerRef.current !== null) {
+      window.clearTimeout(runtimeRefreshTimerRef.current);
+      runtimeRefreshTimerRef.current = null;
+    }
+    for (const timer of terminalReconcileTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    terminalReconcileTimersRef.current.clear();
   }
 
   useEffect(() => {
@@ -136,21 +158,23 @@ export function useAgentCanvasRuntime(
       return runtimeRefreshRef.current;
     }
     const request = (async () => {
+      let snapshot: CanvasRuntimeSnapshotV2 | null = null;
       do {
         runtimeRefreshQueuedRef.current = false;
         try {
           const next = await agentCanvasApi.agentCanvasRuntime(workflowId);
-          if (activeWorkflowIdRef.current !== workflowId) return;
+          snapshot = next;
+          if (activeWorkflowIdRef.current !== workflowId) return snapshot;
           setRuntime((current) => (
             sameRuntimePresentation(current, next) ? current : next
           ));
           setRuntimeError(null);
         } catch (error) {
-          if (activeWorkflowIdRef.current !== workflowId) return;
+          if (activeWorkflowIdRef.current !== workflowId) return snapshot;
           if (isV2ApiError(error) && [404, 405, 501].includes(error.status)) {
             setConnectionState("unavailable");
             setRuntimeError("Agent Canvas runtime requires the matching backend update.");
-            return;
+            return snapshot;
           }
           lastRuntimeRefreshIdentityRef.current = null;
           setRuntimeError(error instanceof Error ? error.message : "Runtime refresh failed.");
@@ -159,6 +183,7 @@ export function useAgentCanvasRuntime(
         runtimeRefreshQueuedRef.current
         && activeWorkflowIdRef.current === workflowId
       );
+      return snapshot;
     })().finally(() => {
         if (runtimeRefreshRef.current === request) runtimeRefreshRef.current = null;
       });
@@ -193,6 +218,42 @@ export function useAgentCanvasRuntime(
     workflowRefreshRef.current = request;
     return request;
   }, [callbacks, workflowId]);
+
+  // 非终态事件（progress 类）合批：窗口内连发只重读一次运行投影，避免每个
+  // 进度事件都打一次 /runtime。
+  const clearScheduledRuntimeRefresh = useCallback(() => {
+    if (runtimeRefreshTimerRef.current !== null) {
+      window.clearTimeout(runtimeRefreshTimerRef.current);
+      runtimeRefreshTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleRuntimeRefresh = useCallback(() => {
+    if (runtimeRefreshTimerRef.current !== null) return;
+    runtimeRefreshTimerRef.current = window.setTimeout(() => {
+      runtimeRefreshTimerRef.current = null;
+      void refreshRuntime();
+    }, NON_TERMINAL_RUNTIME_REFRESH_WINDOW_MS);
+  }, [refreshRuntime]);
+
+  // 终态事件补偿：立即重读 + 刷 workflow；若投影还没反映终态（慢一拍），
+  // 250ms 后再补一次——否则界面会停在 working 直到下一个事件到来。
+  const reconcileTerminalEvent = useCallback(async (
+    event: CanvasRuntimeEventV2,
+    policy: Pick<AgentCanvasRuntimeRefreshPolicy, "refreshWorkflow">,
+  ) => {
+    const snapshot = await refreshRuntime();
+    if (policy.refreshWorkflow) await refreshWorkflow();
+    if (snapshot && runtimeReflectsTerminalEvent(snapshot, event)) return;
+    const key = `${event.event_type}:${event.node_id ?? "workflow"}:${event.seq}`;
+    if (terminalReconcileTimersRef.current.has(key)) return;
+    const timer = window.setTimeout(() => {
+      terminalReconcileTimersRef.current.delete(key);
+      void refreshRuntime();
+      if (policy.refreshWorkflow) void refreshWorkflow();
+    }, TERMINAL_RECONCILE_DELAY_MS);
+    terminalReconcileTimersRef.current.set(key, timer);
+  }, [refreshRuntime, refreshWorkflow]);
 
   const refreshAssets = useCallback(async (event?: CanvasRuntimeEventV2) => {
     if (!workflowId) return;
@@ -273,14 +334,22 @@ export function useAgentCanvasRuntime(
       }));
     }
     const policy = runtimeEventPolicy(event);
+    const terminalRuntimeEvent = isTerminalRuntimeEvent(event.event_type);
     if (policy.refreshRuntime) {
       const refreshIdentity = runtimeRefreshIdentity(event);
       if (lastRuntimeRefreshIdentityRef.current !== refreshIdentity) {
         lastRuntimeRefreshIdentityRef.current = refreshIdentity;
-        void refreshRuntime();
+        if (terminalRuntimeEvent) {
+          clearScheduledRuntimeRefresh();
+          void reconcileTerminalEvent(event, policy);
+        } else {
+          scheduleRuntimeRefresh();
+        }
       }
     }
-    if (policy.refreshWorkflow) void refreshWorkflow();
+    // 终态事件的 workflow 权威刷新由 reconcileTerminalEvent 统一做（它还可能
+    // 带 250ms 补偿）；这里只处理非终态的即时刷新。
+    if (policy.refreshWorkflow && !terminalRuntimeEvent) void refreshWorkflow();
     if (policy.refreshAssets) void refreshAssets(event);
     if (policy.refreshChat) {
       setChatEvents((current) => [...current, event].slice(-100));
@@ -322,7 +391,16 @@ export function useAgentCanvasRuntime(
         })
         .catch(() => {});
     }
-  }, [callbacks, refreshAssets, refreshRuntime, refreshWorkflow, workflowId]);
+  }, [
+    callbacks,
+    clearScheduledRuntimeRefresh,
+    reconcileTerminalEvent,
+    refreshAssets,
+    refreshRuntime,
+    refreshWorkflow,
+    scheduleRuntimeRefresh,
+    workflowId,
+  ]);
 
   useEffect(() => {
     if (!workflowId) {
@@ -349,13 +427,15 @@ export function useAgentCanvasRuntime(
       isActive: () => boolean = () => !cancelled,
     ) => {
       let replayCursor = afterSeq;
+      let replayed = false;
       for (;;) {
         const replay = await agentCanvasApi.agentCanvasEvents(workflowId, replayCursor, 200);
-        if (!isActive() || activeWorkflowIdRef.current !== workflowId) return;
+        if (!isActive() || activeWorkflowIdRef.current !== workflowId) return replayed;
+        replayed = replayed || replay.events.length > 0;
         replay.events.forEach(processEvent);
         const nextCursor = Math.max(cursorRef.current, replay.next_cursor, replayCursor);
         cursorRef.current = nextCursor;
-        if (replay.events.length < 200 || nextCursor <= replayCursor) return;
+        if (replay.events.length < 200 || nextCursor <= replayCursor) return replayed;
         replayCursor = nextCursor;
       }
     };
@@ -393,10 +473,14 @@ export function useAgentCanvasRuntime(
             // being assembled at the same time. Once the stream is truly open,
             // replay its boundary again and refresh the authoritative projections.
             try {
-              await replayEvents(streamCursor, isCurrentConnection);
+              // 初始连接的开流同步：replay 真有事件才刷权威投影——空转的
+              // 边界（无事件）不产生多余的 workflow 刷新。
+              const replayChanged = await replayEvents(streamCursor, isCurrentConnection);
               if (!isCurrentConnection() || !initialConnection) return;
-              void refreshWorkflow();
-              setChatRevision((current) => current + 1);
+              if (replayChanged) {
+                void refreshWorkflow();
+                setChatRevision((current) => current + 1);
+              }
             } catch (error) {
               if (!isCurrentConnection()) return;
               setRuntimeError(
@@ -474,8 +558,15 @@ export function useAgentCanvasRuntime(
       cancelled = true;
       window.clearTimeout(reconnectTimer);
       eventSource?.close();
+      // 卸载即取消在途合批/补偿刷新——否则旧实例的定时器会在后续测试或
+      // 新连接里补一发 agentCanvasRuntime（跨用例计数污染 + 无意义请求）
+      clearScheduledRuntimeRefresh();
+      for (const timer of terminalReconcileTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      terminalReconcileTimersRef.current.clear();
     };
-  }, [processEvent, refreshRuntime, refreshWorkflow, workflowId]);
+  }, [clearScheduledRuntimeRefresh, processEvent, refreshRuntime, refreshWorkflow, workflowId]);
 
   const runAll = useCallback(async () => {
     if (!workflowId || !workflow) {
@@ -522,7 +613,10 @@ export function useAgentCanvasRuntime(
     if (isSourceOnlyNode(node)) {
       throw new NodeRunBlockedError("source_only_node", "This is a source-only asset node.", "Use it as input for a generative node, or edit it directly.");
     }
-    if (node.status !== "draft" && node.status !== "failed") {
+    // draft/failed 可跑，ready 可**重新生成**（工作台对 ready 节点提供
+    // Regenerate：runAction==="regenerate"，仅 publishing 中禁用）——堵住
+    // ready 会把重生流整个关掉。working 及其余状态才真的不可跑。
+    if (!["draft", "failed", "ready"].includes(node.status)) {
       throw new NodeRunBlockedError("not_runnable_status", `Node is already ${node.status}.`, node.status === "working" ? "Wait for generation to complete." : "No action needed.");
     }
     setRunPending(true);

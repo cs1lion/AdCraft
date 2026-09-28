@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -124,6 +124,10 @@ describe("useAgentCanvasRuntime", () => {
   });
 
   afterEach(() => {
+    // 卸载每个用例的 hook：连接 effect 的清理会取消在途的合批/补偿刷新。
+    // 不卸载时，上一个用例的 120ms 合批定时器会在下一个用例的断言窗口内
+    // 补发一次 agentCanvasRuntime（顺序敏感的跨用例竞态）。
+    cleanup();
     vi.useRealTimers();
   });
 

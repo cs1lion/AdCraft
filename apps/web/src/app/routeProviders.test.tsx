@@ -14,6 +14,7 @@ const { api, fetchMock, v2Api, isV2ApiError, isNetworkError } = vi.hoisted(() =>
   fetchMock: vi.fn(),
   v2Api: {
     listProjectsWithEtag: vi.fn(),
+    listProjects: vi.fn(),
     createAgentCanvasProject: vi.fn(),
     projectWithEtag: vi.fn(),
     agentCanvasWorkflowWithEtag: vi.fn(),
@@ -65,9 +66,33 @@ function ProjectsPageProbe() {
 }
 
 function resetApiMocks() {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    json: async () => ({ service: "AdCraft", mode: "test" }),
+  // HealthProvider 用裸 fetch 探活 (/health) 并拉配置就绪 (/providers)——
+  // badge 显示 "API ready" 需要两者都通：四项核心能力都 configured。
+  // 此前 mock 对所有 URL 返回 health 体，providers 拿到无 items → 徽标
+  // 永远停在 "API not configured"（配置就绪检查加入后的过期 fixture）。
+  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/providers")) {
+      return {
+        ok: true,
+        json: async () => ({
+          items: [
+            {
+              credentials: {
+                text: { configured: true },
+                image: { configured: true },
+                video: { configured: true },
+                audio: { configured: true },
+              },
+            },
+          ],
+        }),
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({ service: "AdCraft", mode: "test" }),
+    };
   });
   api.health.mockResolvedValue({ service: "AdCraft", mode: "test" });
   api.listAssets.mockResolvedValue({ assets: [] });
@@ -78,6 +103,10 @@ function resetApiMocks() {
     etag: '"projects-empty"',
     notModified: false,
   });
+  // Home 路的 recent-projects 水合走非 etag 的 listProjects（HomePage 内联
+  // loader：("active", 10, null)）；etag 缓存版（home/useRecentProjects）当前
+  // 无渲染方——见 P5 台账死代码条目，不在此测试里假装它存在。
+  v2Api.listProjects.mockResolvedValue({ items: [], next_cursor: null });
   v2Api.createAgentCanvasProject.mockResolvedValue({
     value: {
       workflow_id: "workflow-created",
@@ -139,8 +168,9 @@ describe("route providers", () => {
 
     await screen.findByText("API ready");
 
-    await waitFor(() => expect(v2Api.listProjectsWithEtag).toHaveBeenCalledWith("active", 4, undefined, undefined));
-    expect(v2Api.listProjectsWithEtag).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(v2Api.listProjects).toHaveBeenCalledWith("active", 10, null));
+    // Home 不水合 workspace：etag 版项目列表（WorkspaceProvider 的 100 条）不出现
+    expect(v2Api.listProjectsWithEtag).not.toHaveBeenCalled();
     expect(v2Api.agentCanvasWorkflowWithEtag).not.toHaveBeenCalled();
     expect(api.listAssets).not.toHaveBeenCalled();
     expect(api.nodeCatalog).not.toHaveBeenCalled();
@@ -465,7 +495,14 @@ describe("route providers", () => {
   });
 
   test("keeps workspace chunks out of the actual built Home route closure", () => {
-    execFileSync("npm", ["run", "build"], { cwd: webRoot, stdio: "pipe" });
+    // win32 上 npm 的入口是 npm.cmd，且 Node 17+ spawn .cmd 需要 shell:true
+    // （否则 EINVAL；直spawn "npm" 在非 shell 环境 ENOENT——跨平台修正）
+    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+    execFileSync(npmCommand, ["run", "build"], {
+      cwd: webRoot,
+      stdio: "pipe",
+      shell: process.platform === "win32",
+    });
 
     function staticGraph(entry: string) {
       const graphResult = spawnSync(process.execPath, [
