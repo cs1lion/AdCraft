@@ -220,6 +220,37 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const [renderBlockers, setRenderBlockers] = useState<string[]>([]);
   // 直出的诚实备注（替换了哪版时间线 / 哪些库素材未计入）
   const [renderNotes, setRenderNotes] = useState<string[]>([]);
+  // G5 字幕族配方（.adrecipe 库）：直出时连同配方一起提交——变体之间
+  // "看得见的差异"由它提供（否则只有 skill 槽位值不同，字幕样式逐字节相同）
+  type RecipeEntry = {
+    recipe_id: string;
+    name: string;
+    description: string;
+    subtitle: Record<string, unknown>;
+  };
+  const [recipes, setRecipes] = useState<RecipeEntry[]>([]);
+  const [selectedRecipe, setSelectedRecipe] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    // 配方库在**源码 tab 打开时**才拉（直出 UI 所在处）：挂载即拉会在无关
+    // 流程的 fetch 调用序列里插队，把"第一次 POST 是这个端点"的观测变浑浊。
+    if (tab !== "source" || recipes.length > 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/v1/replica/blueprint/recipes");
+        const body = await response.json().catch(() => null);
+        if (cancelled || response.status !== 200 || !body?.success) return;
+        const list = Array.isArray(body.recipes) ? (body.recipes as RecipeEntry[]) : [];
+        setRecipes(list);
+        if (list.length > 0) setSelectedRecipe(list[0] as unknown as Record<string, unknown>);
+      } catch {
+        // 配方库不可用不影响直出（编译层默认形态）；对可选增强静默是可接受的
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, recipes.length]);
 
   // 高亮行滚动到可见（jsdom 无 scrollIntoView，需守卫）
   useEffect(() => {
@@ -316,8 +347,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // 1) 先落盘当前编辑（与"一键生成"同纪律：节点是真相源，不含未保存编辑）；
   // 2) 桥端点内部跑可行性门——非可行即 422 + rejected 缺失清单，不渲染；
   // 3) 渲染是 detached 的：拿到 render_id 后轮询 v2 渲染状态端点。
-  const startDirectRender = useCallback(async () => {
-    setRenderPhase("starting");
+  const startDirectRender = useCallback(async () => {    setRenderPhase("starting");
     setRenderFailure(null);
     setRenderBlockers([]);
     setRenderNotes([]);
@@ -337,7 +367,11 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       const response = await fetch("/api/v1/replica/blueprint/direct-execute/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflow_id: node.workflow_id, blueprint: content }),
+        body: JSON.stringify({
+          workflow_id: node.workflow_id,
+          blueprint: content,
+          ...(selectedRecipe ? { recipe: selectedRecipe } : {}),
+        }),
       });
       const body = await response.json().catch(() => null);
       if (response.status !== 200 || !body) {
@@ -376,8 +410,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       setRenderFailure(err instanceof Error ? err.message : "直出失败");
       setRenderPhase("failed");
     }
-  }, [buildContent, node, setAgentCanvasWorkflow]);
-
+  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe]);
   // 轮询渲染状态（组件卸载自动停；超过 ~5 分钟未终态则明确失败，不无限轮）
   useEffect(() => {
     if (renderPhase !== "polling" || !renderId) return;
@@ -724,6 +757,38 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
               拒绝（缺什么会列出来）。直出会替换该工作流当前的 final-composition
               时间线——面板关闭后渲染仍在工作流内继续。
             </div>
+            {recipes.length > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, fontSize: 10 }}>
+                <span style={{ color: "#8af" }}>🎨 字幕配方</span>
+                <select
+                  value={selectedRecipe ? String(selectedRecipe.recipe_id ?? "") : ""}
+                  onChange={(event) => {
+                    const picked = recipes.find((r) => r.recipe_id === event.target.value);
+                    setSelectedRecipe(picked ? (picked as unknown as Record<string, unknown>) : null);
+                  }}
+                  title={
+                    selectedRecipe
+                      ? String(selectedRecipe.description ?? "")
+                      : "字幕族配方（.adrecipe）：字体/颜色/位置/可见窗/交接"
+                  }
+                  style={{
+                    background: "#16162a",
+                    border: "1px solid #2a2a4a",
+                    borderRadius: 3,
+                    color: "#ccc",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    padding: "3px 6px",
+                  }}
+                >
+                  {recipes.map((recipe) => (
+                    <option key={recipe.recipe_id} value={recipe.recipe_id}>
+                      {recipe.name || recipe.recipe_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <button
               onClick={() => void startDirectRender()}
               disabled={renderPhase === "starting" || renderPhase === "polling"}

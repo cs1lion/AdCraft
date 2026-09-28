@@ -176,6 +176,26 @@ class DirectExecuteRenderRequest(BaseModel):
 
     blueprint: dict[str, Any]
     plan: dict[str, Any]
+    # G5 字幕族配方（.adrecipe 解析后的 dict）；缺省 = 编译层默认形态
+    recipe: dict[str, Any] | None = None
+
+
+class AdRecipeExportRequest(BaseModel):
+    """配方 → .adrecipe 文本（配方家族的"文件即真相源"）。"""
+
+    recipe: dict[str, Any]
+
+
+class AdRecipeImportRequest(BaseModel):
+    """.adrecipe 文本 → 配方（未知维度显式报错，不静默降级）。"""
+
+    adrecipe: str = Field(min_length=1, max_length=100_000)
+
+
+class AdRecipeResponse(BaseModel):
+    success: bool
+    recipe: dict[str, Any] = Field(default_factory=dict)
+    adrecipe: str = ""
 
 
 class DirectExecuteRenderResponse(BaseModel):
@@ -383,6 +403,54 @@ async def teardown_reference_video(
 
 
 # ---------------------------------------------------------------------------
+# .adrecipe 配方层（G5：字幕族维度词汇表 + 文档层 + 内置库）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/blueprint/recipes")
+async def list_replica_recipes() -> dict[str, Any]:
+    """内置字幕族配方目录（前端点选器数据源；库不可用时空列表不炸）。"""
+    from app.services.replica.recipe import RecipeError, load_recipes
+
+    try:
+        recipes = load_recipes()
+    except RecipeError:
+        recipes = []
+    return {
+        "success": True,
+        "recipes": [recipe.model_dump(mode="json") for recipe in recipes],
+    }
+
+
+@router.post("/blueprint/recipe/export", response_model=AdRecipeResponse)
+async def export_recipe_adrecipe(request: AdRecipeExportRequest) -> AdRecipeResponse:
+    """配方 → .adrecipe 文本（只写设置的维度；未知字段 422）。"""
+    from app.services.replica.recipe import ReplicaRecipeV2, adrecipe_from_recipe
+
+    try:
+        recipe = ReplicaRecipeV2.model_validate(request.recipe)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid recipe: {exc}")
+    return AdRecipeResponse(
+        success=True, recipe=recipe.model_dump(mode="json"), adrecipe=adrecipe_from_recipe(recipe)
+    )
+
+
+@router.post("/blueprint/recipe/import", response_model=AdRecipeResponse)
+async def import_recipe_adrecipe(request: AdRecipeImportRequest) -> AdRecipeResponse:
+    """.adrecipe 文本 → 配方（结构错误/未知维度显式 422，不静默降级）。"""
+    from app.services.replica.recipe import AdRecipeParseError, recipe_from_adrecipe
+
+    try:
+        recipe = recipe_from_adrecipe(request.adrecipe)
+    except AdRecipeParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return AdRecipeResponse(
+        success=True, recipe=recipe.model_dump(mode="json"), adrecipe=request.adrecipe
+    )
+
+
+# ---------------------------------------------------------------------------
 # Blueprint & instantiation（拉片复刻的"复刻"半场）
 # ---------------------------------------------------------------------------
 
@@ -447,6 +515,10 @@ async def plan_blueprint_style_variants(
                 "score": v.score,
                 "rationale": v.rationale,
                 "mixable_applied": v.mixable_applied,
+                # G5：变体 = skill × recipe——配方 id/名随推荐一起给出，
+                # 前端点选时连同配方一起提交，"看得见的差异"才有着落
+                "recipe_id": v.recipe_id,
+                "recipe_name": v.recipe_name,
             }
             for v in variants
         ],
@@ -539,7 +611,16 @@ async def plan_blueprint_direct_execute_render(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid direct-execute plan: {exc}")
 
-    render_plan = plan_direct_execute_render(blueprint, gate)
+    recipe = None
+    if request.recipe is not None:
+        from app.services.replica.recipe import ReplicaRecipeV2
+
+        try:
+            recipe = ReplicaRecipeV2.model_validate(request.recipe)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid recipe: {exc}")
+
+    render_plan = plan_direct_execute_render(blueprint, gate, recipe=recipe)
     return DirectExecuteRenderResponse(
         success=True,
         feasible=render_plan.feasible,
@@ -603,6 +684,7 @@ async def plan_blueprint_variant_render_plans(
     from app.schemas.agent_canvas_ad_media import ReplicaBlueprintContentV2
     from app.services.replica.direct_execute import plan_direct_execute
     from app.services.replica.direct_execute_render import plan_direct_execute_render
+    from app.services.replica.recipe import load_recipes
     from app.services.replica.variants import StyleVariantError, plan_style_variants
 
     try:
@@ -618,6 +700,7 @@ async def plan_blueprint_variant_render_plans(
         raise HTTPException(status_code=422, detail={"error": str(exc)})
 
     gate = plan_direct_execute(blueprint)
+    recipe_by_id = {r.recipe_id: r for r in load_recipes()}
     variants_out: list[dict[str, Any]] = []
     for index, variant in enumerate(variants):
         applied = blueprint.model_copy(
@@ -635,13 +718,19 @@ async def plan_blueprint_variant_render_plans(
                 ]
             }
         )
-        render_plan = plan_direct_execute_render(applied, gate)
+        # G5：变体 = skill × recipe——各自的配方进各自的编译，渲染计划之间
+        # 因此有**看得见的样式差异**（不再是"除槽位值外逐字节相同"）。
+        render_plan = plan_direct_execute_render(
+            applied, gate, recipe=recipe_by_id.get(variant.recipe_id)
+        )
         entry = {
             "variant_id": variant.variant_id,
             "skill_ids": list(variant.skill_ids),
             "names": list(variant.names),
             "score": variant.score,
             "mixable_applied": variant.mixable_applied,
+            "recipe_id": variant.recipe_id,
+            "recipe_name": variant.recipe_name,
             "feasible": render_plan.feasible,
             "subtitle_cue_count": render_plan.subtitle_cue_count,
             "needs_placeholder_video": render_plan.needs_placeholder_video,

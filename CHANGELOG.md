@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 G5：`.adrecipe` 配方层（hypit recipes 落地）——变体第一次有看得见的样式差异
+
+- **`recipe.py` + `agent/recipes/catalog.json`（新模块 + 库）**：配方 = 字幕族语义维度集（font_size/color/position/lead_seconds/tail_seconds/handoff）——**词汇表与 `WorkflowV2TimelineSubtitleStyle` 逐字段同口径**（测试锁定），收一个渲染器不消费的字段就是让文档说谎；内置 5 个配方（底部大字/顶部小签/中央舞台/紧凑跟读/琥珀强调），目录扫描宽容（坏条目跳过、缺目录才报错，同风格库纪律）。
+- **`.adrecipe` 文档层**：`<adrecipe version="1" kind="subtitle-style">` → `<subtitle>` 六维；往返锁定、未设置的维度不写也不回填、未知维度/根元素/版本/缺 id 显式 422（不静默降级）；端点 `/blueprint/recipe/{export,import}` + `/blueprint/recipes`（目录列表）。
+- **编译层真实消费**：`plan_direct_execute_render(..., recipe=)` → `apply_recipe` 合并（未设置的维度保持 G3 默认）；karaoke-tight（lead/tail=0）让可见窗等于语义窗——配方**真实改变成片时间**，不是文本上的成立。
+- **变体 = skill × recipe（G5 的核心兑付）**：`attach_recipes` 确定性轮换配方（相邻变体不同、同 seed 可复现、库不可用保持无配方不炸主流程）；`/variant-render-plans` 各变体带各自配方编译，代表变体的字幕样式签名**互不相同**（测试断言 `len(signatures) >= 2`）——此前的真实症状"除槽位值外逐字节相同"被修掉。
+- **前端**：工作台直出区加「🎨 字幕配方」点选器（源码 tab 打开时拉目录——挂载即拉会在无关流程的 fetch 序列里插队，把"第一次 POST 是这个端点"的观测变浑浊）；选中配方随直出提交；两个既有按索引断言的测试改为按 URL 查找（背景拉取合法化后的鲁棒性修正）。
+- **测试**：+28（文档往返/拒绝 5、词汇表同口径 3、库扫描 4、编译应用 4、变体配方 4、端点 8）。replica 全套 **216 passed / 3 skip**；全量后端 **2054 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查 188 paths 通过；前端 tsc/eslint 0 error、canvas 全量零新增失败。
+
 ### Added — 拉片复刻 G4：narrative token 层（hypit P1 主项）——锚定从时间上移到授权序
 
 - **`services/replica/narrative.py`（新模块，纯函数）**：normalize（授权拼写：去标点/大小写/空白/NFKC）+ tokenize（CJK 字符级、拉丁词级，无分词依赖）+ `Narrative`（segments/tokens）+ **6 种 anchor**（program/segment/token × 起止，对齐 hypit `SemanticAnchor`）+ `narrative_selection_tokens`（anchor 对 → token 区间，**不查时间线**）+ `token_range_for_text`（normalized 定位，occurrence 可指向重复子串的第 N 次）+ `project_seconds`（token 区间 → 秒数，词流投影）。

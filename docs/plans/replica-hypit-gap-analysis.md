@@ -97,6 +97,6 @@
 | P2：语义/可见时间分离 + handoff | ✅ **已交付（2026-09-28）**：`WorkflowV2TimelineSubtitleStyle` += lead_seconds/tail_seconds/handoff；`schedule_caption_cues` 语义窗不动、可见窗加宽钳位、同轨 cut 交接；渲染器 `_subtitle_filter` enable 窗读可见窗元数据。**词级可见窗/karaoke 未做**——v2 路径每 cue 一个 drawtext 无法逐词换色，ASS writer 无词级时间；下一片需蓝图词流保留 + ASS `{\k}`（见 `replica-teardown.md` §14） |
 | P1 主项：narrative token 层 | ✅ **已交付（2026-09-28）**：`narrative.py`（token/anchor/selection/投影）+ 锚点 token 区间绑定 + `reproject_anchor_seconds`；selection 与帧时间解耦由测试锁定（秒数全改脏 selection 不变、重配音后 binding 存活）。实现中修掉"token 源不一致"缺陷：token 只来自授权文本（line），词流仅作对齐源 |
 | P1 子项：normalized 匹配 | ✅ **已交付（2026-09-28）**：`normalize_text` + `token_range_for_text`（normalized 定位 + occurrence 选次）；锚点解析的词面绑定走这一路径 |
-| P2：recipes/.adrecipe | 未启动 |
+| P2：recipes/.adrecipe | ✅ **已交付（2026-09-28）**：`recipe.py` + `agent/recipes/catalog.json`（六维词汇表，与样式 schema 同口径）+ `.adrecipe` 文档层 + 端点；变体 = skill × recipe（确定性轮换），变体渲染计划的字幕样式签名互不相同（测试断言）——"除槽位值外逐字节相同"的老症状修掉。motion/镜头语言等维度等渲染链支持后再进词汇表 |
 | P3：fact log | 部分（渲染有 state；编译/解析无账本） |
 | P3：swap 骨架恒等断言 | 未启动（半天工作量） |

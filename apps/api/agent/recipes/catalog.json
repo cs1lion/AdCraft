@@ -1,0 +1,65 @@
+{
+  "catalog_version": "1",
+  "recipes": [
+    {
+      "recipe_id": "bottom-bold",
+      "name": "底部大字",
+      "description": "经典短视频字幕形态：底部居中白字，可见窗比口播各宽 0.1/0.2s，同轨 cut 交接。",
+      "version": "1",
+      "font_size": 42,
+      "color": "#FFFFFF",
+      "position": "bottom_center",
+      "lead_seconds": 0.1,
+      "tail_seconds": 0.2,
+      "handoff": "cut"
+    },
+    {
+      "recipe_id": "top-tag",
+      "name": "顶部小签",
+      "description": "顶部小号字幕：让出画面主体，适合有商品/人物占据画面中下部的片子。",
+      "version": "1",
+      "font_size": 24,
+      "color": "#FFFFFF",
+      "position": "top_center",
+      "lead_seconds": 0.2,
+      "tail_seconds": 0.1,
+      "handoff": "cut"
+    },
+    {
+      "recipe_id": "center-stage",
+      "description": "中央舞台：大字号居中，允许相邻字幕轻微交叠（口播密时优先保证每句完整）。",
+      "version": "1",
+      "font_size": 56,
+      "color": "#FFFFFF",
+      "position": "center",
+      "lead_seconds": 0.0,
+      "tail_seconds": 0.3,
+      "handoff": "overlap",
+      "name": "中央舞台"
+    },
+    {
+      "recipe_id": "karaoke-tight",
+      "name": "紧凑跟读",
+      "description": "无加宽、裁剪齐口播：快节奏跟读/教学片的紧凑字幕（lead/tail=0）。",
+      "version": "1",
+      "font_size": 30,
+      "color": "#FFFFFF",
+      "position": "bottom_center",
+      "lead_seconds": 0.0,
+      "tail_seconds": 0.0,
+      "handoff": "cut"
+    },
+    {
+      "recipe_id": "amber-emphasis",
+      "name": "琥珀强调",
+      "description": "暖色强调字幕：促销/活动片的注意力形态，底部居中暖琥珀色。",
+      "version": "1",
+      "font_size": 40,
+      "color": "#FFC658",
+      "position": "bottom_center",
+      "lead_seconds": 0.1,
+      "tail_seconds": 0.2,
+      "handoff": "cut"
+    }
+  ]
+}

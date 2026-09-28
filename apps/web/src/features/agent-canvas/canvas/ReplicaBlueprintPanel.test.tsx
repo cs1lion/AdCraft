@@ -190,9 +190,13 @@ describe("ReplicaBlueprintPanel", () => {
     await waitFor(() =>
       expect(screen.getAllByText(/node_script_1/).length).toBeGreaterThan(0),
     );
-    // slot update carried to the instantiate call
-    const [url, init] = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0];
-    expect(url).toBe("/api/v1/replica/instantiate");
+    // slot update carried to the instantiate call（按 URL 查找：源码 tab 的
+    // 配方库拉取会先于交互式 POST 发生，索引断言会把观测绑死在顺序上）
+    const instantiateCall = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls.find(
+      (call) => String(call[0]).includes("/replica/instantiate"),
+    );
+    expect(instantiateCall).toBeTruthy();
+    const [, init] = instantiateCall as unknown as [string, RequestInit];
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.workflow_id).toBe("wf-1");
     expect(body.replica_node_id).toBe("node_replica");
@@ -264,10 +268,13 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
 
     // 1) 发车前先落盘（节点是真相源，不含未保存编辑）
     await waitFor(() => expect(patchNode).toHaveBeenCalledWith("wf-1", "node_replica", expect.anything()));
-    // 2) 桥端点：workflow_id + 生效蓝图
-    const [bridgeUrl, bridgeInit] = (fetchMock as unknown as {
+    // 2) 桥端点：workflow_id + 生效蓝图（按 URL 查找：源码 tab 打开时的
+    // 配方库拉取会先于交互式 POST 发生，索引断言会把观测绑死在顺序上）
+    const bridgeCall = (fetchMock as unknown as {
       mock: { calls: [string, RequestInit][] };
-    }).mock.calls[0];
+    }).mock.calls.find((call) => String(call[0]).includes("/direct-execute/render"));
+    expect(bridgeCall).toBeTruthy();
+    const [bridgeUrl, bridgeInit] = bridgeCall as unknown as [string, RequestInit];
     expect(bridgeUrl).toBe("/api/v1/replica/blueprint/direct-execute/render");
     const bridgeBody = JSON.parse(bridgeInit.body as string);
     expect(bridgeBody.workflow_id).toBe("wf-1");
@@ -287,6 +294,72 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
     expect(video?.getAttribute("src")).toBe("https://cdn.example/final-replica.mp4");
     expect(screen.getByText(/已替换工作流此前的 final-composition 时间线（版本 3 → 4）/)).toBeTruthy();
     expect(screen.getByText(/库素材未解析，未计入本次直出：bgm_system、sfx_system/)).toBeTruthy();
+  });
+
+  it("submits the selected subtitle recipe (.adrecipe) with the direct render", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/api/v1/replica/blueprint/recipes")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            recipes: [
+              {
+                recipe_id: "bottom-bold",
+                name: "底部大字",
+                description: "经典短视频字幕形态",
+                subtitle: { font_size: 42, color: "#FFFFFF", position: "bottom_center" },
+              },
+              {
+                recipe_id: "amber-emphasis",
+                name: "琥珀强调",
+                description: "暖色强调字幕",
+                subtitle: { font_size: 40, color: "#FFC658", position: "bottom_center" },
+              },
+            ],
+          }),
+        };
+      }
+      if (String(url).includes("/final-composition/renders/")) {
+        return {
+          status: 200,
+          json: async () => ({ status: "completed", progress_percent: 100, output_url: "https://cdn/f.mp4" }),
+        };
+      }
+      return {
+        status: 200,
+        json: async () => ({
+          success: true,
+          feasible: true,
+          render_id: "render_recipe01",
+          status: "queued",
+          timeline_version: 2,
+          previous_timeline_version: 1,
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    // 配方库拉取 → 默认选中第一条 + 下拉可切
+    await waitFor(() => expect(screen.getByText("🎨 字幕配方")).toBeTruthy());
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("bottom-bold");
+    fireEvent.change(select, { target: { value: "amber-emphasis" } });
+    expect(select.value).toBe("amber-emphasis");
+
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    await waitFor(() =>
+      expect(screen.getAllByText(/成片已产出/).length).toBeGreaterThan(0),
+    );
+    const bridgeCall = (fetchMock as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls.find(
+      (call) => String(call[0]).includes("/direct-execute/render"),
+    );
+    expect(bridgeCall).toBeTruthy();
+    const body = JSON.parse((bridgeCall as unknown as [string, RequestInit])[1].body as string);
+    expect(body.recipe.recipe_id).toBe("amber-emphasis");
+    expect(body.recipe.subtitle.color).toBe("#FFC658");
   });
 
   it("surfaces the feasibility gate blockers instead of rendering", async () => {
@@ -346,7 +419,12 @@ describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {  function open
     );
     const textarea = screen.getByPlaceholderText(/粘贴到这里/) as HTMLTextAreaElement;
     expect(textarea.value).toContain("<advideo");
-    const [url, init] = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0];
+    // 按 URL 查找（源码 tab 打开时的配方库拉取先于交互式 POST，见上）
+    const exportCall = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls.find(
+      (call) => String(call[0]).includes("/replica/blueprint/export"),
+    );
+    expect(exportCall).toBeTruthy();
+    const [url, init] = exportCall as unknown as [string, RequestInit];
     expect(url).toBe("/api/v1/replica/blueprint/export");
     const body = JSON.parse(init.body as string);
     const product = (body.blueprint.slots as Array<{ kind: string; replace_with: string }>).find(

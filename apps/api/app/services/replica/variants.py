@@ -54,7 +54,12 @@ class StyleSkillInfo:
 
 @dataclass(frozen=True)
 class StyleVariant:
-    """一个风格变体候选（Jev Choice 语义：选项 + 依据 + 分数）。"""
+    """一个风格变体候选（Jev Choice 语义：选项 + 依据 + 分数）。
+
+    G5：变体 = **skill × recipe**——skill 是整包风格技能，recipe 是字幕族
+    配方（.adrecipe）。没有 recipe 的变体在渲染计划里只有 style 槽位差异，
+    字幕样式逐字节相同（老问题）；配方让"看得见的差异"成立。
+    """
 
     variant_id: str
     skill_ids: tuple[str, ...]
@@ -62,6 +67,8 @@ class StyleVariant:
     score: float
     rationale: str
     mixable_applied: bool = True  # 多风格激活支持后组合才可一键应用
+    recipe_id: str = ""  # 字幕族配方 id（空 = 编译层默认形态）
+    recipe_name: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +288,8 @@ def plan_style_variants(
                 mixable_applied=len(combo) == 1,
             )
         )
-    return variants
+    # G5：挂字幕族配方（变体 = skill × recipe；库不可用时保持无配方）
+    return attach_recipes(variants, seed_material=seed_material)
 
 
 def _top_overlap_terms(
@@ -293,3 +301,59 @@ def _top_overlap_terms(
     for skill in combo:
         skill_tokens |= _tokens(f"{skill.name} {skill.description}")
     return sorted(query_tokens & skill_tokens)[:4]
+
+
+# ---------------------------------------------------------------------------
+# G5：变体 = skill × recipe（字幕族配方轮换）
+# ---------------------------------------------------------------------------
+
+
+def attach_recipes(
+    variants: list[StyleVariant],
+    recipes: list | None = None,
+    *,
+    seed_material: str = "",
+) -> list[StyleVariant]:
+    """给变体挂字幕族配方（.adrecipe）——没有它，变体只有 skill 槽位差异。
+
+    确定性轮换：第 i 个变体取 ``recipes[i % len(recipes)]``——同一 seed
+    下同一变体永远拿到同一配方，且相邻变体配方不同（差异可感知；审片时
+    "看得见的不同"正是 recipe 带来的）。
+
+    配方库不可用（目录缺失/损坏）时变体保持无 recipe——库是增强不是依赖，
+    不为一个可选增强炸掉主流程。
+    """
+    if recipes is None:
+        try:
+            from app.services.replica.recipe import RecipeError, load_recipes
+
+            recipes = load_recipes()
+        except RecipeError:
+            recipes = []
+    if not recipes:
+        return variants
+    attached: list[StyleVariant] = []
+    for index, variant in enumerate(variants):
+        recipe = recipes[index % len(recipes)]
+        attached.append(
+            StyleVariant(
+                variant_id="variant_"
+                + hashlib.sha256(
+                    (
+                        "|".join(variant.skill_ids)
+                        + f"|{recipe.recipe_id}"
+                        + f"|{seed_material}"
+                    ).encode("utf-8")
+                ).hexdigest()[:12],
+                skill_ids=variant.skill_ids,
+                names=variant.names,
+                score=variant.score,
+                rationale=(
+                    variant.rationale + "；样式配方：" + (recipe.name or recipe.recipe_id)
+                ),
+                mixable_applied=variant.mixable_applied,
+                recipe_id=recipe.recipe_id,
+                recipe_name=recipe.name or recipe.recipe_id,
+            )
+        )
+    return attached

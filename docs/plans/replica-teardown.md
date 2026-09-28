@@ -293,3 +293,22 @@ TeardownResponse{report, frame_analyses, video_metadata}
   存活、秒数重投影；投不出时间 → 清除绑定（不保留过期秒数）。
 - **边界**：token id 不进 `.adreplica`（派生数据）；reproject 的生产触发
   （"重新对齐"入口）留给生成通道/TTS 片——语义与纯函数本增量已交付。
+
+## 18. 已交付：G5 `.adrecipe` 配方层（hypit recipes 落地，2026-09-28）
+
+- **词汇表纪律**：配方只收渲染链真实消费的六维（font_size/color/position/
+  lead/tail/handoff），与 `WorkflowV2TimelineSubtitleStyle` 逐字段同口径
+  （测试锁定）——每个新元素必须有编译目标（调研档 §3.4）。
+- **文档层**：`.adrecipe`（`<adrecipe>`→`<subtitle>` 六维）+ 往返/未知维度
+  显式拒绝 + 端点（recipes 列表/export/import）。内置库 `agent/recipes/
+  catalog.json` 5 个配方；库不可用时变体保持无配方（增强不是依赖）。
+- **编译消费**：`plan_direct_execute_render(recipe=)` → `apply_recipe` 合并；
+  karaoke-tight 的 lead/tail=0 直接收窄可见窗——配方改变成片时间。
+- **变体 = skill × recipe**：确定性轮换（相邻变体不同、同 seed 可复现）；
+  `/variant-render-plans` 各变体带各自配方编译，代表计划样式签名互不相同
+  （测试断言）——"除槽位值外逐字节相同"的老症状被修掉。
+- **前端**：直出区「🎨 字幕配方」点选器，随直出提交；配方目录在源码 tab
+  打开时拉（挂载即拉会污染 fetch 序列观测）。
+- **未覆盖（等渲染链）**：motion 预设、镜头语言等维度不进词汇表——渲染器
+  不消费就不收。hypit 的 framing/pacing/performance 等 token 集其余部分
+  仍属调研档 P2 后续。

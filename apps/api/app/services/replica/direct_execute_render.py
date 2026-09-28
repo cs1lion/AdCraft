@@ -30,6 +30,7 @@ from app.schemas.workflow_v2 import (
     WorkflowV2TimelineTrack,
 )
 from app.services.replica.direct_execute import DirectExecutePlan
+from app.services.replica.recipe import ReplicaRecipeV2, apply_recipe
 
 #: 字幕轨默认 fps（与 editing 域一致）
 DEFAULT_FPS = 30
@@ -86,6 +87,8 @@ class DirectExecuteRenderPlan:
 def plan_direct_execute_render(
     blueprint: ReplicaBlueprintContentV2,
     gate: DirectExecutePlan,
+    *,
+    recipe: ReplicaRecipeV2 | None = None,
 ) -> DirectExecuteRenderPlan:
     """把可行蓝图编译为零模型费剪辑时间线（纯函数,确定性）。
 
@@ -103,7 +106,7 @@ def plan_direct_execute_render(
         )
 
     total = _content_duration(blueprint)
-    cue_clips = _subtitle_cues(blueprint, total)
+    cue_clips = _subtitle_cues(blueprint, total, recipe)
     cue_clips = schedule_caption_cues(cue_clips, total=total)
     bgm_clips = _bgm_clips(blueprint, total)
     sfx_clips = _sfx_clips(blueprint, total)
@@ -191,7 +194,9 @@ def _content_duration(blueprint: ReplicaBlueprintContentV2) -> float:
 
 
 def _subtitle_cues(
-    blueprint: ReplicaBlueprintContentV2, total: float
+    blueprint: ReplicaBlueprintContentV2,
+    total: float,
+    recipe: ReplicaRecipeV2 | None = None,
 ) -> list[WorkflowV2TimelineClip]:
     """段落台词 + 纯屏上文字镜头 → subtitle cues（词窗优先,段落窗兜底）。
 
@@ -227,6 +232,7 @@ def _subtitle_cues(
                 end=end,
                 text=beat.line,
                 label=beat.role,
+                recipe=recipe,
             )
         )
 
@@ -244,6 +250,7 @@ def _subtitle_cues(
                 end=shot.end_seconds,
                 text=text,
                 label=f"shot-{shot.index}",
+                recipe=recipe,
             )
         )
 
@@ -320,10 +327,26 @@ def schedule_caption_cues(
 
 
 def _subtitle_clip(
-    clip_id: str, start: float, end: float, text: str, label: str
+    clip_id: str,
+    start: float,
+    end: float,
+    text: str,
+    label: str,
+    *,
+    recipe: ReplicaRecipeV2 | None = None,
 ) -> WorkflowV2TimelineClip:
     start = round(max(start, 0.0), 3)
     duration = round(max(0.01, end - start), 3)
+    # 基础样式 = G3 的显式默认（0.1/0.2/cut）；配方随后覆盖它设置的维度
+    # （G5 .adrecipe：字体/颜色/位置/lead/tail/handoff——全部渲染链真实消费）。
+    base_style = WorkflowV2TimelineSubtitleStyle(
+        font_size=42,
+        color="#FFFFFF",
+        position="bottom_center",
+        lead_seconds=DEFAULT_CUE_LEAD_SECONDS,
+        tail_seconds=DEFAULT_CUE_TAIL_SECONDS,
+        handoff=DEFAULT_CUE_HANDOFF,  # type: ignore[arg-type]
+    )
     return WorkflowV2TimelineClip(
         clip_id=clip_id,
         track_id=SUBTITLE_TRACK_ID,
@@ -331,14 +354,7 @@ def _subtitle_clip(
         start_time=start,
         duration=duration,
         text=text,
-        subtitle_style=WorkflowV2TimelineSubtitleStyle(
-            font_size=42,
-            color="#FFFFFF",
-            position="bottom_center",
-            lead_seconds=DEFAULT_CUE_LEAD_SECONDS,
-            tail_seconds=DEFAULT_CUE_TAIL_SECONDS,
-            handoff=DEFAULT_CUE_HANDOFF,  # type: ignore[arg-type]
-        ),
+        subtitle_style=apply_recipe(base_style, recipe),
         metadata={"label": label},
     )
 
