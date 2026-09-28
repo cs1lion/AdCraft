@@ -702,13 +702,16 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
               {slot.kind === "style" && index === styleSlotIndex && (
                 <StyleVariantPicker
                   blueprint={buildContent()}
-                  onApply={(skillId) => {
+                  onApply={(skillId, recipe) => {
                     const next = [...slots];
                     next[styleSlotIndex] = {
                       ...slot,
                       replace_with: skillId,
                     };
                     setSlots(next);
+                    // E1: 变体自带字幕配方——应用即选为该直出的配方，
+                    // "看得见的差异"由此真正进入成片（此前只写 skill 槽位）
+                    if (recipe) setSelectedRecipe(recipe);
                   }}
                 />
               )}
@@ -1278,6 +1281,56 @@ interface StyleVariantCandidate {
   score: number;
   rationale: string;
   mixable_applied: boolean;
+  // E1: 后端已返回的配方身份（G5 兑付点——变体之间"看得见的差异"由它提供）
+  recipe_id: string;
+  recipe_name: string;
+}
+
+/** E1：把配方的字幕参数画成一张迷你预览卡——变体差异必须肉眼可辨，
+ *  而不是只给一行 skill 名字（RW-3：各变体字幕样式可见地不同）。 */
+function RecipeCaptionPreview({ recipe }: { recipe: Record<string, unknown> | null }) {
+  const subtitle = (recipe?.subtitle ?? {}) as Record<string, unknown>;
+  const fontSize = typeof subtitle.font_size === "number" ? subtitle.font_size : null;
+  const color = typeof subtitle.color === "string" ? subtitle.color : "#eee";
+  const position = typeof subtitle.position === "string" ? subtitle.position : "bottom_center";
+  const lead = typeof subtitle.lead_seconds === "number" ? subtitle.lead_seconds : null;
+  const tail = typeof subtitle.tail_seconds === "number" ? subtitle.tail_seconds : null;
+  const justify =
+    position.startsWith("top") ? "flex-start" : position === "center" ? "center" : "flex-end";
+  return (
+    <div
+      style={{
+        width: 72,
+        height: 40,
+        background: "#0a0a14",
+        border: "1px solid #2a2a4a",
+        borderRadius: 3,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: justify,
+        padding: 3,
+        flexShrink: 0,
+      }}
+      title={`position=${position} · font_size=${fontSize ?? "默认"} · lead=${lead ?? "默认"}s · tail=${tail ?? "默认"}s`}
+    >
+      <span
+        style={{
+          color,
+          fontSize: fontSize ? Math.max(7, Math.round(fontSize / 3)) : 8,
+          lineHeight: 1.2,
+          textAlign: "center",
+          overflow: "hidden",
+        }}
+      >
+        别再这样洗脸
+      </span>
+      {lead !== null || tail !== null ? (
+        <span style={{ fontSize: 6, color: "#556", textAlign: "center" }}>
+          +{lead ?? 0}s / -{tail ?? 0}s
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function StyleVariantPicker({
@@ -1285,32 +1338,43 @@ function StyleVariantPicker({
   onApply,
 }: {
   blueprint: ReplicaBlueprintContentV2;
-  onApply: (skillId: string) => void;
+  onApply: (skillId: string, recipe: Record<string, unknown> | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [variants, setVariants] = useState<StyleVariantCandidate[]>([]);
+  // E1: 配方库（预览卡 + 应用时随车提交都靠它）。打开选择器才拉——
+  // 与源码 tab 的配方拉取同一纪律：不挂载即拉，不污染首屏 fetch 序列。
+  const [recipes, setRecipes] = useState<Record<string, unknown>[]>([]);
 
   const loadVariants = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/v1/replica/blueprint/style-variants", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blueprint, n: 5 }),
-      });
-      const body = await response.json().catch(() => null);
-      if (response.status !== 200 || !body) {
+      const [variantsResponse, recipesResponse] = await Promise.all([
+        fetch("/api/v1/replica/blueprint/style-variants", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ blueprint, n: 5 }),
+        }),
+        fetch("/api/v1/replica/blueprint/recipes"),
+      ]);
+      const body = await variantsResponse.json().catch(() => null);
+      if (variantsResponse.status !== 200 || !body) {
         const detail = body?.detail;
         throw new Error(
           (typeof detail === "object" && detail?.error) ||
             (typeof detail === "string" && detail) ||
-            `风格推荐失败 (HTTP ${response.status})`,
+            `风格推荐失败 (HTTP ${variantsResponse.status})`,
         );
       }
       setVariants(body.variants ?? []);
+      // 配方库拉取失败不阻断推荐（无预览卡而已），但名字仍从变体响应里来
+      const recipesBody = await recipesResponse.json().catch(() => null);
+      if (recipesResponse.status === 200 && Array.isArray(recipesBody?.recipes)) {
+        setRecipes(recipesBody.recipes as Record<string, unknown>[]);
+      }
       setOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "风格推荐失败");
@@ -1318,6 +1382,11 @@ function StyleVariantPicker({
       setLoading(false);
     }
   }, [blueprint]);
+
+  const recipeOf = (variant: StyleVariantCandidate) =>
+    variant.recipe_id
+      ? recipes.find((entry) => String(entry.recipe_id ?? "") === variant.recipe_id) ?? null
+      : null;
 
   return (
     <div style={{ marginTop: 4 }}>
@@ -1341,42 +1410,61 @@ function StyleVariantPicker({
       )}
       {open && variants.length > 0 && (
         <div style={{ marginTop: 4 }}>
-          {variants.map((variant) => (
-            <div
-              key={variant.variant_id}
-              style={{
-                display: "flex",
-                gap: 6,
-                alignItems: "center",
-                marginBottom: 3,
-                fontSize: 9,
-              }}
-            >
-              <span style={{ color: "#8af", minWidth: 34 }}>
-                {variant.score.toFixed(2)}
-              </span>
-              <span style={{ flex: 1, color: "#ccc" }}>
-                {variant.names.join(" × ")}
-                <span style={{ color: "#666" }}> · {variant.rationale}</span>
-              </span>
-              <button
-                onClick={() => variant.mixable_applied && onApply(variant.skill_ids[0])}
-                disabled={!variant.mixable_applied}
-                title={variant.mixable_applied ? "" : "多风格并行激活暂未支持"}
+          {variants.map((variant) => {
+            const recipe = recipeOf(variant);
+            return (
+              <div
+                key={variant.variant_id}
                 style={{
-                  background: variant.mixable_applied ? "#3a5a3a" : "#2a2a4a",
-                  border: "none",
-                  color: variant.mixable_applied ? "#fff" : "#666",
-                  padding: "1px 8px",
-                  borderRadius: 3,
-                  cursor: variant.mixable_applied ? "pointer" : "default",
+                  display: "flex",
+                  gap: 6,
+                  alignItems: "center",
+                  marginBottom: 4,
                   fontSize: 9,
                 }}
               >
-                应用
-              </button>
-            </div>
-          ))}
+                <span style={{ color: "#8af", minWidth: 34 }}>
+                  {variant.score.toFixed(2)}
+                </span>
+                {/* E1: 并排预览卡——同一句话在各配方下的可见形态 */}
+                <RecipeCaptionPreview recipe={recipe} />
+                <span style={{ flex: 1, color: "#ccc" }}>
+                  {variant.names.join(" × ")}
+                  {variant.recipe_name ? (
+                    <span style={{ color: "#ca8" }}> · 🎨 {variant.recipe_name}</span>
+                  ) : null}
+                  <span style={{ color: "#666" }}> · {variant.rationale}</span>
+                </span>
+                <button
+                  onClick={() =>
+                    variant.mixable_applied && onApply(variant.skill_ids[0], recipe)
+                  }
+                  disabled={!variant.mixable_applied}
+                  title={
+                    variant.mixable_applied
+                      ? recipe
+                        ? "应用该风格 + 字幕配方（直出时生效）"
+                        : "应用该风格"
+                      : "多风格并行激活暂未支持"
+                  }
+                  style={{
+                    background: variant.mixable_applied ? "#3a5a3a" : "#2a2a4a",
+                    border: "none",
+                    color: variant.mixable_applied ? "#fff" : "#666",
+                    padding: "1px 8px",
+                    borderRadius: 3,
+                    cursor: variant.mixable_applied ? "pointer" : "default",
+                    fontSize: 9,
+                  }}
+                >
+                  应用
+                </button>
+              </div>
+            );
+          })}
+          <div style={{ color: "#555", fontSize: 8, marginTop: 2 }}>
+            预览卡显示各变体配方下的字幕样式（颜色/字号/位置/可见窗）；应用后配方随直出提交。
+          </div>
         </div>
       )}
     </div>

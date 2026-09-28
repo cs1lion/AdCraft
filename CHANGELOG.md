@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E1 变体审片：变体并排预览 + recipe 身份展示（G5 兑付点）
+
+- **问题**：`/style-variants` 早已给每个变体带 `recipe_id`/`recipe_name`，前端类型没这两个字段、渲染只有一行"分数 + skill 名 + 应用"——变体间"看得见的差异"在 UI 层断裂；且"应用"只写 skill 槽位，配方不随应用提交，"差异进成片"的最后一跳断了。
+- **改动**（纯前端）：① `StyleVariantCandidate` 补 `recipe_id`/`recipe_name`，变体行展示配方名；② 新增 `RecipeCaptionPreview`：把配方的字幕参数（颜色/字号/位置/提前-延后秒）画成**迷你字幕预览卡**，各变体并排可辨（白字底部大字 vs 琥珀顶部小签）；③ 打开选择器时一并拉配方库（显式用户动作才拉，沿用源码 tab 的不污染首屏 fetch 序列纪律）；④ "应用"改为同时写入 style 槽位**和**把该变体的配方选为直出配方（`selectedRecipe`）——G5 的差异第一次真正可达成片。
+- **顺手修的存量 flaky**：测试套件跨用例泄漏 D7 的 localStorage 渲染句柄（replica-render）——下一用例挂载面板即"重挂轮询"，直出按钮变成"⏳ 渲染中…"，与点击赛跑；`-t` 过滤跑必现行、全量跑偶发。afterEach 清 localStorage + unstubAllGlobals 后 4 连跑全绿、过滤跑也绿。
+- **验证**：`vitest ReplicaBlueprintPanel.test.tsx` **24 passed**（+2：并排预览卡颜色断言；应用变体后直出体带 recipe）；`tsc` 0 error；eslint 0 error；`check:endpoint-reachability` OK（零新增死端点）。
+
 ### Fixed — D8 拆解的"取消"是假的 → 可取消任务 + 总预算 timeout（demo 阻断项）
 
 - **问题**：`POST /replica/teardown` 阻塞请求跑完整拆解（多段 LLM 调用），无 job id、无结果回收、无 timeout；前端"取消等待"只 `abort()` 了 fetch——后端照烧额度。拆解是整条链路唯一烧 LLM 的步骤，演示中一次误点就白烧一次。

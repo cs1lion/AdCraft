@@ -92,6 +92,7 @@ vi.mock("../../../api/agentCanvasApi.ts", () => ({
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   patchNode.mockClear();
   createNode.mockClear();
   workflowWithEtag.mockClear();
@@ -100,7 +101,13 @@ beforeEach(() => {
   workflowWithEtag.mockResolvedValue({ value: { workflow_id: "wf-1" } });
 });
 
-afterEach(cleanup);
+// D7/D2 的 localStorage 渲染句柄（replica-render）是跨用例存活的全局状态：
+// 不清理时，下一用例挂载面板即"重挂轮询"，直出按钮变成"⏳ 渲染中…"，与
+// 用例的点击赛跑——偶发失败且难复现（-t 过滤跑必现行）。每个用例后清空。
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 describe("ReplicaBlueprintPanel", () => {
   it("shows the empty hint for a blank blueprint", () => {
@@ -735,34 +742,86 @@ describe("ReplicaBlueprintPanel local-state sync", () => {
 });
 
 describe("ReplicaBlueprintPanel style variants (Jev 式风格导演)", () => {
+  const VARIANTS = {
+    success: true,
+    variants: [
+      {
+        variant_id: "variant_a",
+        skill_ids: ["gentle-everyday-vlog"],
+        names: ["温柔日常Vlog影像"],
+        score: 1.62,
+        rationale: "匹配关键词：日常、手持",
+        mixable_applied: true,
+        recipe_id: "bottom-bold",
+        recipe_name: "底部大字",
+      },
+      {
+        variant_id: "variant_b",
+        skill_ids: ["lived-in-epic-cinema", "jewelry-editorial-film"],
+        names: ["生活质感史诗影像", "珠宝微距编辑片"],
+        score: 0.8,
+        rationale: "组合候选",
+        mixable_applied: false,
+        recipe_id: "amber-emphasis",
+        recipe_name: "琥珀强调",
+      },
+    ],
+  };
+
+  const RECIPES = {
+    success: true,
+    recipes: [
+      {
+        recipe_id: "bottom-bold",
+        name: "底部大字",
+        description: "经典短视频字幕形态",
+        subtitle: { font_size: 42, color: "#FFFFFF", position: "bottom_center" },
+      },
+      {
+        recipe_id: "amber-emphasis",
+        name: "琥珀强调",
+        description: "暖色强调字幕",
+        subtitle: { font_size: 28, color: "#FFC658", position: "top_center" },
+      },
+    ],
+  };
+
+  function stubVariants(overrides: { variants?: unknown; recipes?: unknown } = {}) {
+    return vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/style-variants")) {
+        return { status: 200, json: async () => overrides.variants ?? VARIANTS };
+      }
+      if (target.includes("/recipes")) {
+        return { status: 200, json: async () => overrides.recipes ?? RECIPES };
+      }
+      if (target.includes("/final-composition/renders/")) {
+        return {
+          status: 200,
+          json: async () => ({ status: "completed", progress_percent: 100, output_url: "https://cdn/f.mp4" }),
+        };
+      }
+      if (target.includes("/direct-execute/render")) {
+        return {
+          status: 200,
+          json: async () => ({
+            success: true,
+            feasible: true,
+            render_id: "render_e1",
+            status: "queued",
+            timeline_version: 2,
+            previous_timeline_version: 1,
+          }),
+        };
+      }
+      return { status: 200, json: async () => ({ success: true }) };
+    });
+  }
+
   it("recommends variants and applies a single skill into the style slot", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        status: 200,
-        json: async () => ({
-          success: true,
-          variants: [
-            {
-              variant_id: "variant_a",
-              skill_ids: ["gentle-everyday-vlog"],
-              names: ["温柔日常Vlog影像"],
-              score: 1.62,
-              rationale: "匹配关键词：日常、手持",
-              mixable_applied: true,
-            },
-            {
-              variant_id: "variant_b",
-              skill_ids: ["lived-in-epic-cinema", "jewelry-editorial-film"],
-              names: ["生活质感史诗影像", "珠宝微距编辑片"],
-              score: 0.8,
-              rationale: "组合候选",
-              mixable_applied: false,
-            },
-          ],
-        }),
-      }),
-    );
+    const fetchMock = stubVariants();
+    vi.stubGlobal("fetch", fetchMock);
+
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
     fireEvent.click(screen.getByText("🎲 风格推荐"));
     await waitFor(() => expect(screen.getByText(/温柔日常Vlog影像/)).toBeTruthy());
@@ -780,12 +839,64 @@ describe("ReplicaBlueprintPanel style variants (Jev 式风格导演)", () => {
     expect(styleInput.value).toBe("gentle-everyday-vlog");
   });
 
+  // E1（G5 兑付点）：变体差异必须肉眼可辨——配方名 + 迷你字幕预览卡并排，
+  // 且应用变体时把它的配方选为直出配方（此前 recipe 在 UI 层断裂）。
+  it("shows each variant's recipe and a side-by-side caption preview (E1)", async () => {
+    vi.stubGlobal("fetch", stubVariants());
+
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("🎲 风格推荐"));
+    await waitFor(() => expect(screen.getByText(/🎨 底部大字/)).toBeTruthy());
+    expect(screen.getByText(/🎨 琥珀强调/)).toBeTruthy();
+
+    // 预览卡按配方参数渲染：白色底部大字 vs 琥珀色顶部小字（肉眼可辨）
+    const chips = screen.getAllByText("别再这样洗脸");
+    expect(chips.length).toBe(2);
+    const colors = chips.map((chip) => (chip as HTMLElement).style.color);
+    expect(colors).toContain("rgb(255, 255, 255)");
+    expect(colors).toContain("rgb(255, 198, 88)");
+    // 顶部/居中/底部由字号与标题提示体现（position 在 title 里可查）
+    expect((chips[0] as HTMLElement).closest("div")?.getAttribute("title")).toContain("position=");
+  });
+
+  it("applies a variant together with its recipe for the direct render (E1)", async () => {
+    const fetchMock = stubVariants();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("🎲 风格推荐"));
+    await waitFor(() => expect(screen.getByText(/🎨 底部大字/)).toBeTruthy());
+
+    fireEvent.click(screen.getAllByText("应用")[0]);
+
+    // 配方已选为直出配方：到源码 tab 的直出提交里带着它
+    fireEvent.click(screen.getByText("源码 .adreplica"));
+    await waitFor(() => expect(screen.getByText("🎨 字幕配方")).toBeTruthy());
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("bottom-bold");
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+    await waitFor(() =>
+      expect(screen.getAllByText(/成片已产出/).length).toBeGreaterThan(0),
+    );
+    const bridgeCall = (fetchMock as unknown as {
+      mock: { calls: [string, RequestInit][] };
+    }).mock.calls.find((call) => String(call[0]).includes("/direct-execute/render"));
+    const body = JSON.parse((bridgeCall as unknown as [string, RequestInit])[1].body as string);
+    expect(body.recipe.recipe_id).toBe("bottom-bold");
+    expect(body.recipe.subtitle.color).toBe("#FFFFFF");
+  });
+
   it("surfaces the recommendation error", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        status: 422,
-        json: async () => ({ detail: { error: "n out of range [1, 12]: 99" } }),
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/recipes")) {
+          return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+        }
+        return {
+          status: 422,
+          json: async () => ({ detail: { error: "n out of range [1, 12]: 99" } }),
+        };
       }),
     );
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
