@@ -10,6 +10,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  clearReplicaRender,
+  readReplicaRender,
+  writeReplicaRender,
+} from "./replicaRenderStore.ts";
 
 import { useApp } from "../../../AppContextValue.ts";
 import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
@@ -216,6 +221,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [renderVideoUrl, setRenderVideoUrl] = useState<string | null>(null);
   const [renderFailure, setRenderFailure] = useState<string | null>(null);
+  // D7: seconds elapsed in the in-flight render (starting→polling), for the "正在渲染 N 秒" line.
+  const [renderElapsed, setRenderElapsed] = useState(0);
   // 门拒绝的缺失清单（这片子有什么必须生成，不能零模型费直出）
   const [renderBlockers, setRenderBlockers] = useState<string[]>([]);
   // 直出的诚实备注（替换了哪版时间线 / 哪些库素材未计入）
@@ -358,6 +365,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // 2) 桥端点内部跑可行性门——非可行即 422 + rejected 缺失清单，不渲染；
   // 3) 渲染是 detached 的：拿到 render_id 后轮询 v2 渲染状态端点。
   const startDirectRender = useCallback(async () => {
+    // D7 idempotency guard: never fire a second direct-execute while one is in flight.
+    if (renderPhase === "starting" || renderPhase === "polling") return;
     setRenderPhase("starting");
     setRenderFailure(null);
     setRenderBlockers([]);
@@ -428,13 +437,19 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         );
       }
       setRenderNotes(notes);
-      setRenderId(String(body.render_id ?? ""));
+      const nextRenderId = String(body.render_id ?? "");
+      setRenderId(nextRenderId);
       setRenderPhase("polling");
+      // D7: persist so a refresh mid-render can re-attach to this detached render.
+      writeReplicaRender(node.workflow_id, node.node_id, {
+        renderId: nextRenderId,
+        renderPhase: "polling",
+      });
     } catch (err) {
       setRenderFailure(err instanceof Error ? err.message : "直出失败");
       setRenderPhase("failed");
     }
-  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe]);
+  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe, renderPhase]);
   // 轮询渲染状态（组件卸载自动停；超过 ~5 分钟未终态则明确失败，不无限轮）
   useEffect(() => {
     if (renderPhase !== "polling" || !renderId) return;
@@ -482,6 +497,41 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       window.clearInterval(timer);
     };
   }, [renderPhase, renderId, node.workflow_id]);
+
+  // D7: re-attach to an in-flight render after a refresh (render_id survived in storage).
+  useEffect(() => {
+    const snapshot = readReplicaRender(node.workflow_id, node.node_id);
+    if (snapshot) {
+      setRenderId(snapshot.renderId);
+      setRenderPhase("polling");
+    }
+  }, [node.workflow_id, node.node_id]);
+
+  // D7: once the render reaches a terminal state, drop the resumable snapshot.
+  useEffect(() => {
+    if (renderPhase === "completed" || renderPhase === "failed") {
+      clearReplicaRender(node.workflow_id, node.node_id);
+    }
+  }, [renderPhase, node.workflow_id, node.node_id]);
+
+  // D7: count elapsed seconds while a render is starting/polling.
+  useEffect(() => {
+    if (renderPhase !== "starting" && renderPhase !== "polling") return;
+    setRenderElapsed(0);
+    const timer = window.setInterval(() => setRenderElapsed((seconds) => seconds + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [renderPhase]);
+
+  // D7: stop tracking an in-flight render. The detached backend job may still finish —
+  // surface that honestly instead of pretending the render stopped.
+  const cancelDirectRender = useCallback(() => {
+    clearReplicaRender(node.workflow_id, node.node_id);
+    setRenderId(null);
+    setRenderProgress(null);
+    setRenderElapsed(0);
+    setRenderPhase("idle");
+    setNotice("已停止跟踪本次直出渲染；后台渲染可能仍在进行，可到工作流的 final-composition 面板查看候选。");
+  }, [node.workflow_id, node.node_id]);
 
   if (!hasBlueprint) {
     return (
@@ -837,7 +887,23 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
             {renderPhase === "polling" && (
               <div style={{ marginTop: 6, fontSize: 10, color: "#8cf" }}>
                 渲染中…{" "}
-                {renderProgress !== null ? `${Math.round(renderProgress)}%` : "已进入渲染队列"}
+                {renderProgress !== null ? `${Math.round(renderProgress)}%` : "已进入渲染队列"} · 正在渲染 {renderElapsed} 秒{" "}
+                <button
+                  type="button"
+                  onClick={cancelDirectRender}
+                  style={{
+                    marginLeft: 6,
+                    background: "transparent",
+                    border: "1px solid #678",
+                    color: "#9bd",
+                    borderRadius: 3,
+                    fontSize: 10,
+                    padding: "0 8px",
+                    cursor: "pointer",
+                  }}
+                >
+                  停止跟踪
+                </button>
               </div>
             )}
             {renderPhase === "completed" && (

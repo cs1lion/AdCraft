@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **改动**：新增 `scene3dDraft.ts`（沿用 `agentCanvasViewport.ts` 的 `adcraft:agent-canvas:` 命名空间 + 可注入 storage + 一次性写入，永不阻断编辑）。组件层：① 挂载按节点 key 从 localStorage 恢复草稿并显示"已恢复上次未保存的草稿"提示；② 编辑即写入；③ 草稿等于已保存节点（保存/回退）即清除；④ dirty 时挂 `beforeunload` 防误离开。
 - **验证**：`vitest scene3dDraft.test.ts` **4 passed**（往返/损坏不崩/清除/写入可弃）；`vitest LocalEngineWorkbench.test.tsx` **35 passed**（+2：恢复→提示→回退清除；编辑→落盘）；`tsc -p tsconfig.json` **0 error**。ENV 说明：`beforeunload` 原生弹窗属浏览器行为，未在 jsdom 中断言（其余可验证点已覆盖）。
 
+### Fixed — D7 直出无幂等 / renderId 刷新丢失 → 在途守卫 + 可恢复渲染句柄
+
+- **问题**：`ReplicaBlueprintPanel` 的 `renderPhase`/`renderId` 仅在组件 state——刷新后正在渲染的任务查不回；`startDirectRender` 无在途守卫（连点/重进可二次触发 direct-execute，每次覆盖 final 时间线 + 新建 render_id）。
+- **改动**：① `startDirectRender` 顶部加在途守卫（starting/polling 直接 `return`，配合按钮禁用，二重点不触发）；② 新增 `replicaRenderStore.ts`（`adcraft:agent-canvas:replica-render:<wf>:<node>` 存 render_id，可注入 storage、一次性写入）——拿到 render_id 即落盘；③ 挂载时若存在在途句柄 → 恢复 renderId 并重挂轮询（刷新即回到"正在渲染"）；④ 终态（completed/failed）自动清除句柄；⑤ 轮询行显示"正在渲染 N 秒" + "停止跟踪"入口（停止跟踪=停前端轮询+清句柄；后端 detached 任务可能仍在跑——如实告知，不假称已停）。
+- **验证**:`vitest replicaRenderStore.test.ts` **3 passed**；`vitest ReplicaBlueprintPanel.test.tsx` **20 passed**（无回归）；`tsc` **0 error**。**遗留(后端)**：真·幂等（相同蓝图复用同一 render / 不重复覆盖 final 时间线）需 direct-execute 端点侧幂等键/结果复用，属后端契约改动，未在本前端提交内改（如实标注）。
+
 ### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
 
 - **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。
