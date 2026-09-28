@@ -12,7 +12,6 @@
     "v1:GET /api/v1/workflows/{workflow_id}/nodes/{node_id}/items/{item_id}/assets/{asset_id}/history",
     "v1:PATCH /api/v1/workflows/{workflow_id}/nodes/{node_id}/items/{item_id}/assets/{asset_id}/prompt",
     "v1:POST /api/v1/replica/blueprint/direct-execute/resolve-library",
-    "v1:POST /api/v1/replica/blueprint/variant-render-plans",
     "v1:POST /api/v1/scene-3d/adapt-aspect",
     "v1:POST /api/v1/scene-3d/analyze-reference",
     "v1:POST /api/v1/scene-3d/apply-operations",

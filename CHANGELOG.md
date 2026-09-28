@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 变体渲染计划审片入口（`/variant-render-plans` 第一次有 UI；E5 边界闭合）
+
+- **问题**：`/variant-render-plans` 对 Top-N 变体各编译一份 direct-execute 渲染计划（只出计划不渲染，低成本审片），也是**结构漂移守护唯一会触发的端点**——但前端零调用：审片没有入口，E5 承诺的"故意触发结构漂移 → 看到逐条可行动的说明"因此没有实机路径（E5 提交中已如实标注该边界）。
+- **改动**（纯前端）：风格槽位下新增「📋 变体渲染计划」面板：各变体一行（skill 组合 + 配方名 + 可直出/不可直出 + 字幕条数 + 未解析素材数 + 是否需占位视频）；失败时（含 500 `replica_structure_drift`）走 `describeReplicaError` **逐条**渲染 drifts——E5 的边界从此闭合。
+- **可达性账本**：已知死端点 28 → **27**（本端点接活，baseline 同步缩账）。
+- **验证**：`vitest ReplicaBlueprintPanel.test.tsx` **36 passed**（+2：审片列表逐字段可见 / 漂移逐条上屏）；`tsc` 0 error；eslint 0 error；`check:endpoint-reachability` OK。
+
 ### Chore — 存量 ruff F401 修复（`gesture_performance.py`），`ruff check app/ tests/ scripts/` 全绿
 
 - 移除 `app/services/scene3d/gesture_performance.py` 未使用的 `from typing import Any`。gesture 相关 9 条测试复跑通过。

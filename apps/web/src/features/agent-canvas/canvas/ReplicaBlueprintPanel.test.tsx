@@ -1170,6 +1170,98 @@ describe("ReplicaBlueprintPanel style variants (Jev 式风格导演)", () => {
     fireEvent.click(screen.getByText("🎲 风格推荐"));
     await waitFor(() => expect(screen.getByText(/n out of range/)).toBeTruthy());
   });
+
+  // E1/E5 收口：变体渲染计划审片有入口；结构漂移（只有该端点会产生）
+  // 从此有实机可见路径——逐条点名维度 + 期望→实际。
+  it("lists each variant's compiled render plan (low-cost review)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/variant-render-plans")) {
+          return {
+            status: 200,
+            json: async () => ({
+              success: true,
+              variants: [
+                {
+                  variant_id: "v1",
+                  skill_ids: ["gentle-everyday-vlog"],
+                  names: ["温柔日常Vlog影像"],
+                  score: 1.62,
+                  mixable_applied: true,
+                  recipe_id: "bottom-bold",
+                  recipe_name: "底部大字",
+                  feasible: true,
+                  subtitle_cue_count: 3,
+                  needs_placeholder_video: false,
+                  unresolved_assets: [{ clip_id: "bgm_system" }],
+                },
+                {
+                  variant_id: "v2",
+                  skill_ids: ["lived-in-epic-cinema"],
+                  names: ["生活质感史诗影像"],
+                  score: 0.9,
+                  mixable_applied: true,
+                  recipe_id: "amber-emphasis",
+                  recipe_name: "琥珀强调",
+                  feasible: false,
+                  subtitle_cue_count: 0,
+                  needs_placeholder_video: true,
+                  unresolved_assets: [],
+                },
+              ],
+            }),
+          };
+        }
+        return { status: 200, json: async () => ({ success: true }) };
+      }),
+    );
+
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("📋 变体渲染计划"));
+
+    await waitFor(() => expect(screen.getByText(/低成本审片/)).toBeTruthy());
+    // 可行变体：配方 + 字幕数 + 未解析素材数都看得见（行内各节点分元素渲染）
+    expect(screen.getByText(/温柔日常Vlog影像/)).toBeTruthy();
+    expect(screen.getByText(/🎨 底部大字/)).toBeTruthy();
+    expect(screen.getByText(/可直出 · 字幕 3 条/)).toBeTruthy();
+    expect(screen.getByText(/未解析素材 1 个/)).toBeTruthy();
+    // 不可直出变体被标红而不是混在一行里
+    expect(screen.getByText(/生活质感史诗影像/)).toBeTruthy();
+    expect(screen.getByText(/不可直出（有必须生成的环节）/)).toBeTruthy();
+    expect(screen.getByText(/需占位视频/)).toBeTruthy();
+  });
+
+  it("shows structure drift per item where it can actually happen (E5 closure)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/variant-render-plans")) {
+          return {
+            status: 500,
+            json: async () => ({
+              detail: {
+                code: "replica_structure_drift",
+                message: "Variant derivation changed the replica structure.",
+                variant_id: "v1",
+                drifts: ["aspect: '9:16' → '16:9'", "shot topology: 2 → 3 shots"],
+              },
+            }),
+          };
+        }
+        return { status: 200, json: async () => ({ success: true }) };
+      }),
+    );
+
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("📋 变体渲染计划"));
+
+    await waitFor(() => expect(screen.getByText(/变体渲染计划获取失败，逐条说明/)).toBeTruthy());
+    // 每条 drift 逐条可见（E5 的"故意触发结构漂移 → 看到逐条可行动的说明"）
+    expect(screen.getByText("aspect: '9:16' → '16:9'")).toBeTruthy();
+    expect(screen.getByText("shot topology: 2 → 3 shots")).toBeTruthy();
+    expect(screen.getByText("（replica_structure_drift）")).toBeTruthy();
+  });
 });
 
 describe("ReplicaBlueprintPanel actionable errors (E5)", () => {

@@ -879,6 +879,9 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                   }}
                 />
               )}
+              {slot.kind === "style" && index === styleSlotIndex && (
+                <VariantRenderPlans blueprint={buildContent()} />
+              )}
             </div>
           ))}
         </div>
@@ -1530,6 +1533,112 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
           >
             {scriptText}
           </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VariantRenderPlans — E1/E5 收口：变体渲染计划审片（/variant-render-plans）
+// 后端对 Top-N 变体各编译一份 direct-execute 渲染计划（只出计划不渲染），
+// 并在结构漂移时 500 + 逐条 drifts。此前面向前端无调用方——漂移错误永远
+// 看不到。本面板同时闭合两件事：低成本审片有入口；E5 的逐条错误有实机路径。
+// ---------------------------------------------------------------------------
+
+interface VariantRenderPlanEntry {
+  variant_id: string;
+  skill_ids: string[];
+  names: string[];
+  score: number;
+  mixable_applied: boolean;
+  recipe_id: string;
+  recipe_name: string;
+  feasible: boolean;
+  subtitle_cue_count: number;
+  needs_placeholder_video: boolean;
+  unresolved_assets: unknown[];
+}
+
+function VariantRenderPlans({ blueprint }: { blueprint: ReplicaBlueprintContentV2 }) {
+  const [loading, setLoading] = useState(false);
+  const [plans, setPlans] = useState<VariantRenderPlanEntry[]>([]);
+  const [errorItems, setErrorItems] = useState<string[]>([]);
+  const [open, setOpen] = useState(false);
+
+  const loadPlans = useCallback(async () => {
+    setLoading(true);
+    setErrorItems([]);
+    try {
+      const response = await fetch("/api/v1/replica/blueprint/variant-render-plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blueprint, n: 5, render_representatives: 2 }),
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status !== 200 || !body) {
+        // E5: 结构漂移（replica_structure_drift + drifts）逐条可读
+        setErrorItems(describeReplicaError(response.status, body?.detail));
+        setPlans([]);
+        setOpen(true);
+        return;
+      }
+      setPlans(Array.isArray(body.variants) ? (body.variants as VariantRenderPlanEntry[]) : []);
+      setOpen(true);
+    } catch (err) {
+      setErrorItems([err instanceof Error ? err.message : "变体渲染计划获取失败"]);
+      setPlans([]);
+      setOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [blueprint]);
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        onClick={() => (open ? setOpen(false) : void loadPlans())}
+        disabled={loading}
+        style={{
+          background: loading ? "#2a2a4a" : "#3a3a6a",
+          border: "none",
+          color: loading ? "#666" : "#fff",
+          padding: "2px 8px",
+          borderRadius: 3,
+          cursor: loading ? "default" : "pointer",
+          fontSize: 9,
+        }}
+      >
+        {loading ? "⏳ 编译中…" : open ? "📋 收起变体渲染计划" : "📋 变体渲染计划"}
+      </button>
+      {open && errorItems.length > 0 && (
+        <div style={{ marginTop: 4, fontSize: 9, color: "#f88", lineHeight: 1.7 }}>
+          <div>变体渲染计划获取失败，逐条说明：</div>
+          <ul style={{ margin: "2px 0", paddingLeft: 16 }}>
+            {errorItems.map((item, index) => (
+              <li key={`${index}_${item}`}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {open && errorItems.length === 0 && plans.length > 0 && (
+        <div style={{ marginTop: 4, fontSize: 9, lineHeight: 1.8 }}>
+          <div style={{ color: "#888", marginBottom: 2 }}>
+            低成本审片：各变体的 direct-execute 编译计划（只出计划，不渲染）。
+          </div>
+          {plans.map((plan) => (
+            <div key={plan.variant_id} style={{ color: plan.feasible ? "#ccc" : "#f88" }}>
+              · {plan.names.join(" × ")}
+              {plan.recipe_name ? <span style={{ color: "#ca8" }}> · 🎨 {plan.recipe_name}</span> : null}
+              {" · "}
+              {plan.feasible ? "可直出" : "不可直出（有必须生成的环节）"}
+              {` · 字幕 ${plan.subtitle_cue_count} 条`}
+              {plan.unresolved_assets.length > 0
+                ? ` · 未解析素材 ${plan.unresolved_assets.length} 个`
+                : ""}
+              {plan.needs_placeholder_video ? " · 需占位视频" : ""}
+            </div>
+          ))}
         </div>
       )}
     </div>
