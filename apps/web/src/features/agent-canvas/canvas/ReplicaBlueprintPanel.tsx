@@ -564,7 +564,20 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       }
 
       const notes: string[] = [];
-      if (typeof body.previous_timeline_version === "number" && body.previous_timeline_version > 0) {
+      // D7 幂等事实：同一蓝图复用了既有渲染（在途或已完成发布）——不是又一次
+      // 出片。如实说出口，别让用户以为又烧了一次渲染。
+      if (body.reused === true) {
+        const kind =
+          body.reuse_kind === "completed_asset"
+            ? "已完成的同一成片"
+            : "当前在途的同一渲染";
+        notes.push(
+          `同一蓝图复用${kind}，未重复出片（final 时间线重存为版本 ${body.timeline_version ?? "?"}，内容未变）`,
+        );
+      } else if (
+        typeof body.previous_timeline_version === "number" &&
+        body.previous_timeline_version > 0
+      ) {
         notes.push(
           `已替换工作流此前的 final-composition 时间线（版本 ${body.previous_timeline_version} → ${body.timeline_version}）`,
         );

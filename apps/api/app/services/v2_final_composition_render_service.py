@@ -588,6 +588,9 @@ class V2FinalCompositionRenderService:
             asset_id=state.get("asset_id"),
             version_id=state.get("version_id"),
             reused=bool(state.get("reused", False)),
+            # D7: 复用身份的完整透出（同一指纹 → 同一 render；调用方要能说得出口）
+            reused_from_render_id=state.get("reused_from_render_id"),
+            reuse_kind=state.get("reuse_kind"),
             composition_fingerprint=state.get("composition_fingerprint"),
         )
 

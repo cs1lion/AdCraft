@@ -1491,6 +1491,9 @@ class WorkflowV2TimelineRenderStartResponse(BaseModel):
     asset_id: str | None = None
     version_id: str | None = None
     reused: bool = False
+    # D7 幂等事实的完整形态：复用了哪个 render、哪种复用（在途 / 已完成发布）
+    reused_from_render_id: str | None = None
+    reuse_kind: Literal["active_render", "completed_asset"] | None = None
     composition_fingerprint: str | None = None
 
 

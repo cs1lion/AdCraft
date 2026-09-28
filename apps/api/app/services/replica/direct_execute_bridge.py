@@ -92,6 +92,12 @@ class ReplicaRenderOutcome:
     metadata: dict[str, Any] = field(default_factory=dict)
     # P4 pace 预检告警（预估口播超窗）：渲染发起时随响应透出
     pace_warnings: tuple[dict[str, Any], ...] = ()
+    # D7 幂等事实：底层的 v2 渲染服务按组合指纹复用——同一蓝图重复提交时
+    # 返回**同一个** render_id（在途）或已完成的发布，而非重复出片。桥此前
+    # 把这个事实丢了，前端只能看到"新 render_id"，无法如实告知用户。
+    reused: bool = False
+    reused_from_render_id: str | None = None
+    reuse_kind: str | None = None
 
 def strip_unresolved_clips(
     timeline: WorkflowV2Timeline,
@@ -186,4 +192,8 @@ def render_replica_blueprint(
         events_cursor=getattr(started, "events_cursor", 0),
         output_url=getattr(started, "output_url", None),
         pace_warnings=tuple(dict(w) for w in gate.pace_warnings),
+        # D7: 透传底层复用事实（同一蓝图 → 同一 render，不重复出片）
+        reused=bool(getattr(started, "reused", False)),
+        reused_from_render_id=getattr(started, "reused_from_render_id", None),
+        reuse_kind=getattr(started, "reuse_kind", None),
     )

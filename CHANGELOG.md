@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — D7 真·幂等补齐：直出复用事实端到端透传（同一蓝图不再重复出片）
+
+- **问题**：底层 v2 渲染服务本就按组合指纹复用（在途同指纹 → 返回**同一个** render_id + `reused`；已完成发布 → 复用产物），但 direct-execute 桥把这个事实丢了：`ReplicaRenderOutcome`/端点响应只给"新 render_id"，前端 D7 的"重复操作不产生重复产物"因此**不可观测**——无法区分"又一次渲染"与"复用在途渲染"，用户在途守卫之外的重复提交（如刷新后重进）看不出后果。
+- **改动（后端）**：① `WorkflowV2TimelineRenderStartResponse` 补齐 `reused_from_render_id`/`reuse_kind`（服务内部 state 早有、`_start_response` 漏透传）；② 桥透传三个复用字段到 `ReplicaRenderOutcome`；③ `/blueprint/direct-execute/render` 响应新增 `reused`/`reused_from_render_id`/`reuse_kind`（加字段，既有消费方不破）。
+- **改动（前端）**：`startDirectRender` 收到 `reused` 时如实提示"同一蓝图复用当前在途的同一渲染，未重复出片（final 时间线重存为版本 N，内容未变）"，并**不再**显示误导性的"已替换 final-composition 时间线"；轮询自然跟着复用后的 render_id 走（持久化句柄指向同一任务）。
+- **验证**：`pytest test_replica_direct_execute_bridge.py` **14 passed**（+2：复用字段透传/默认关闭）；replica+scene3d+final_composition 子集 **1060 passed**；`vitest ReplicaBlueprintPanel.test.tsx` **34 passed**（+1 reused 提示）；`tsc` 0 error。
+
 ### Changed — D/E 阶段工程任务全部完成（2026-09-29；实机演示未执行）
 
 - **台账**：`docs/plans/last-hundred-meters-plan.md` §8 逐项状态（D1–D8 / E1–E8）。D 阶段演示阻断项全部落地（D1 为 ◧：路径合法化完成但媒体语义受本机环境限制 ENV-SKIP；D7 为 ◧：前端在途守卫/持久化完成，真·幂等仍是后端契约缺口）。E 阶段全部落地（E5 ◧：任何到达前端的漂移载荷逐条可读，`/variant-render-plans` 前端入口仍缺）。

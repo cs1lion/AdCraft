@@ -130,8 +130,17 @@ class _FakeTimelineService:
 class _FakeRenderService:
     """录制 start_render 调用的耐久渲染服务替身。"""
 
-    def __init__(self, *, error: V2FinalCompositionTimelineError | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: V2FinalCompositionTimelineError | None = None,
+        reused: bool = False,
+        reuse_kind: str | None = None,
+    ) -> None:
         self.error = error
+        # D7: 底层 v2 渲染服务的幂等复用事实（同一指纹 → 同一 render）
+        self.reused = reused
+        self.reuse_kind = reuse_kind
         self.calls: list[WorkflowV2TimelineRenderRequest] = []
 
     def _raise(self) -> None:
@@ -150,21 +159,64 @@ class _FakeRenderService:
             timeline_id=request.timeline_id,
             timeline_version=request.timeline_version,
             events_cursor=9,
+            reused=self.reused,
+            reused_from_render_id="render_bridge01" if self.reused else None,
+            reuse_kind=self.reuse_kind,
         )
 
 
 def _services(**kwargs: Any) -> tuple[_FakeTimelineService, _FakeRenderService]:
     timeline_error = kwargs.pop("timeline_error", None)
     render_error = kwargs.pop("render_error", None)
+    render_reused = kwargs.pop("render_reused", False)
+    render_reuse_kind = kwargs.pop("render_reuse_kind", None)
     return (
         _FakeTimelineService(error=timeline_error, **kwargs),
-        _FakeRenderService(error=render_error),
+        _FakeRenderService(
+            error=render_error, reused=render_reused, reuse_kind=render_reuse_kind
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # 服务层：编排正确性
 # ---------------------------------------------------------------------------
+
+def test_bridge_passes_through_render_reuse_fact() -> None:
+    """D7: 同一蓝图重复提交时，底层按组合指纹复用同一 render（在途或已完成
+    发布）——桥必须把这个事实透出，否则前端只看到"新 render_id"，无法如实
+    告知用户"未重复出片"（真幂等的可观测半边）。"""
+    timeline_service, render_service = _services(
+        version=3, render_reused=True, render_reuse_kind="active_render"
+    )
+    blueprint = _feasible_blueprint()
+
+    outcome = render_replica_blueprint(
+        "wf-1",
+        blueprint,
+        timeline_service=timeline_service,
+        render_service=render_service,
+    )
+
+    assert outcome.render_id == "render_bridge01"
+    assert outcome.reused is True
+    assert outcome.reused_from_render_id == "render_bridge01"
+    assert outcome.reuse_kind == "active_render"
+
+
+def test_bridge_defaults_reuse_flags_off() -> None:
+    """没有复用时字段如实为 False/None（不假装幂等）。"""
+    timeline_service, render_service = _services(version=3)
+    outcome = render_replica_blueprint(
+        "wf-1",
+        _feasible_blueprint(),
+        timeline_service=timeline_service,
+        render_service=render_service,
+    )
+    assert outcome.reused is False
+    assert outcome.reused_from_render_id is None
+    assert outcome.reuse_kind is None
+
 
 
 def test_bridge_saves_replica_timeline_and_starts_durable_render() -> None:

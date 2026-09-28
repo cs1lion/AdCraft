@@ -278,6 +278,10 @@ class DirectExecuteRenderBridgeResponse(BaseModel):
     rejected: list[str] = Field(default_factory=list)
     # P4 pace 预检告警：渲染发起时一并在场（台词超窗在花钱前说出来）
     pace_warnings: list[dict[str, Any]] = Field(default_factory=list)
+    # D7 幂等事实：True = 同一蓝图复用了既有的在途/已完成渲染（未重复出片）
+    reused: bool = False
+    reused_from_render_id: str | None = None
+    reuse_kind: str | None = None
 
 
 class InstantiateRequest(BaseModel):
@@ -950,6 +954,10 @@ async def render_blueprint_direct_execute(
         events_cursor=outcome.events_cursor,
         output_url=outcome.output_url,
         pace_warnings=[dict(w) for w in outcome.pace_warnings],
+        # D7: 复用事实透出（同一蓝图重复提交 → 同一 render，不重复出片）
+        reused=outcome.reused,
+        reused_from_render_id=outcome.reused_from_render_id,
+        reuse_kind=outcome.reuse_kind,
     )
 
 

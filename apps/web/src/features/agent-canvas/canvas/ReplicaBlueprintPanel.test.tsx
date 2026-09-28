@@ -325,6 +325,45 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
     expect(screen.getAllByText("选素材补齐").length).toBe(2);
   });
 
+  // D7 真幂等：后端复用同一渲染时，如实说"未重复出片"而不是伪装成新渲染
+  it("reports a reused render honestly (D7 idempotency fact)", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/api/v1/replica/blueprint/recipes")) {
+        return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+      }
+      if (String(url).includes("/final-composition/renders/")) {
+        return { status: 200, json: async () => ({ status: "rendering", progress_percent: 55 }) };
+      }
+      return {
+        status: 200,
+        json: async () => ({
+          success: true,
+          feasible: true,
+          render_id: "render_same01",
+          status: "running",
+          timeline_version: 9,
+          previous_timeline_version: 8,
+          reused: true,
+          reused_from_render_id: "render_same01",
+          reuse_kind: "active_render",
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    await waitFor(() =>
+      expect(screen.getByText(/同一蓝图复用当前在途的同一渲染，未重复出片/)).toBeTruthy(),
+    );
+    // 不复用时那句"已替换时间线"不出现（这次的写盘内容未变）
+    expect(screen.queryByText(/已替换工作流此前的 final-composition 时间线/)).toBeNull();
+    // 轮询跟着复用后的 render_id 走
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => u.includes("/renders/render_same01"))).toBe(true);
+  });
+
   it("submits the selected subtitle recipe (.adrecipe) with the direct render", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (String(url).includes("/api/v1/replica/blueprint/recipes")) {
