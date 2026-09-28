@@ -49,6 +49,8 @@ export interface SceneProp {
   held_side?: "left" | "right" | null;
   /** Bound prop asset (P0, 2026-09-15): the identity this prop is derived from. */
   prop_asset_id?: string | null;
+  /** V3 ④ LOD 阶梯: the object's coarseness tier (``rough``/``standard``/``detailed``). Display-only: the preview collapses ``rough`` to a primitive; the gate and Blender converter keep the authored geometry. */
+  lod_tier?: "rough" | "standard" | "detailed" | string | null;
 }
 
 export interface SceneEnvironment {
@@ -59,6 +61,8 @@ export interface SceneEnvironment {
   rotation_y?: number;
   /** Bound scene asset (P0, 2026-09-15): which design this environment is from. */
   scene_asset_id?: string | null;
+  /** V3 ④ LOD 阶梯: the object's coarseness tier (display-only, mirrors SceneProp). */
+  lod_tier?: "rough" | "standard" | "detailed" | string | null;
 }
 
 export interface CameraKeyframe {

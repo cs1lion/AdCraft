@@ -220,6 +220,16 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const [renderBlockers, setRenderBlockers] = useState<string[]>([]);
   // 直出的诚实备注（替换了哪版时间线 / 哪些库素材未计入）
   const [renderNotes, setRenderNotes] = useState<string[]>([]);
+  // P4 pace 预检告警（台词预估时长超窗：删词 or 加窗，合成前说）
+  const [renderPaceWarnings, setRenderPaceWarnings] = useState<
+    Array<{
+      beat_id: string;
+      text: string;
+      estimated_seconds: number;
+      window_seconds: number;
+      ratio: number | null;
+    }>
+  >([]);
   // G5 字幕族配方（.adrecipe 库）：直出时连同配方一起提交——变体之间
   // "看得见的差异"由它提供（否则只有 skill 槽位值不同，字幕样式逐字节相同）
   type RecipeEntry = {
@@ -347,10 +357,12 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // 1) 先落盘当前编辑（与"一键生成"同纪律：节点是真相源，不含未保存编辑）；
   // 2) 桥端点内部跑可行性门——非可行即 422 + rejected 缺失清单，不渲染；
   // 3) 渲染是 detached 的：拿到 render_id 后轮询 v2 渲染状态端点。
-  const startDirectRender = useCallback(async () => {    setRenderPhase("starting");
+  const startDirectRender = useCallback(async () => {
+    setRenderPhase("starting");
     setRenderFailure(null);
     setRenderBlockers([]);
     setRenderNotes([]);
+    setRenderPaceWarnings([]);
     setRenderVideoUrl(null);
     setRenderProgress(null);
     setError(null);
@@ -401,6 +413,18 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       if (Array.isArray(body.dropped_unresolved_clip_ids) && body.dropped_unresolved_clip_ids.length > 0) {
         notes.push(
           `库素材未解析，未计入本次直出：${body.dropped_unresolved_clip_ids.join("、")}`,
+        );
+      }
+      // P4 pace 预检：台词预估时长超窗——在花钱合成前说出来（删词 or 加窗）
+      if (Array.isArray(body.pace_warnings) && body.pace_warnings.length > 0) {
+        setRenderPaceWarnings(
+          body.pace_warnings.map((item: Record<string, unknown>) => ({
+            beat_id: String(item.beat_id ?? ""),
+            text: String(item.text ?? ""),
+            estimated_seconds: Number(item.estimated_seconds ?? 0),
+            window_seconds: Number(item.window_seconds ?? 0),
+            ratio: typeof item.ratio === "number" ? item.ratio : null,
+          })),
         );
       }
       setRenderNotes(notes);
@@ -862,6 +886,29 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
               <div style={{ marginTop: 6, fontSize: 9, color: "#888", lineHeight: 1.6 }}>
                 {renderNotes.map((note) => (
                   <div key={note}>· {note}</div>
+                ))}
+              </div>
+            )}
+            {renderPaceWarnings.length > 0 && (
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: "4px 8px",
+                  background: "#3a2a1a",
+                  border: "1px solid #5a4a2a",
+                  borderRadius: 3,
+                  fontSize: 9,
+                  color: "#fc8",
+                  lineHeight: 1.6,
+                }}
+              >
+                <div>⏱ 语速预检：{renderPaceWarnings.length} 段台词预估念不完（合成前处理更便宜）：</div>
+                {renderPaceWarnings.map((warning) => (
+                  <div key={warning.beat_id}>
+                    · [{warning.beat_id}]「{warning.text}」预估 {warning.estimated_seconds}s vs 段落窗{" "}
+                    {warning.window_seconds}s
+                    {warning.ratio !== null ? `（${warning.ratio.toFixed(1)}×）` : ""}——删词或加窗
+                  </div>
                 ))}
               </div>
             )}

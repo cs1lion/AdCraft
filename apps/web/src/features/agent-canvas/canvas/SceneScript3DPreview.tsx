@@ -39,6 +39,7 @@ import type {
 } from "../../../types/scene-script";
 import { PLACEHOLDER_ASSET_COLOR } from "../../../types/scene-script.generated";
 import { assetGeometryFor, unimplementedKinds } from "./sceneScriptGeometry";
+import { objectLodTier } from "./sceneFidelity";
 import {
   sceneToThreePosition,
   sceneYawToThreeRotation,
@@ -159,6 +160,9 @@ function LowPolyHuman({
   // mouth open at exactly those frames, or "who speaks now" is invisible.
   const isSpeaking = characterActionAtFrame(character, frame) === "talk";
   const mouthOpen = isSpeaking ? headRadius * 0.5 : headRadius * 0.08;
+  // V3 ④ 台词即表演：gesture 关键帧携带 15° 前倾的 rotation_y，预览把头颈画出来。
+  const isGesturing = characterActionAtFrame(character, frame) === "gesture";
+  const headTilt = isGesturing ? -0.26 : 0; // ≈15° forward lean, three.js X
   // The line whose time window covers "now" for THIS speaker.
   const activeLine = activeDialogueLineAtFrame(dialogueLines, character.id, frame, frameRate);
   return (
@@ -172,11 +176,14 @@ function LowPolyHuman({
           emissiveIntensity={handlers.selected ? 0.35 : 0}
         />
       </mesh>
-      {/* Head */}
-      <mesh position={[0, bodyHeight + headRadius * 0.8, 0]} castShadow>
-        <sphereGeometry args={[headRadius, 8, 8]} />
-        <meshStandardMaterial color="#E8D5C4" />
-      </mesh>
+      {/* Head: a gesture keyframe tilts the whole head group forward ≈15� */}
+      <group rotation={[headTilt, 0, 0]} position={[0, bodyHeight + headRadius * 0.8, 0]}
+        data-gesturing={isGesturing ? "true" : "false"}>
+        <mesh castShadow>
+          <sphereGeometry args={[headRadius, 8, 8]} />
+          <meshStandardMaterial color="#E8D5C4" />
+        </mesh>
+      </group>
       {/* Mouth: opens on the talk keyframes the dialogue pipeline wrote.
           Deterministic from the frame (no animation loop) so the preview,
           the inspector and the Blender render agree. */}
@@ -270,8 +277,12 @@ function PropMesh({
   kind,
   handlers,
   heldPosition,
+  /** V3 ④ LOD: the object's declared coarseness tier. ``rough`` collapses the geometry to a single primitive box. */
+  lodTier = "standard",
 }: {
   prop: SceneProp | SceneEnvironment;
+  /** V3 ④ LOD tier: ``rough`` collapses the geometry to a primitive box. */
+  lodTier?: import("./sceneFidelity.ts").LodTier;
   kind: "prop" | "environment";
   handlers: EditHandlers;
   /**
@@ -289,6 +300,24 @@ function PropMesh({
   const ref = useMemo<SceneObjectRef>(() => ({ kind, id: prop.id }), [kind, prop.id]);
 
   const geometry = useMemo(() => {
+    // V3 ④ LOD 阶梯：rough tier 只画一个原语占位（白模阶段“有”比“像”重要）。
+    if (lodTier === "rough") {
+      return (
+        <mesh
+          position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
+          rotation={[0, rotationY, 0]}
+          castShadow
+          data-testid={`lod-rough-${kind}-${prop.id}`}
+        >
+          <boxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
+          <meshStandardMaterial
+            color={PLACEHOLDER_ASSET_COLOR}
+            emissive={PLACEHOLDER_ASSET_COLOR}
+            emissiveIntensity={0.35}
+          />
+        </mesh>
+      );
+    }
     const build = assetGeometryFor(prop.type);
     if (build) {
       return build({ scale, rotationY, pos });
@@ -311,7 +340,7 @@ function PropMesh({
         />
       </mesh>
     );
-  }, [prop.type, pos, rotationY, scale]);
+  }, [prop.type, lodTier, pos, rotationY, scale]);
 
   const { handlePointerDown, handlePointerMove } = useEditHandlers(handlers, ref, scenePosition);
 
@@ -964,6 +993,7 @@ export function SceneScript3DPreview({
                   <PropMesh
                     key={object.id}
                     prop={object}
+                    lodTier={objectLodTier(object)}
                     kind="environment"
                     handlers={handlersFor(
                       { kind: "environment", id: object.id },
@@ -980,6 +1010,7 @@ export function SceneScript3DPreview({
                   <PropMesh
                     key={object.id}
                     prop={object}
+                    lodTier={objectLodTier(object)}
                     kind="prop"
                     heldPosition={heldItemPositionAtFrame(sceneScript, object, currentFrame)}
                     handlers={handlersFor(

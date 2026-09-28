@@ -362,6 +362,46 @@ describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出
     expect(body.recipe.subtitle.color).toBe("#FFC658");
   });
 
+  it("surfaces P4 pace warnings (estimated speech time vs beat window) before spending", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/api/v1/replica/blueprint/recipes")) {
+        return { status: 200, json: async () => ({ success: true, recipes: [] }) };
+      }
+      if (String(url).includes("/final-composition/renders/")) {
+        return { status: 200, json: async () => ({ status: "completed", output_url: "https://cdn/f.mp4" }) };
+      }
+      return {
+        status: 200,
+        json: async () => ({
+          success: true,
+          feasible: true,
+          render_id: "render_pace01",
+          status: "queued",
+          timeline_version: 2,
+          previous_timeline_version: 1,
+          pace_warnings: [
+            {
+              beat_id: "b1",
+              text: "别再这样洗脸了这款洗面奶真的超级好用",
+              estimated_seconds: 5.417,
+              window_seconds: 3.0,
+              ratio: 1.806,
+            },
+          ],
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    openSourceTab();
+    fireEvent.click(screen.getByText("⚡ 零模型费直出"));
+
+    await waitFor(() => expect(screen.getByText(/语速预检/)).toBeTruthy());
+    expect(screen.getByText(/预估 5.417s vs 段落窗 3s/)).toBeTruthy();
+    expect(screen.getByText(/1.8×/)).toBeTruthy();
+    expect(screen.getByText(/删词或加窗/)).toBeTruthy();
+  });
+
   it("surfaces the feasibility gate blockers instead of rendering", async () => {
     vi.stubGlobal(
       "fetch",

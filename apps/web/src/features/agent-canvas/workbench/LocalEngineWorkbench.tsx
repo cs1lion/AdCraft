@@ -29,6 +29,12 @@ import { FourLinePromptEditor } from "./FourLinePromptEditor.tsx";
 import { NodeWorkbenchError } from "./NodeWorkbenchError.tsx";
 import { SceneImageIntake } from "../canvas/SceneImageIntake.tsx";
 import { WhiteModelOpLog } from "../canvas/WhiteModelOpLog.tsx";
+import {
+  DIRECTOR_TAKES_CONTENT_KEY,
+  parseDirectorTakes,
+  serializeDirectorTakes,
+  type DirectorTake,
+} from "../canvas/directorTakes.ts";
 import { VoiceCastDialogueLines } from "./VoiceCastDialogueLines.tsx";
 import {
   describeObjectPointer,
@@ -550,6 +556,28 @@ function Scene3DEditSection({
     () => parseVariants(node.structured_content?.[TRANSITION_VARIANTS_CONTENT_KEY]),
     [node.structured_content],
   );
+  const takes = useMemo(
+    () => parseDirectorTakes(node.structured_content?.[DIRECTOR_TAKES_CONTENT_KEY]),
+    [node.structured_content],
+  );
+  const persistTakes = useCallback(
+    (next: DirectorTake[]) => {
+      if (!patchNode) return;
+      void Promise.resolve(
+        patchNode(
+          node.node_id,
+          {
+            structured_content: {
+              ...node.structured_content,
+              [DIRECTOR_TAKES_CONTENT_KEY]: serializeDirectorTakes(next),
+            },
+          },
+          { coalesce: true },
+        ),
+      ).catch(() => {});
+    },
+    [node.node_id, node.structured_content, patchNode],
+  );
   const persistVariants = useCallback(
     (next: TransitionVariant[]) => {
       if (!patchNode) return;
@@ -744,6 +772,8 @@ function Scene3DEditSection({
           speechSegments={speechSegments}
           focusShotId={focusShotId}
           onFocusShotConsumed={() => setFocusShotId(null)}
+          takes={takes}
+          onSaveTake={(take) => persistTakes([...takes, take])}
         />
       </Suspense>
     </section>

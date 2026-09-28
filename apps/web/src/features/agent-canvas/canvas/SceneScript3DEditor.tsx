@@ -37,6 +37,10 @@ import {
 } from "./SceneScriptPlaybackContext";
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
+import { DirectorCommandBar } from "./DirectorCommandBar.tsx";
+import { StoryboardPanel } from "./StoryboardPanel.tsx";
+
+import { nextTakeLabel } from "./directorTakes.ts";
 import { INSERT_SHOT_MIN_SECONDS, ShotStrip } from "./ShotStrip.tsx";
 import { TransitionProposalsPanel, type TransitionSpeechSegment } from "./TransitionProposalsPanel.tsx";
 import type { TransitionVariant } from "./transitionVariants.ts";
@@ -337,11 +341,32 @@ export interface SceneScript3DEditorProps {
   variants?: readonly TransitionVariant[];
   onVariantsChange?: (variants: TransitionVariant[]) => void;
   /**
+   * Director takes (V3): labelled snapshots for A/B comparison. The
+   * workbench persists them on the node; the editor shows a save-take
+   * button and a take picker.
+   */
+  takes?: readonly import("./directorTakes.ts").DirectorTake[];
+  onSaveTake?: (take: import("./directorTakes.ts").DirectorTake) => void;
+  /**
    * Advisory jump target (V0.2 §15): a shot id an advisory pointed at. The
    * playhead moves into that shot (so the picker's pair forms) and the
    * readings fetch once; the parent clears the signal via
    * `onFocusShotConsumed`.
    */
+  /**
+   * The workflow and node ids that back this node in the agent-canvas DB.
+   * Forwarded to TransitionProposalsPanel so retained_reading_ids can be
+   * persisted on the node across sessions.
+   */
+  workflowId?: string | null;
+  nodeId?: string | null;
+  /**
+   * Reading ids already persisted on the node
+   * (structured_content.retained_reading_ids). Forwarded to
+   * TransitionProposalsPanel as initialEngagedIds so a refresh restores
+   * multi-round memory.
+   */
+  initialEngagedIds?: readonly string[];
   focusShotId?: string | null;
   onFocusShotConsumed?: () => void;
 }
@@ -371,6 +396,11 @@ export function SceneScript3DEditor({
   speechSegments = [],
   variants = [],
   onVariantsChange,
+  workflowId = null,
+  nodeId = null,
+  initialEngagedIds = [],
+  takes = [],
+  onSaveTake,
   focusShotId = null,
   onFocusShotConsumed,
 }: SceneScript3DEditorProps) {
@@ -401,6 +431,11 @@ export function SceneScript3DEditor({
         speechSegments={speechSegments}
         variants={variants}
         onVariantsChange={onVariantsChange}
+        takes={takes}
+        onSaveTake={onSaveTake}
+        workflowId={workflowId}
+        nodeId={nodeId}
+        initialEngagedIds={initialEngagedIds}
         focusShotId={focusShotId}
         onFocusShotConsumed={onFocusShotConsumed}
       />
@@ -433,6 +468,11 @@ function SceneScript3DEditorContent({
   speechSegments = [],
   variants = [],
   onVariantsChange,
+  workflowId = null,
+  nodeId = null,
+  initialEngagedIds = [],
+  takes = [],
+  onSaveTake,
   focusShotId = null,
   onFocusShotConsumed,
 }: SceneScript3DEditorProps) {
@@ -724,6 +764,22 @@ function SceneScript3DEditorContent({
             : animaticSkipLabel(animaticAudio.reason)}
         </p>
       )}
+      {/* 导演口令条（V0.3 导演台 MVP）：一条确定性的指令直接调度选中对象，
+          预览即时变化；自由语音层随后映射到同一个 DirectorMotionCommand。 */}
+      <DirectorCommandBar
+        sceneScript={sceneScript}
+        onApply={onChange}
+        selectedObject={selectedObject}
+        playheadFrame={playback.currentFrame}
+        onNudge={(next) => onChange(next)}
+        disabled={saving}
+      />
+      <StoryboardPanel
+        sceneScript={sceneScript}
+        refreshKey={sceneScript.shots.length}
+        onSeekFrame={(frame) => playback.seekToFrame(frame)}
+        disabled={saving}
+      />
       {autoLipSync?.applied && (
         <p
           className={`scene-script-3d-editor__drift${
@@ -855,7 +911,48 @@ function SceneScript3DEditorContent({
       {/* V0.2 §12: a declared reading must be revocable. Without this the
           relation is write-once, and "这个切不需要读法" would have no
           expression anywhere in the UI. */}
-      <ShotStrip
+      {/* Director takes（V3）：把当前场景存成一条可对比/可回滚的快照。 */}
+      {onSaveTake && (
+        <div className="scene-script-3d-editor__takes">
+          <button
+            type="button"
+            className="scene-script-3d-editor__take-save"
+            data-testid="scene-script-3d-take-save"
+            onClick={() =>
+              onSaveTake({
+                id: `take_${Date.now()}`,
+                label: nextTakeLabel(takes),
+                scene_script: JSON.parse(JSON.stringify(sceneScript)) as Record<string, unknown>,
+                operations: [],
+                frame: playback.currentFrame,
+              })
+          }
+          >
+            存 take
+          </button>
+          {takes.map((take) => (
+            <span
+              key={take.id}
+              className="scene-script-3d-editor__take"
+              data-testid={`scene-script-3d-take-${take.id}`}
+            >
+              {take.label}
+              {take.operations.length > 0 && (
+                <em className="scene-script-3d-editor__take-ops">{take.operations.length} ops</em>
+              )}
+              <button
+                type="button"
+                data-testid={`scene-script-3d-take-restore-${take.id}`}
+                onClick={() => onChange(take.scene_script as unknown as SceneScriptRoot)}
+                title="恢复这个版本"
+              >
+                恢复
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+            <ShotStrip
         shots={sceneScript.shots}
         totalFrames={sceneScript.scene.duration * sceneScript.scene.frame_rate}
         currentFrame={playback.currentFrame}
@@ -891,6 +988,9 @@ function SceneScript3DEditorContent({
           speechSegments={speechSegments}
           variants={variants}
           onVariantsChange={onVariantsChange}
+          workflowId={workflowId}
+          nodeId={nodeId}
+          initialEngagedIds={initialEngagedIds}
           autoFetchShotId={focusShotId}
         />
         <footer className="scene-script-3d-editor__footer">

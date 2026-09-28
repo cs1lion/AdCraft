@@ -26,6 +26,7 @@ import type {
   SceneShot,
 } from "../../../types/scene-script";
 import type { SceneVec3 } from "./sceneScriptAxes";
+import { resolvePropFallback, resolveEnvironmentFallback, buildFallbackReport } from "./propTypeFallback.ts";
 
 export type SceneScriptObjectKind = "character" | "prop" | "environment" | "camera";
 
@@ -276,13 +277,14 @@ export function addEnvironmentObject(
 ): SceneScriptRoot {
   const id = options.id ?? nextFreeId(script.environment.map((object) => object.id), "env");
   const index = script.environment.length;
+  const resolvedKind = resolveEnvironmentFallback(kind) ?? kind; // degrade unknown types in place
   return {
     ...script,
     environment: [
       ...script.environment,
       {
         id,
-        type: kind,
+        type: resolvedKind as unknown as import("../../../types/scene-script.generated").EnvironmentTypeName,
         position: spiralPosition(index),
         scale: options.scale ?? 1,
         rotation_y: options.rotationY ?? 0,
@@ -298,13 +300,14 @@ export function addPropObject(
 ): SceneScriptRoot {
   const id = options.id ?? nextFreeId(script.props.map((object) => object.id), "prop");
   const index = script.props.length;
+  const resolvedKind = resolvePropFallback(kind) ?? kind; // degrade unknown types in place
   return {
     ...script,
     props: [
       ...script.props,
       {
         id,
-        type: kind,
+        type: resolvedKind as unknown as import("../../../types/scene-script.generated").PropTypeName,
         position: spiralPosition(index),
         scale: options.scale ?? 1,
         rotation_y: options.rotationY ?? 0,

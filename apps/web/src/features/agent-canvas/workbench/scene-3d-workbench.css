@@ -642,6 +642,156 @@
 
 /* Full-screen director workbench. */
 
+/* Director command bar (V0.3 MVP): one deterministic command at a time,   */
+   /* laid out as a compact row above the preview stage so it never pushes */
+   /* the viewport down. */
+.scene-script-3d-editor__director {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+}
+
+.scene-script-3d-editor__director .scene-script-3d-editor__field {
+  margin: 0;
+}
+
+.scene-script-3d-editor__director .scene-script-3d-editor__note {
+  color: #7fd4a8;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.scene-script-3d-editor__nudges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid rgb(255 255 255 / 10%);
+}
+
+.scene-script-3d-editor__nudge-label {
+  color: rgb(255 255 255 / 55%);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.scene-script-3d-editor__nudges button {
+  padding: 2px 6px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 5%);
+  color: #edf0f8;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scene-script-3d-editor__nudges button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 12%);
+}
+
+.scene-script-3d-editor__nudges button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+}
+
+.scene-script-3d-editor__storyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.scene-script-3d-editor__storyboard-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.scene-script-3d-editor__storyboard-tabs button {
+  padding: 3px 10px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  background: transparent;
+  color: #edf0f8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__storyboard-tabs button.is-active {
+  background: rgb(255 255 255 / 10%);
+  border-color: rgb(255 255 255 / 25%);
+}
+
+.scene-script-3d-editor__storyboard-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scene-script-3d-editor__storyboard-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #edf0f8;
+  background: rgb(255 255 255 / 4%);
+}
+
+.scene-script-3d-editor__storyboard-shot-id {
+  font-weight: 600;
+  min-width: 32px;
+}
+
+.scene-script-3d-editor__storyboard-shot-type {
+  color: #9aa3b8;
+  min-width: 48px;
+}
+
+.scene-script-3d-editor__storyboard-shot-frames {
+  color: #9aa3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-script-3d-editor__storyboard-shot-desc {
+  flex: 1;
+  color: #7d8699;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-script-3d-editor__storyboard-seek {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 5px;
+  background: transparent;
+  color: #edf0f8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__storyboard-seek:hover:not(:disabled) {
+  background: rgb(255 255 255 / 10%);
+}
+
+.scene-script-3d-editor__storyboard-seek:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .scene-3d-workbench__fullscreen-toggle {
   margin-left: auto;
   padding: 3px 10px;
@@ -1189,4 +1339,50 @@
 
 .dialogue-lipsync__error {
   color: #ff8a8a;
+}
+
+/* Director takes (V3): save + restore labelled snapshots. */
+.scene-script-3d-editor__takes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.scene-script-3d-editor__take-save {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: inherit;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__take {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.scene-script-3d-editor__take-ops {
+  font-style: normal;
+  font-size: 10px;
+  color: rgb(255 255 255 / 45%);
+}
+
+.scene-script-3d-editor__take button {
+  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 8%);
+  color: inherit;
+  cursor: pointer;
 }

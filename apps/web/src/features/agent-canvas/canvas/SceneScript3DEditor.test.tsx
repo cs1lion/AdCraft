@@ -85,9 +85,80 @@ function selectObject(ref: SceneObjectRef) {
   });
 }
 
+/**
+ * The inspector panel's number fields, in document order. The director
+ * command bar renders its own duration spinbutton, so tests target the
+ * inspector panel explicitly rather than the global spinbutton set.
+ */
+function inspectorSpinbuttons(): HTMLInputElement[] {
+  const panel = document.querySelector(".scene-script-3d-editor__panel");
+  return Array.from(panel?.querySelectorAll("input[type=number]") ?? []);
+}
+
 afterEach(cleanup);
 
 describe("SceneScript3DEditor", () => {
+  it("applies a director command end-to-end: local preview then gate round trip", async () => {
+    const { onChange } = renderEditor();
+    // The director gate client is mocked so no network call is attempted; the
+    // mock rejects so the bar keeps its optimistic preview and reports it.
+    const directorClient = await import("./directorOperationsClient.ts");
+    vi.spyOn(directorClient, "applyDirectorMotion").mockResolvedValue({
+      ok: false,
+      error: "gate offline (test)",
+    });
+
+    // 1. Pick the camera target + a preset in the bar (fireEvent, like the
+    // rest of this suite — user-event is not a dependency).
+    fireEvent.change(screen.getByLabelText("导演指令对象"), { target: { value: "cam1" } });
+    const presetSelect = screen.getByLabelText("导演指令");
+    fireEvent.change(presetSelect, { target: { value: "push_in" } });
+    fireEvent.click(screen.getByTestId("scene-script-3d-director-submit"));
+
+    // 2. The bar applied the optimistic preview exactly once before the gate.
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    const optimistic = onChange.mock.calls[0][0] as SceneScriptRoot;
+    // push_in over 60 frames writes >= 3 sampled camera keyframes including frame 60.
+    const cameraKeyframes = optimistic.cameras[0].keyframes;
+    expect(cameraKeyframes.length).toBeGreaterThanOrEqual(3);
+    expect(cameraKeyframes.map((k) => k.frame)).toContain(60);
+
+    // 3. The status line reports the optimistic-keep (gate rejected in mock).
+    const status = screen.getByTestId("scene-script-3d-director-status");
+    expect(status.textContent).toContain("已预览");
+  });
+
+  it("adopts the gate-applied script when the round trip succeeds", async () => {
+    const { onChange } = renderEditor();
+    const directorClient = await import("./directorOperationsClient.ts");
+    // A gate that PASSES returns a distinct, authoritative script the bar must
+    // adopt as its second (and final) write — preview and persisted state in
+    // lockstep.
+    const gateScript: SceneScriptRoot = {
+      ...sceneScript(),
+      scene: { ...sceneScript().scene, name: "gate-applied" },
+    };
+    vi.spyOn(directorClient, "applyDirectorMotion").mockResolvedValue({
+      ok: true,
+      appliedSceneScript: gateScript,
+      operations: [],
+    });
+
+    fireEvent.change(screen.getByLabelText("导演指令对象"), { target: { value: "cam1" } });
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "orbit_left" } });
+    fireEvent.click(screen.getByTestId("scene-script-3d-director-submit"));
+
+    // Two writes: optimistic preview, then the gate's post-apply script.
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    const adopted = onChange.mock.calls[1][0] as SceneScriptRoot;
+    expect(adopted.scene.name).toBe("gate-applied");
+    const status = screen.getByTestId("scene-script-3d-director-status");
+    expect(status.textContent).toContain("已过闸门");
+  });
+  // Restore the module-level spy between tests.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it("passes editMode + callbacks to the preview", () => {
     renderEditor();
     expect(previewProps.editMode).toBe(true);
@@ -107,7 +178,9 @@ describe("SceneScript3DEditor", () => {
     expect(screen.getByText("角色")).toBeTruthy();
     expect(screen.getByText(/2 个关键帧/)).toBeTruthy();
     // Position x/y/z fields exist with the frame-0 values.
-    const inputs = screen.getAllByRole("spinbutton") as HTMLInputElement[];
+    // The director command bar adds its own duration spinbutton, so scope to
+    // the inspector panel (its x/y/z fields, not the command bar's).
+    const inputs = inspectorSpinbuttons();
     const values = inputs.map((input) => input.value);
     expect(values).toContain("0"); // position x at frame 0
   });
@@ -115,7 +188,8 @@ describe("SceneScript3DEditor", () => {
   it("writes through the edit model when a position field changes", () => {
     const { onChange } = renderEditor();
     selectObject({ kind: "character", id: "char_a" });
-    const xInput = screen.getAllByRole("spinbutton")[0] as HTMLInputElement;
+    // xInput is the first inspector spinbutton (character x).
+    const xInput = inspectorSpinbuttons()[0] as HTMLInputElement;
     fireEvent.focus(xInput);
     fireEvent.change(xInput, { target: { value: "3.5" } });
     fireEvent.blur(xInput);
@@ -130,9 +204,8 @@ describe("SceneScript3DEditor", () => {
   it("writes prop scale and rotation through the static-object path", () => {
     const { onChange } = renderEditor();
     selectObject({ kind: "prop", id: "crate1" });
-    const inputs = screen.getAllByRole("spinbutton") as HTMLInputElement[];
-    // x, y, z, rotation, scale
-    const scaleInput = inputs[4];
+    // x, y, z, rotation, scale -> index 4
+    const scaleInput = inspectorSpinbuttons()[4] as HTMLInputElement;
     fireEvent.focus(scaleInput);
     fireEvent.change(scaleInput, { target: { value: "2.5" } });
     fireEvent.blur(scaleInput);
@@ -1193,10 +1266,18 @@ describe("SceneScript3DEditor advisory jump (V0.2 §15)", () => {
 
     // The whole wire: focus -> playhead inside the boundary shot -> the
     // picker's pair forms -> the readings for THAT pair fetch once.
+    // StoryboardPanel fires on mount (storyboard tab) — wait for both fetches to settle
+    // so the test does not leave a pending request that changes the call count mid-assertion.
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    // The transition-proposals call is the first one (fired before the panel's mount fetch).
+    // Find the transition-proposals call: its URL contains /transition-proposals.
+    const transitionCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]).includes("/transition-proposals"),
+    );
+    expect(transitionCall).toBeDefined();
+    const body = JSON.parse((transitionCall![1] as RequestInit).body as string);
     expect(body.shot_a_id).toBe("shot1");
     expect(body.shot_b_id).toBe("shot2");
   });
@@ -1226,5 +1307,61 @@ describe("SceneScript3DEditor advisory jump (V0.2 §15)", () => {
     await waitFor(() => {
       expect(onFocusShotConsumed).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("SceneScript3DEditor director takes (V3)", () => {
+  it("shows no take controls without an onSaveTake callback", () => {
+    renderEditor();
+    expect(screen.queryByTestId("scene-script-3d-take-save")).toBeNull();
+  });
+
+  it("saves a labelled take from the current scene and frame", () => {
+    const onSaveTake = vi.fn();
+    const { onChange } = renderEditor({ takes: [], onSaveTake });
+    fireEvent.click(screen.getByTestId("scene-script-3d-take-save"));
+    expect(onSaveTake).toHaveBeenCalledTimes(1);
+    const take = onSaveTake.mock.calls[0][0];
+    expect(take.label).toBe("Take 1");
+    expect(take.scene_script).toEqual(sceneScript());
+    expect(Array.isArray(take.operations)).toBe(true);
+  });
+
+  it("restores a saved take over the live scene", () => {
+    const other: SceneScriptRoot = {
+      ...sceneScript(),
+      scene: { ...sceneScript().scene, name: "take-version" },
+    };
+    const takes = [
+      {
+        id: "take_x",
+        label: "Take X",
+        scene_script: JSON.parse(JSON.stringify(other)) as Record<string, unknown>,
+        operations: [{ op: "move" }],
+        frame: 12,
+      },
+    ];
+    const { onChange } = renderEditor({ takes, onSaveTake: vi.fn() });
+    fireEvent.click(screen.getByTestId("scene-script-3d-take-restore-take_x"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect((onChange.mock.calls[0][0] as SceneScriptRoot).scene.name).toBe(
+      "take-version",
+    );
+  });
+
+  it("labels new takes in the Take 1/2/3 series, skipping used labels", () => {
+    const onSaveTake = vi.fn();
+    const used = [
+      {
+        id: "t1",
+        label: "Take 1",
+        scene_script: {} as Record<string, unknown>,
+        operations: [],
+        frame: null,
+      },
+    ];
+    renderEditor({ takes: used, onSaveTake });
+    fireEvent.click(screen.getByTestId("scene-script-3d-take-save"));
+    expect(onSaveTake.mock.calls[0][0].label).toBe("Take 2");
   });
 });

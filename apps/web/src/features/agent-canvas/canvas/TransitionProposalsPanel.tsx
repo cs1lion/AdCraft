@@ -58,6 +58,20 @@ export interface TransitionIntentAudit {
 
 export interface TransitionProposalsPanelProps {
   sceneScript: SceneScriptRoot;
+  /**
+   * The workflow and node ids that back this node in the agent-canvas DB.
+   * Forwarded to the backend so retained_reading_ids can be persisted on
+   * the node across sessions (V0.2 §14.5 known boundary).
+   */
+  workflowId?: string | null;
+  nodeId?: string | null;
+  /**
+   * Reading ids already persisted on the node
+   * (structured_content.retained_reading_ids). Used as the initial value
+   * for engagedIds so a page refresh restores multi-round memory without
+   * the LLM re-pitching its old ideas.
+   */
+  initialEngagedIds?: readonly string[];
   /** Shot the playhead is currently inside (the outgoing shot). */
   currentShotId: string | null;
   onChange: (next: SceneScriptRoot) => void;
@@ -94,6 +108,9 @@ const LABEL_ORDER = [
 
 export function TransitionProposalsPanel({
   sceneScript,
+  workflowId = null,
+  nodeId = null,
+  initialEngagedIds = [],
   currentShotId,
   onChange,
   disabled = false,
@@ -116,7 +133,7 @@ export function TransitionProposalsPanel({
   // Multi-round memory: readings the author APPLIED (they became the cut) or
   // DISMISSED (not wanted here). Both are reserved on the next fetch, so the
   // LLM is asked for something new instead of re-pitching its old ideas.
-  const [engagedIds, setEngagedIds] = useState<string[]>([]);
+  const [engagedIds, setEngagedIds] = useState<string[]>(initialEngagedIds as string[]);
   const [narrativeSource, setNarrativeSource] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   // The declared entry reading, checked against this pair (§13 第 5 问).
@@ -165,6 +182,12 @@ export function TransitionProposalsPanel({
           // Multi-round memory (V0.2 §15): what the author already engaged
           // with is reserved, so round 2 builds on round 1.
           exclude_reading_ids: engagedIds,
+          // V0.2 §14.5 known boundary: persist engaged ids on the node so
+          // a refresh restores multi-round memory.
+          retained_reading_ids: engagedIds,
+          ...(workflowId && nodeId
+            ? { workflow_id: workflowId, node_id: nodeId }
+            : {}),
         }),
       });
       const body = await response.json().catch(() => null);
