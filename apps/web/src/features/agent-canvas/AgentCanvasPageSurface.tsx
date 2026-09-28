@@ -619,7 +619,9 @@ export function AgentCanvasPage() {
         const hint = error.suggestedNext ? ` —${error.suggestedNext}` : "";
         setSurfaceError(`Cannot run this node: ${error.message}${hint}`);
       } else {
-        setSurfaceError(error instanceof Error ? error.message : "Node run failed.");
+        // D4: 运行期失败（如 scene3d_blender_unavailable / mcp_unavailable）
+        // 走共享翻译层——用户看到可行动的说明，而不是后端原始 message。
+        setSurfaceError(canvasAuthoringErrorMessage(error));
       }
     });
   }, [runNode, workflow?.nodes]);

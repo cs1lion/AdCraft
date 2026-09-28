@@ -93,4 +93,52 @@ describe("canvasAuthoringErrorMessage", () => {
       payload: null,
     }))).toBe(message);
   });
+
+  // D4: 3D 线本地引擎缺失必须"看得懂 + 有下一步"。
+  it("explains a missing Blender install with the next step (D4)", () => {
+    const message = canvasAuthoringErrorMessage(new V2ApiError({
+      status: 409,
+      code: "scene3d_blender_unavailable",
+      message: "Blender is not available: [Errno 2] No such file or directory: 'blender'",
+      details: {},
+      violations: [],
+      suggestedActions: [],
+      payload: null,
+    }));
+    expect(message).toContain("Blender is not installed");
+    // 可行动：说得出下一步（安装 / BLENDER_EXECUTABLE / 找管理员），不是"失败"
+    expect(message).toContain("BLENDER_EXECUTABLE");
+    expect(message).toContain("administrator");
+  });
+
+  it("explains an unreachable Blender MCP bridge with the next step (D4)", () => {
+    const message = canvasAuthoringErrorMessage(new V2ApiError({
+      status: 503,
+      code: "mcp_unavailable",
+      message: "Blender MCP server unavailable: spawn failed",
+      details: {},
+      violations: [],
+      suggestedActions: [],
+      payload: null,
+    }));
+    expect(message).toContain("Blender MCP service could not be started");
+    expect(message).toContain("without the MCP bridge");
+  });
+
+  // 运行期投影错误是 normalizeRuntimeError 的普通对象（非 V2ApiError 实例），
+  // 同一张表必须也对它生效——否则节点上的红字仍漏出后端原始 message。
+  it("maps a normalized runtime error object (node failure surface)", () => {
+    expect(
+      canvasAuthoringErrorMessage({
+        code: "scene3d_blender_unavailable",
+        message: "Blender is not available: probe failed",
+        stage: "execute",
+      }),
+    ).toContain("Blender is not installed");
+
+    // 未知 code 保留原始 message 可查询，不吞掉
+    expect(canvasAuthoringErrorMessage({ code: "some_new_code", message: "backend said why" })).toBe(
+      "backend said why",
+    );
+  });
 });

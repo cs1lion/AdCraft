@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — D4 Blender/MCP 不可用前端零提示 → 可行动说明（3D 线演示不再"看不懂的失败"）
+
+- **问题**：后端有具名错误 `scene3d_blender_unavailable`（`agent_canvas_node_execution.py` 能力探针 fail-closed）与 `mcp_unavailable`（`scene_3d.py` MCP 桥启动失败 503），前端零引用——运行期失败原样上屏（"Blender is not available: [Errno 2]…"或笼统一句），用户不知道下一步。
+- **改动**（纯前端）：① 共享翻译层 `canvasErrorMessage.ts` 新增两条具名文案：Blender 缺失说清"装 Blender / 设 BLENDER_EXECUTABLE / 共享服务器找管理员"，MCP 桥不可用说清"启动本地 MCP 服务或不用 MCP 桥"；② `canvasAuthoringErrorMessage` 现在也识别**运行期投影的普通对象** `{code,message,stage}`（`normalizeRuntimeError` 的产物，非 V2ApiError 实例）——同一张表对节点红字生效，未知 code 仍保留原始 message 可查询；③ `AgentCanvasPageSurface` 的 runNode 失败分支与 `AgentCanvasNode` 的节点错误红字都改走该翻译层（原始 message 留在 title）。
+- **验证**：`vitest canvasErrorMessage.test.ts` **16 passed**（+3：两条 D4 文案断言"可行动"关键词；运行期普通对象映射 + 未知 code 保留 message）。`AgentCanvasNode.test.tsx` 15 failed / 59 passed——stash 对照确认**与基线完全一致**（15 条为既有失败，零新增）。`tsc` 0 error；eslint 0 error（仅存量 fast-refresh warning）；`check:endpoint-reachability` **OK**（33 条已知死端点，零新增）。
+
 ### Fixed — D2 未解析素材静默剥掉 → 逐条可行动清单 + 行内补齐入口
 
 - **问题**：直出时未解析的 BGM/SFX clip 在写盘前被剥掉（`direct_execute_bridge.py` 的 `strip_unresolved_clips`），前端只把 `dropped_unresolved_clip_ids` 拼成一句灰色 note——用户以为 BGM 进去了，实际没有；后端早已在响应里带回 `unresolved_assets`（clip/intent/提示/时长）与请求侧 `library_resolutions` 契约，前端零消费。

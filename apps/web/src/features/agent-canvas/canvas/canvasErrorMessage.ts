@@ -36,10 +36,29 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   reference_count_exceeded: "The current references exceed the selected model's limit.",
   provider_generation_failed: "The provider rejected this generation. Check the provider credential and quota, then retry.",
   provider_quota_exceeded: "The provider account is out of quota. Top up or switch credentials in API settings, then retry.",
+  // D4: 3D 线本地引擎缺失必须"看得懂 + 知道下一步"——不是"失败"两个字。
+  // 后端探针（get_blender_capability）查 BLENDER_EXECUTABLE 或 PATH 上的 blender。
+  scene3d_blender_unavailable:
+    "Blender is not installed on the machine running the backend, so this 3D node cannot render. Install Blender (or point BLENDER_EXECUTABLE at it) and retry; on a shared server, ask your administrator.",
+  // MCP 桥（BlenderMcpClient）起不来：本地服务未启动时给同等级别的可行动说明。
+  mcp_unavailable:
+    "The Blender MCP service could not be started, so this 3D action cannot run. Start the local Blender MCP service and retry, or run without the MCP bridge.",
 };
 
 export function canvasAuthoringErrorMessage(error: unknown): string {
   if (!isV2ApiError(error)) {
+    // 运行期投影的错误是 normalizeRuntimeError 的普通对象 {code,message,stage}
+    // （不是 V2ApiError 实例）——同一张翻译表必须也对它生效，否则节点上的
+    // 红字仍会漏出后端实现细节。
+    if (error && typeof error === "object") {
+      const record = error as { code?: unknown; message?: unknown };
+      if (typeof record.code === "string" && FRIENDLY_ERRORS[record.code]) {
+        return FRIENDLY_ERRORS[record.code];
+      }
+      if (typeof record.message === "string" && record.message) {
+        return record.message;
+      }
+    }
     return error instanceof Error ? error.message : "The canvas operation could not be completed.";
   }
   if (error.code === "binding_model_incompatible") {

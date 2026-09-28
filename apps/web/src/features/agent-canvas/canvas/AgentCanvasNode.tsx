@@ -34,6 +34,7 @@ import {
   parseCanvasDropPayload,
 } from "./canvasDrop.ts";
 import { extractSceneScriptFromNode } from "../model/sceneScriptUtils.ts";
+import { canvasAuthoringErrorMessage } from "./canvasErrorMessage.ts";
 import { creativeRoleDisplayName } from "./creativeRoleDisplayName.ts";
 import { areAgentCanvasNodePropsEqual } from "./agentCanvasNodeRenderModel.ts";
 import { requestNativeVideoFirstFrame } from "./nativeVideoFirstFrame.ts";
@@ -463,9 +464,9 @@ export function AgentCanvasNodeCard({
           role="alert"
           title={typeof runtime.error === "string" ? runtime.error : runtime.error.message || JSON.stringify(runtime.error)}
         >
-          {typeof runtime.error === "string"
-            ? runtime.error
-            : runtime.error.message || "Execution failed"}
+          {/* D4: 具名失败（scene3d_blender_unavailable / mcp_unavailable 等）走
+              共享翻译层，节点红字也是可行动说明；原始 message 留在 title 里可查。 */}
+          {canvasAuthoringErrorMessage(runtime.error)}
         </span>
       ) : null}
 
