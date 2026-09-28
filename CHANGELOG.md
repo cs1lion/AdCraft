@@ -16,12 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — 拉片复刻 G5：`.adrecipe` 配方层（hypit recipes 落地）——变体第一次有看得见的样式差异
 
+### Added — 拉片复刻 G5：`.adrecipe` 配方层（hypit recipes 落地）——变体第一次有看得见的样式差异
+
 - **`recipe.py` + `agent/recipes/catalog.json`（新模块 + 库）**：配方 = 字幕族语义维度集（font_size/color/position/lead_seconds/tail_seconds/handoff）——**词汇表与 `WorkflowV2TimelineSubtitleStyle` 逐字段同口径**（测试锁定），收一个渲染器不消费的字段就是让文档说谎；内置 5 个配方（底部大字/顶部小签/中央舞台/紧凑跟读/琥珀强调），目录扫描宽容（坏条目跳过、缺目录才报错，同风格库纪律）。
 - **`.adrecipe` 文档层**：`<adrecipe version="1" kind="subtitle-style">` → `<subtitle>` 六维；往返锁定、未设置的维度不写也不回填、未知维度/根元素/版本/缺 id 显式 422（不静默降级）；端点 `/blueprint/recipe/{export,import}` + `/blueprint/recipes`（目录列表）。
 - **编译层真实消费**：`plan_direct_execute_render(..., recipe=)` → `apply_recipe` 合并（未设置的维度保持 G3 默认）；karaoke-tight（lead/tail=0）让可见窗等于语义窗——配方**真实改变成片时间**，不是文本上的成立。
 - **变体 = skill × recipe（G5 的核心兑付）**：`attach_recipes` 确定性轮换配方（相邻变体不同、同 seed 可复现、库不可用保持无配方不炸主流程）；`/variant-render-plans` 各变体带各自配方编译，代表变体的字幕样式签名**互不相同**（测试断言 `len(signatures) >= 2`）——此前的真实症状"除槽位值外逐字节相同"被修掉。
 - **前端**：工作台直出区加「🎨 字幕配方」点选器（源码 tab 打开时拉目录——挂载即拉会在无关流程的 fetch 序列里插队，把"第一次 POST 是这个端点"的观测变浑浊）；选中配方随直出提交；两个既有按索引断言的测试改为按 URL 查找（背景拉取合法化后的鲁棒性修正）。
 - **测试**：+28（文档往返/拒绝 5、词汇表同口径 3、库扫描 4、编译应用 4、变体配方 4、端点 8）。replica 全套 **216 passed / 3 skip**；全量后端 **2054 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查 188 paths 通过；前端 tsc/eslint 0 error、canvas 全量零新增失败。
+
+### Added — 拉片复刻 G4：narrative token 层（hypit P1 主项）——锚定从时间上移到授权序
 
 ### Added — 拉片复刻 G4：narrative token 层（hypit P1 主项）——锚定从时间上移到授权序
 
@@ -33,13 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **边界（如实记录）**：token 层只覆盖台词段落；纯字幕片（无 line）没有授权序，锚点走既有"文本+秒数"路径。reproject 的生产触发（"重新对齐"入口）属于生成通道/TTS 片的前置工作，本增量交付语义 + 纯函数 + 不变量，UI 触发点在路线图 §17。
 - **测试**：+21（narrative 13：normalize/tokenize/六 anchor/selection/time-decoupling/occurrence/投影 None；接线 8：token 区间记录/脏秒数恢复/重配音存活/投不出即清/旧锚点兼容/全链/id 不入文档）。replica 全套 **189 passed / 3 skip**；全量后端 **2027 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查 185 paths 通过；前端 tsc/eslint 0 error、replica 前端 31 passed。
 
+
 ### Added — 拉片复刻 G3 后半：词级数据层（段落词窗 + 工作台词流）；词级 karaoke 的死路已证伪并记录
 
 - **数据层**：`ReplicaBeatV2.words`（加法字段，无转录时为空 = 行级字幕，向后兼容）+ `resolve_word_anchors` 从转录词流按段落窗归集词面与实测时间。归属规则是**单归宿** `[start, end)`（收尾段闭口）——锚点解析共享的包含端点会把边界词同时归两段（匹配无害，但词级字幕会重复渲染同一个词）。坏词条目逐项跳过（转录数据不可信）。前端镜像类型同步。
 - **真实消费者**：复刻工作台锚点 tab 展示段落词流（"词流 N 词" + 每词时间戳）——hypit 的"时间脊柱"第一次对人可见，也是词锚编辑的时间基准。
 - **负面结果（诚实记录，比硬凑的实现有价值）**：曾尝试在 direct-execute 编译层做逐词 cue（word_reveal），实现后跑门时发现**结构性死路**——可行性门规定"有台词的 beat 必须 TTS"（模型调用），而词级对齐内容（词窗）只存在于有台词的片子：**零模型费通道里不可能有词级对齐内容**。已撤掉该死分支（schema/编译/渲染器三处），改在 `_subtitle_cues` 文档字符串记录决策。词级 karaoke 的真实归属：生成通道（TTS 落音后词窗对齐口播）+ 剪辑域 ASS writer 的 `{\k}` 高亮——列为后续片，前提条件已写明。
 - **文档边界**：词窗时间是派生数据，按既定纪律**不进 `.adreplica`**（手改文档导入后 words 为空、字幕退化为行级，不造假时间）——往返测试锁定该行为。
-- **测试**：后端 +5（词窗归集/无转录 identity/与锚点共存/带转录报告带词窗/往返丢弃派生时间）+ 前端 +1（词流 chip 渲染）。`replica 全套 169 passed / 3 skip`；全量后端 **2007 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查通过；前端 tsc/eslint 0 error、canvas 全量零新增失败。
+- **测试**：后端 +5（词窗归集/无转录 identity/与锚点共存/带转录报告带词窗/往返丢弃派生时间）+ 前端 +1（词流 chip 渲染）。replica 全套 169 passed / 3 skip（本条记录当时一次 pytest 运行的结果；本轮只读树核验未重跑，故它是历史记录、不是当前"可通过"的证明）；全量后端 **2007 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查通过；前端 tsc/eslint 0 error、canvas 全量零新增失败。
 
 ### Added — 拉片复刻 G6：teardown 拆解缓存（相同视频+参数复用报告，零重复 LLM 额度）
 
@@ -69,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **测试**：单元 21 例（prompt 构造 2 + 单条校验 6 + 批量解析 7 + 调用层 6）；端点 4 例（默认关闭 / 开启后形状稳定 / 规则发现在提案落地后仍在 / 降级有理由不静默）。测试场景用"跨切台词"确保规则发现非空——否则 LLM 层无事可做会提前返回
 - **验证**：pytest 相关四文件 58 passed；ruff check 我加的行干净（scene_3d.py 既有的 import 排序/B008/S110 非本增量引入）
 - **已知边界**：测试场景触发的 advisory 是 line_crosses_cut；其余 code（cross_talk_in_tight_shot / shot_without_speech）的提案路径同一函数覆盖，未逐个建场景——纯函数校验与场景无关
+
 
 ### Added — 拉片复刻 R3 最后一公里：渲染桥 + 工作台直出入口，G7 音频测试抓到真 bug
 

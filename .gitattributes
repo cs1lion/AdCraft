@@ -1,3 +1,4 @@
 apps/api/agent/skills/**/SKILL.md text eol=lf
 apps/api/agent/skills/**/SKILL.md whitespace=-blank-at-eof
 apps/api/agent/skills/manifest.json text eol=lf
+* text=auto eol=lf
