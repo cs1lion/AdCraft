@@ -135,3 +135,45 @@ def test_style_variants_endpoint_rejects_bad_blueprint(variants_client) -> None:
         json={"blueprint": {"blueprint_version": "x"}, "n": 3},
     )
     assert response.status_code == 422, response.text
+
+
+# ---------------------------------------------------------------------------
+# 变体 → 重编译渲染计划（D：组件化替换 × direct-execute 汇合点）
+# ---------------------------------------------------------------------------
+
+
+def test_variant_render_plans_endpoint_returns_representative_timelines(variants_client) -> None:
+    blueprint = _blueprint()
+    # 补纯字幕镜头使可行性门可判 feasible
+    blueprint = blueprint.model_copy(
+        update={
+            "shots": [
+                {
+                    "index": 1, "start_seconds": 0.0, "end_seconds": 3.0,
+                    "on_screen_text": "HALF PRICE SALE", "subject_action": "",
+                }
+            ],
+            "systems_captions": "底部大字",
+        }
+    )
+    response = variants_client.post(
+        "/replica/blueprint/variant-render-plans",
+        json={"blueprint": blueprint.model_dump(mode="json"), "n": 4,
+              "render_representatives": 2},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["variants"]) == 4
+    # 只有前 render_representatives 个代表携带时间线（低成本审片）
+    with_timeline = [v for v in body["variants"] if v["timeline"] is not None]
+    assert len(with_timeline) == 2
+    # 每个变体的风格槽位都应用了各自候选
+    assert all(v["skill_ids"] for v in body["variants"])
+
+
+def test_variant_render_plans_endpoint_rejects_bad_blueprint(variants_client) -> None:
+    response = variants_client.post(
+        "/replica/blueprint/variant-render-plans",
+        json={"blueprint": {"slots": 1}, "n": 2},
+    )
+    assert response.status_code == 422, response.text
