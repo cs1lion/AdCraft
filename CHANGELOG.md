@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **问题**:`DirectorCommandBar.tsx` 两处 gate 拒绝分支把 `status.ok` 设成 `true`——触发事件(:199)与导演运动指令(:296)被闸门拒绝时,状态被渲染成"成功"灰 note 而非红色 error,用户以为指令生效实则被拒(ADR 0012:gate 是契约)。
 - **改动**:两处 `ok: true` → `ok: false`,并保留 `gate.error` 文案(红字里点名被拒原因/op)。乐观预览(`onApply(previewScript)`)行为不变,只是把"未过闸门"如实升级为错误通道,不再欺骗用户。
-- **验收/验证(诚实)**:ENV-SKIP——本机**无 node**,无法跑 `vitest src/.../DirectorCommandBar.test.tsx`,也未能渲染组件取证"红色报错";代码改动为确定性的布尔纠正。**遗留(需有 node 环境回填)**:补一条组件回归测试——mock `applyDirectorMotion` 返回 `{ok:false,error}` → 选对象/指令 → 点执行 → 断言错误文案渲染在 **error 通道**(非灰 note),跑通 vitest 后回填结果。
+- **验收/验证（已真实验证）**：本机经 WSL interop 调用 Windows node(v22.23.1) + 仓内 vitest 4.1.10 **真跑**。新增回归测试 `DirectorCommandBar.test.tsx`「gate rejection 走 error 通道」：mock `applyDirectorMotion` 返回 `{ok:false,error}` → 选对象/指令 → 点执行 → 断言 `status.className` 含 `scene-script-3d-editor__error` 且不含 `__note`（文案在两种通道下相同，故必须断言 className 而非文案）。**mutation 校验**：把导演运动分支改回 `ok:true` 该测试立刻变红（expected __note to contain __error），确认锁定有效；恢复后 **5 passed**；`tsc -p tsconfig.json` **0 error**。
 
 ### Fixed — E7 多轮记忆持久化失败不再静默（§4 可观测降级）
 

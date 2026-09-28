@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { SceneScriptRoot } from "../../../types/scene-script";
 import { CAMERA_MOTION_PRESETS } from "./cameraMotionPresets.ts";
@@ -7,6 +8,8 @@ import {
   expandDirectorMotionIntent,
   listDirectorMotionPresetIds,
 } from "./directorMotion.ts";
+import { DirectorCommandBar } from "./DirectorCommandBar.tsx";
+import { SceneScriptPlaybackProvider } from "./SceneScriptPlaybackContext.tsx";
 
 // The command bar is the first visible piece of the director-command flow:
 // it must expand a deterministic intent into a valid SceneScriptRoot that the
@@ -111,3 +114,38 @@ describe("director command expansion (MVP contract)", () => {
     expect(request.thenOps.length).toBe(1);
   });
 });
+
+
+describe("DirectorCommandBar gate rejection (D3, ADR 0012)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("renders a gate rejection on the ERROR channel, not a success note", async () => {
+    const directorClient = await import("./directorOperationsClient.ts");
+    vi.spyOn(directorClient, "applyDirectorMotion").mockResolvedValue({
+      ok: false,
+      error: "gate: op push_in rejected (camera lacks keyframe)",
+    });
+
+    render(
+      <SceneScriptPlaybackProvider sceneScript={scene()}>
+        <DirectorCommandBar sceneScript={scene()} onApply={() => {}} selectedObject={null} />
+      </SceneScriptPlaybackProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText("导演指令对象"), { target: { value: "cam1" } });
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "push_in" } });
+    fireEvent.click(screen.getByTestId("scene-script-3d-director-submit"));
+
+    const status = await screen.findByTestId("scene-script-3d-director-status");
+    await waitFor(() => expect(status.textContent).toContain("未过闸门"));
+    // D3: a rejected command must reach the error (red) channel, never the
+    // success note. The message text is identical in both channels, so assert
+    // on the className the bar chooses from gate.ok.
+    expect(status.className).toContain("scene-script-3d-editor__error");
+    expect(status.className).not.toContain("scene-script-3d-editor__note");
+  });
+});
+
