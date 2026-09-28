@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
+
+- **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。
+- **工具**：`apps/web/scripts/check-backend-endpoint-reachability.mjs`——按 web（prod/test）、agent runtime、playwright e2e、api scripts 五类消费方分别扫描，输出 reachable / ui-missing / dead 三档。`npm run report:endpoint-reachability` 报告，`npm run check:endpoint-reachability` 作 CI 闸（已验证新增死端点时 exit 1）。
+- **基线与豁免**：`endpoint-reachability-baseline.json` 记录 31 条已知死端点（新增即红）；`endpoint-reachability-exemptions.json` 记录 1 条合理豁免（天谱乐外部 webhook，外部调用，无仓内调用方是正确的）。
+- **踩坑记录（留给后来人）**：① 前端 URL 有三种拼法——字面量绝对路径、`${SCENE_3D_BASE}/x` 常量拼接（base 常声明在别的模块）、`request("/asset-library/entities")` 相对路径（前缀由 helper 加）。只认一种会产生 100+ 误报；误报比没有检查更糟。② 模板插值**不能截断到 `${`**——`/workflows/${id}/x` 会退化成 `/workflows/`，丢掉全部 workflow 作用域路由；必须整体替换成无斜杠占位符。
+- **归属说明**：本工具与 `package.json` 的两条脚本在 `feat(web): 导演工作台前端与 v0.2 e2e harness 的未入库工作（WIP 快照）` 一并落盘（`git add apps/web` 的粒度所致），非有意归入。
+
+### Added — 实机演示端到端测试方案与演示素材库
+
+- **方案**：`docs/plans/live-demo-e2e-plan.md`——验收哲学是"验产品骨架与交互诚实度，不验模型艺术水平"：按钮点了没反应 / 错误被吞 / 转圈不超时 = 不过；成片 480p 糊 = 可过。分 L0 冒烟 → L1 主链路 S0–S8 → L2 可交互性 → L3 状态反馈 → L4 负例 → L5 留痕。L0 不过即取消演示，不让环境问题污染后续结论。
+- **计划**：`docs/plans/last-hundred-meters-plan.md`（v2，演示驱动）——优先级从"缺陷严重度"改为"是否阻断演示"，收敛出 D1–D7 七条演示阻断项。**D1 是地基**：G7 的"resolve-library → 渲染 → 成片有音轨"从未真正执行过，在它通过前不应对外声称"零模型费直出可用"。
+- **交接**：`docs/plans/handoff-guide.md`——任务 → 先读哪些文件 → 改哪里 → 怎么验的逐项对照表，附第一天动作与不可违反的七条。
+- **素材**：`demo-materials/`——5 个网络下载的参考视频（含真实剪辑结构的开源短片，3 个静音 + 2 个带音轨 1080p）、8 张固定 seed 的商品/角色/场景图、5 份文案脚本（创意 brief ×3、**故事改写前后对照 RW-1~RW-4**、负例 NB-1~NB-8）。二进制按既有纪律忽略，`SOURCES.md` 记录来源、许可与**网络可达性实测**（本机 Wikimedia/archive/YouTube 均不可达，选素材前先看这张表）。
+
 ### Added — 拉片复刻 P3：复刻结构恒等守卫（hypit "swap 骨架恒等"断言）
 
 - **`structure_guard.py`（纯函数）**：`structure_diff`/`assert_same_structure`——把"复刻结构、不复刻像素"变成可执行断言。**允许变**：槽位替换/配方（复刻的目的正是换它们）与一切内容字段；**不许变**：镜头表拓扑（数量/序号/时间窗）、段落拓扑（id/role/时间窗）、锚点拓扑（event_id/挂靠/类型）、画幅时长、节奏切点。漂移逐条可行动（点名维度 + 期望/实际），不写"结构不符"这种逼人 diff JSON 的消息。
