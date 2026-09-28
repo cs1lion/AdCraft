@@ -160,7 +160,22 @@ class TransitionProposalsRequest(BaseModel):
             "Reading ids to PERSIST on the scene-3d node so they survive "
             "across sessions (V0.2 §14.5 known boundary: memory lives in "
             "panel state, reset on refresh). Written to the node's "
-            "structured_content.retained_reading_ids alongside the request."
+            "structured_content.retained_reading_ids alongside the request. "
+            "Target the node via workflow_id + node_id."
+        ),
+    )
+    workflow_id: str | None = Field(
+        default=None,
+        description=(
+            "Workflow id of the scene-3d node receiving retained_reading_ids. "
+            "Optional: empty means no persistence."
+        ),
+    )
+    node_id: str | None = Field(
+        default=None,
+        description=(
+            "Node id of the scene-3d node receiving retained_reading_ids. "
+            "Required together with workflow_id for persistence."
         ),
     )
 
@@ -1244,6 +1259,15 @@ class DialogueLipSyncRequest(BaseModel):
         description="[{character_id, text, start_time?, emotion?}]; start_time omitted = sequential",
     )
     syllables_per_second: float = Field(4.0, ge=1.0, le=12.0)
+    propose_advisories: bool = Field(
+        default=False,
+        description=(
+            "Ask the LLM to propose remedies for the shot advisories "
+            "(V0.2 §14.3/§14.5). Advisory only: every proposal references a "
+            "shot and an advisory that exist, and an unavailable/unusable LLM "
+            "degrades to the rule remedies with a reported reason."
+        ),
+    )
 
 
 class DialogueLipSyncResponse(BaseModel):
@@ -1276,10 +1300,59 @@ async def apply_dialogue_lip_sync_endpoint(
             request.dialogue_lines,
             syllables_per_second=request.syllables_per_second,
         )
+        summary = result.summary
+        # Optional LLM proposal layer for the shot advisories (V0.2
+        # §14.3/§14.5 audit-table gap: the advisor was rule-only). Every
+        # proposal references an advisory and a shot that EXIST in this
+        # scene, and an unavailable/unusable LLM degrades to the rule
+        # remedies with a reported reason — never silent (standard §4).
+        # The call is sync httpx, so it runs off the event loop.
+        if request.propose_advisories:
+            import asyncio
+
+            from app.schemas.scene_script import SceneScriptRoot
+            from app.services.scene3d.advisory_narratives import (
+                propose_advisory_narratives,
+            )
+            from app.services.scene3d.shot_advisor import ShotAdvisory
+            from app.services.scene3d.speech_orchestration import SpeechSegment
+
+            script = SceneScriptRoot.model_validate(request.scene_script)
+            advisories = [
+                ShotAdvisory(
+                    code=entry.get("code", ""),
+                    shot_id=entry.get("shot_id"),
+                    message=entry.get("message", ""),
+                    remedy=entry.get("remedy", ""),
+                    severity=entry.get("severity", "warning"),
+                    proposal_ids=tuple(entry.get("proposal_ids") or ()),
+                )
+                for entry in summary.get("shot_advisories", [])
+            ]
+            segments = [
+                SpeechSegment(
+                    segment_id=entry.get("segment_id", f"seg_{index}"),
+                    character_id=entry.get("character_id", ""),
+                    text=entry.get("text", ""),
+                    start_time=float(entry.get("start_time") or 0.0),
+                    end_time=float(entry.get("end_time") or 0.0),
+                )
+                for index, entry in enumerate(summary.get("segments", []))
+            ]
+            proposed = await asyncio.to_thread(
+                propose_advisory_narratives,
+                shots=list(script.shots),
+                segments=segments,
+                advisories=advisories,
+            )
+            summary = {
+                **summary,
+                "advisory_proposals": proposed.to_dict(),
+            }
         return DialogueLipSyncResponse(
             success=True,
             scene_script=result.scene_script.model_dump(mode="json"),
-            summary=result.summary,
+            summary=summary,
         )
     except DialogueLipSyncError as e:
         raise HTTPException(
@@ -1322,6 +1395,31 @@ class SceneOperationsResponse(BaseModel):
     warnings: list[str] = []
     mcp_results: list[dict[str, Any]] = []
     error: str | None = None
+
+
+class DirectorMotionCommandRequest(BaseModel):
+    """The director command bar's intent-level expansion request."""
+
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+    intent: str = Field(..., description="camera_motion | character_motion")
+    target_id: str | None = Field(default=None, description="camera/character id to animate")
+    preset_id: str
+    start_frame: int = Field(default=0, ge=0)
+    duration_frames: int = Field(default=15, ge=1)
+    target_position: list[float] | None = Field(default=None, description="[x, y, z] for character presets")
+    stop_distance: float = Field(default=1.2)
+
+
+class DirectorMotionCommandResponse(BaseModel):
+    success: bool
+    intent: str | None = None
+    target: str | None = None
+    preset_id: str | None = None
+    operations: list[dict[str, Any]] = []
+    applied_scene_script: dict[str, Any] | None = None
+    error: str | None = None
+    error_code: str | None = None
+    violations: list[dict[str, Any]] = []
 
 
 @router.post("/apply-operations", response_model=SceneOperationsResponse)
@@ -1392,9 +1490,164 @@ async def apply_scene_operations_endpoint(
         if mcp_client is not None:
             mcp_client.close()
 
+
+@router.post("/director-motion", response_model=DirectorMotionCommandResponse)
+def apply_director_motion_command(request: DirectorMotionCommandRequest) -> DirectorMotionCommandResponse:
+    """Expand a director motion intent into gated SceneScript ops."""
+    from app.services.scene3d.director_motion import (
+        DirectorMotionError,
+        expand_director_motion,
+    )
+    from app.services.scene3d.scene_script_tool_service import (
+        SceneOperationError,
+        SceneScriptToolService,
+    )
+
+    try:
+        from app.schemas.scene_script import SceneScriptRoot
+
+        validated_script = SceneScriptRoot.model_validate(request.scene_script)
+        command = expand_director_motion(
+            validated_script,
+            intent=request.intent,
+            target_id=request.target_id,
+            preset_id=request.preset_id,
+            start_frame=request.start_frame,
+            duration_frames=request.duration_frames,
+            target=request.target_position,
+            stop_distance=request.stop_distance,
+)
+    except DirectorMotionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": error.message, "error_code": error.code},
+) from error
+
+    operations = command["operations"]
+    if not operations:
+        return DirectorMotionCommandResponse(success=True, intent=command["intent"], target=command["target"], preset_id=command["preset_id"], operations=[])
+
+    service = SceneScriptToolService()
+    try:
+        result = service.apply_operations(request.scene_script, operations)
+    except SceneOperationError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(error), "error_code": error.code, "violations": error.violations},
+) from error
+
+    return DirectorMotionCommandResponse(
+        success=True,
+        intent=command["intent"],
+        target=command["target"],
+        preset_id=command["preset_id"],
+        operations=operations,
+        applied_scene_script=result.scene_script.model_dump(mode="json"),
+    )
+
 # ---------------------------------------------------------------------------
 # SceneScript consistency gate (Dramagic-style pre-render check)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# When/then trigger events (director command bar V2)
+# ---------------------------------------------------------------------------
+
+
+class TriggerEventRequest(BaseModel):
+    """A when/then trigger event to expand through the gate."""
+
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+    trigger: str = Field(..., description="sit | stand | arrive | face | line_spoken")
+    trigger_target_id: str = Field(..., description="character id the trigger watches")
+    trigger_frame: int = Field(default=0, ge=0)
+    trigger_target_position: list[float] | None = Field(default=None)
+    trigger_target_yaw: float | None = Field(default=None)
+    then_ops: list[dict[str, Any]] = Field(default_factory=list)
+    then_frame: int = Field(default=0, ge=0)
+
+
+class TriggerEventResponse(BaseModel):
+    success: bool
+    trigger: str | None = None
+    trigger_target: str | None = None
+    trigger_frame: int | None = None
+    then_frame: int | None = None
+    operations: list[dict[str, Any]] = []
+    applied_scene_script: dict[str, Any] | None = None
+    error: str | None = None
+    error_code: str | None = None
+
+
+@router.post("/trigger-event", response_model=TriggerEventResponse)
+def apply_trigger_event_command(request: TriggerEventRequest) -> TriggerEventResponse:
+    """Expand a when/then trigger into gated SceneScript ops."""
+    from app.services.scene3d.trigger_events import (
+        TriggerError,
+        expand_trigger_event,
+    )
+    from app.services.scene3d.scene_script_tool_service import (
+        SceneOperationError,
+        SceneScriptToolService,
+    )
+    from app.schemas.scene_script import SceneScriptRoot
+
+    try:
+        validated_script = SceneScriptRoot.model_validate(request.scene_script)
+        event = expand_trigger_event(
+            trigger=request.trigger,
+            trigger_target_id=request.trigger_target_id,
+            trigger_scene_script=validated_script,
+            trigger_frame=request.trigger_frame,
+            trigger_target_position=request.trigger_target_position,
+            trigger_target_yaw=request.trigger_target_yaw,
+            then_ops=request.then_ops,
+            then_frame=request.then_frame,
+        )
+    except TriggerError as error:
+        return TriggerEventResponse(
+            success=False,
+            trigger=request.trigger,
+            trigger_target=request.trigger_target_id,
+            trigger_frame=request.trigger_frame,
+            then_frame=request.then_frame,
+            error=error.message,
+            error_code=error.code,
+        )
+
+    operations = event["operations"]
+    if not operations:
+        return TriggerEventResponse(
+            success=True,
+            trigger=request.trigger,
+            trigger_target=request.trigger_target_id,
+            trigger_frame=request.trigger_frame,
+            then_frame=request.then_frame,
+        )
+
+    service = SceneScriptToolService()
+    try:
+        result = service.apply_operations(validated_script, operations)
+        return TriggerEventResponse(
+            success=True,
+            trigger=request.trigger,
+            trigger_target=request.trigger_target_id,
+            trigger_frame=request.trigger_frame,
+            then_frame=request.then_frame,
+            operations=operations,
+            applied_scene_script=result.scene_script.model_dump(mode="json"),
+        )
+    except SceneOperationError as error:
+        return TriggerEventResponse(
+            success=False,
+            trigger=request.trigger,
+            trigger_target=request.trigger_target_id,
+            trigger_frame=request.trigger_frame,
+            then_frame=request.then_frame,
+            error=str(error),
+            error_code=error.code,
+        )
 
 
 class ConsistencyCheckRequest(BaseModel):
@@ -1717,6 +1970,7 @@ async def voice_cast_resynth_line_endpoint(
     from app.persistence.database import create_v2_database
     from app.persistence.event_repository import EventRepository
     from app.persistence.project_repository import ProjectRepository
+    from app.persistence.errors import V2PersistenceError
     from app.services.agent_canvas_assets import AgentCanvasAssetService
     from app.services.dialogue.audio_concat import concat_audio_files
     from app.services.dialogue.voice_cast_lines import (
@@ -1737,10 +1991,19 @@ async def voice_cast_resynth_line_endpoint(
         repo = AgentCanvasWorkflowRepository(
             database, ProjectRepository(database), EventRepository(database)
         )
-        workflow = repo.get_workflow(request.workflow_id)
-        node = next(
-            (n for n in workflow.nodes if n.node_id == request.node_id), None
-        )
+        try:
+            workflow = repo.get_workflow(request.workflow_id)
+            node = next(
+                (n for n in workflow.nodes if n.node_id == request.node_id), None
+            )
+        except V2PersistenceError:
+            return VoiceCastResynthLineResponse(
+                success=False,
+                line_id=request.line_id,
+                error=(
+                    f"Workflow {request.workflow_id!r} not found.",
+                ),
+            )
         if node is None:
             return VoiceCastResynthLineResponse(
                 success=False,
@@ -1800,7 +2063,7 @@ async def voice_cast_resynth_line_endpoint(
 
         if needs_synth:
             engine = create_tts_engine_from_settings(settings)
-            if engine is None or type(engine).__name__ == "PlaceholderTTSEngine":
+            if engine is None or not getattr(engine, "is_configured", False) or type(engine).__name__ in ("SimpleTTSEngine", "PlaceholderTTSEngine"):
                 return VoiceCastResynthLineResponse(
                     success=False,
                     line_id=request.line_id,
@@ -1816,11 +2079,16 @@ async def voice_cast_resynth_line_endpoint(
                 out = os.path.join(tmp, target.filename)
                 batch = getattr(engine, "synthesize_batch", None)
                 if batch:
-                    batch(
-                        [target.text],
-                        emotion=target.emotion or None,
-                        output_paths=[out],
+                    produced = batch(
+                        [{
+                            "text": target.text,
+                            "emotion": target.emotion or None,
+                            "character_id": "",
+                            "segment_id": target.line_id,
+                        }],
+                        tmp,
                     )
+                    out = produced[0] if produced else os.path.join(tmp, f"{target.line_id}.mp3")
                 else:
                     engine.synthesize(
                         target.text,
@@ -1900,9 +2168,15 @@ async def voice_cast_resynth_line_endpoint(
                     )
         plan = plan_line_synthesis(lines, cache_dir=cache_dir, regenerate_ids=[])
         manifest = plan.manifest(durations)
-        updated_node = node.model_copy(deep=True)
-        updated_node.structured_content = {
-            **updated_node.structured_content,
+        # Persist the new manifest on the node. update_node treats a content
+        # change as a prompt-input change (it would reset queued prep), so we
+        # write the row directly under BEGIN IMMEDIATE — the same fencing
+        # the repository uses, but without the preparation semantics.
+        from sqlalchemy import update as _sql_update
+        from app.persistence.models import AgentCanvasNodeRow
+
+        merged_content = {
+            **node.structured_content,
             "dialogue_line_manifest": manifest,
             "regenerated_line_ids": [target.line_id],
             "reused_line_ids": [
@@ -1911,7 +2185,25 @@ async def voice_cast_resynth_line_endpoint(
                 if item.line_id != target.line_id
             ],
         }
-        repo.update_node(updated_node, expected_revision=workflow.revision)
+        with database.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                import json as _json
+
+                result = connection.execute(
+                    _sql_update(AgentCanvasNodeRow)
+                    .where(
+                        AgentCanvasNodeRow.workflow_id == workflow.workflow_id,
+                        AgentCanvasNodeRow.node_id == node.node_id,
+                    )
+                    .values(structured_content_json=_json.dumps(merged_content))
+                )
+                if result.rowcount != 1:
+                    raise RuntimeError("node row not found for manifest update")
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
 
         return VoiceCastResynthLineResponse(
             success=True,
@@ -2292,6 +2584,13 @@ async def propose_shot_transitions(request: TransitionProposalsRequest) -> Trans
     # The declared entry reading, checked against the pair the picker is
     # currently showing (V0.2 §13 第 5 问). Computed here because this is
     # where the applied speech timeline arrives.
+    if request.workflow_id and request.node_id:
+        _persist_retained_readings(
+            request,
+            node_id=request.node_id,
+            workflow_id=request.workflow_id,
+        )
+
     return TransitionProposalsResponse(
         success=True,
         proposals=[proposal.to_dict() for proposal in proposals],
@@ -2304,7 +2603,7 @@ async def propose_shot_transitions(request: TransitionProposalsRequest) -> Trans
         ),
     )
 
-def _persist_retained_readings(request, node_id, workflow_id):
+def _persist_retained_readings(request, node_id, workflow_id, settings=None):
     """Write retained_reading_ids onto the scene-3d node's structured_content.
 
     V0.2 §14.5 known boundary: multi-round proposal memory lives in panel
@@ -2314,7 +2613,9 @@ def _persist_retained_readings(request, node_id, workflow_id):
     """
     if not request.retained_reading_ids:
         return
-    from app.core.config import get_settings
+    if settings is None:
+        from app.core.config import get_settings
+        settings = get_settings()
     from app.persistence.agent_canvas_repository import (
         AgentCanvasWorkflowRepository,
     )
@@ -2322,7 +2623,6 @@ def _persist_retained_readings(request, node_id, workflow_id):
     from app.persistence.event_repository import EventRepository
     from app.persistence.project_repository import ProjectRepository
 
-    settings = get_settings()
     database = create_v2_database(settings.media_data_dir)
     try:
         repo = AgentCanvasWorkflowRepository(
@@ -2334,14 +2634,33 @@ def _persist_retained_readings(request, node_id, workflow_id):
         )
         if node is None:
             return
-        updated = node.model_copy(deep=True)
-        updated.structured_content = {
-            **updated.structured_content,
+        # Same direct-row-write rationale as the resynth manifest: a content
+        # change must not re-enter prompt preparation (ADR 0004 discipline).
+        from sqlalchemy import update as _sql_update
+        from app.persistence.models import AgentCanvasNodeRow
+
+        merged = {
+            **node.structured_content,
             "retained_reading_ids": list(request.retained_reading_ids),
         }
-        repo.update_node(updated, expected_revision=workflow.revision)
+        with database.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                import json as _json
+
+                connection.execute(
+                    _sql_update(AgentCanvasNodeRow)
+                    .where(
+                        AgentCanvasNodeRow.workflow_id == workflow_id,
+                        AgentCanvasNodeRow.node_id == node_id,
+                    )
+                    .values(structured_content_json=_json.dumps(merged))
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
     except Exception:
         pass  # persistence failure must not block the response
     finally:
         database.dispose()
-

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — shot advisor 的 LLM 提案层（§14.3/§14.5 审计表最后一项"LLM 提案版待做"）
+
+- **缺的口**：§15 审计表 §14.3/§14.5 行自回填起就标着"规则版；LLM 提案版待做"——规则顾问（shot_advisor.py）能发现台词与分镜的分歧（跨越剪切/紧凑镜头抢话/无台词镜头）并给规则补救语，但 LLM 层从未接到这条路上：作者看到"这里有问题"，却没有"具体怎么改"的第二意见
+- **advisory_narratives.py（新模块，与 transition_narratives.py 同一纪律）**：build_advisory_prompt 把镜头列表/台词分段/规则发现打包成 prompt；validate_proposed_advisory 逐条校验——提案必须引用规则发现过的 advisory_code、本场景真实存在的 shot_id、非空且不超过 500 字的建议；parse_advisory_proposals 批量解析，JSON 畸形/缺 key/非 list/逐条校验失败/重复全部进 dropped 并带理由；propose_advisory_narratives 是调用层（llm_call seam 可注入，默认走 default_llm_call，未配置/HTTP 失败/形状异常降级并说明）
+- **硬边界**：LLM 只补充建议，不获得执行权——每条提案可追溯到一条规则发现和一个真实镜头，过不了校验就丢弃；规则发现永远在 summary.shot_advisories 里，LLM 只做加法不做替换
+- **端点接线**：DialogueLipSyncRequest.propose_advisories（默认 false，作者显式开启）；响应 summary 新增 advisory_proposals（proposals/dropped/degraded_reason 三键，无论 LLM 有无产出形状都稳定）
+- **测试**：单元 21 例（prompt 构造 2 + 单条校验 6 + 批量解析 7 + 调用层 6）；端点 4 例（默认关闭 / 开启后形状稳定 / 规则发现在提案落地后仍在 / 降级有理由不静默）。测试场景用"跨切台词"确保规则发现非空——否则 LLM 层无事可做会提前返回
+- **验证**：pytest 相关四文件 58 passed；ruff check 我加的行干净（scene_3d.py 既有的 import 排序/B008/S110 非本增量引入）
+- **已知边界**：测试场景触发的 advisory 是 line_crosses_cut；其余 code（cross_talk_in_tight_shot / shot_without_speech）的提案路径同一函数覆盖，未逐个建场景——纯函数校验与场景无关
+
+
 ### Added — 拉片复刻 R3 最后一公里：渲染桥 + 工作台直出入口，G7 音频测试抓到真 bug
 
 - **渲染桥**（`services/replica/direct_execute_bridge.py`，纯编排、服务以参数注入）：可行性门 → 编译 → 可选 `library_resolutions` 回填 → **剥未解析哨兵 clip** → `save_timeline`（`expected_version` 取自当前时间线）→ 复用剪辑域 `start_render`（detached 耐久渲染，可轮询/可取消）。不建第二执行链（ADR 0010）。非可行蓝图在服务层即抛 `ReplicaRenderNotFeasible`，rejected 缺失清单原样透出——门不降级。
