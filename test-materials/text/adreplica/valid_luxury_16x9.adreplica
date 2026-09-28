@@ -1,0 +1,37 @@
+<advideo version="1" kind="replica-blueprint" aspect="16:9" duration="30">
+  <meta source="rep_luxury_16x9_30s.mp4" format="product-film">
+    <goal>换风格：促销快剪改为高级慢节奏质感片，结构保留</goal>
+    <reading>四个约 7.5 秒的长镜头缓慢推近，低频铺底，字幕极简，无叫卖话术。</reading>
+  </meta>
+  <cast>
+    <slot kind="character" label="人物" source="无人物出镜" replace-with="" />
+    <slot kind="product" label="商品" source="原片腕表" replace-with="sample_product.png" />
+    <slot kind="script" label="台词" source="无台词，仅屏上英文" replace-with="" />
+    <slot kind="style" label="风格" source="促销叫卖" replace-with="高级感慢节奏" />
+    <slot kind="voice" label="声音" source="无口播" replace-with="" />
+    <slot kind="scene" label="场景" source="暗调影棚" replace-with="新中式茶馆" />
+  </cast>
+  <script>
+    <beat id="lb1" role="hook" dur="0-7.5">悬念开场：黑暗中浮现 TIMELESS</beat>
+    <beat id="lb2" role="proof" dur="7.5-15">工艺展示：CRAFTED BY HAND</beat>
+    <beat id="lb3" role="proof" dur="15-22.5">历史背书：SINCE 1931</beat>
+    <beat id="lb4" role="cta" dur="22.5-30">收束：REDISCOVER SLOW</beat>
+  </script>
+  <timeline>
+    <shot id="ls1" size="closeup" motion="zoom-in" start="0" dur="7.5" cut="cut" text="TIMELESS" recreate="同构图换商品" during="lb1">表盘特写缓推</shot>
+    <shot id="ls2" size="medium" motion="zoom-in" start="7.5" dur="7.5" cut="cut" text="CRAFTED BY HAND" recreate="同机位换商品" during="lb2">手工工艺中景</shot>
+    <shot id="ls3" size="medium" motion="static" start="15" dur="7.5" cut="cut" text="SINCE 1931" recreate="" during="lb3">品牌历史背书</shot>
+    <shot id="ls4" size="wide" motion="zoom-in" start="22.5" dur="7.5" cut="cut" text="REDISCOVER SLOW" recreate="" during="lb4">全景收束</shot>
+  </timeline>
+  <events>
+    <sfx id="lx_open" during="lb1" trigger="开场浮现" keep="true">低频 whoosh</sfx>
+    <transition id="lx_cut" during="lb2" trigger="段落切换" keep="true">缓慢叠化</transition>
+  </events>
+  <rhythm avg-shot="7.5" curve="平缓" cuts="0,7.5,15,22.5" />
+  <systems captions="极简小字号居中" music="低频氛围垫">
+    <graphics>无贴纸，仅字幕</graphics>
+  </systems>
+  <constraints>
+    <constraint>手写正例样例：验证 16:9 慢节奏蓝图的导入与直出门</constraint>
+  </constraints>
+</advideo>

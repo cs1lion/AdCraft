@@ -1,0 +1,9 @@
+素材：videos/rep_dialogue_9x16_20s.mp4
+真值：同 brief_dialogue_swap_lines
+用法：作为 POST /api/v1/replica/teardown 的 user_description 字段，或工作台「复刻目标」
+
+—— 粘贴以下内容 ——
+整片复刻：按原片的镜头表、节奏、字幕系统逐镜复刻一条结构完全一致的小剧场，
+只把人物 A/B 替换为资产库中的新角色（参考 sample_host.png 的形象设定），
+台词主题改为职场吐槽，其余（4 秒一切、结尾双人合流、底部大字幕系统）
+全部保留。

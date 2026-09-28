@@ -1,0 +1,11 @@
+素材：videos/rep_fastcut_9x16_15s.mp4
+真值：15 秒 / 9:16 / 六镜快剪，切点约 0, 2.5, 5, 7.5, 10, 12.5 秒
+用法：作为 POST /api/v1/replica/teardown 的 user_description 字段，或工作台「复刻目标」
+
+—— 粘贴以下内容 ——
+换商品不换结构。原片是一条 15 秒六镜头快剪带货片：钩子（STOP SCROLLING）→
+卖点（3 SECOND HACK / IT JUST WORKS）→ 效果证明（REAL RESULTS）→ 促销
+（HALF PRICE TODAY）→ 行动号召（BUY NOW），屏上英文大字驱动，平均每镜约
+2.5 秒。要求：保留镜头顺序、每镜时长与快切节奏，把商品替换为资产库样例
+sample_product.png，屏上文字改写为新商品的三句中文卖点，结尾 BUY NOW 保留
+并改为主推品名。

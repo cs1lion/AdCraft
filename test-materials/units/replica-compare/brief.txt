@@ -1,0 +1,10 @@
+素材：videos/rep_compare_9x16_16s.mp4
+真值：16 秒 / 9:16 / 四镜对比结构（BEFORE → AFTER → 3X FASTER → VERDICT WORTH IT），每镜 4 秒
+用法：作为 POST /api/v1/replica/teardown 的 user_description 字段，或工作台「复刻目标」
+
+—— 粘贴以下内容 ——
+换商品不换结构。原片是 16 秒四镜头前后对比测评片：灰暗的"用前"（BEFORE）→
+明亮的"用后"（AFTER）→ 数据强化（3X FASTER）→ 结论定格（VERDICT WORTH IT），
+平均每镜 4 秒。要求：保留对比结构与结论收尾，把商品替换为资产库样例
+sample_product.png，屏上文字改为新商品的用前/用后对比与数据卖点，结尾结论
+镜头保留"WORTH IT"句式。

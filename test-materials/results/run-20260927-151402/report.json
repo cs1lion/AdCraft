@@ -1,0 +1,61 @@
+{
+  "generated_at": "2026-09-27T15:14:02.317496+00:00",
+  "base_url": "http://127.0.0.1:8000",
+  "results": [
+    {
+      "id": "RT-IM",
+      "suite": "api-replica",
+      "title": "3 正例 .adreplica 经 API 导入",
+      "status": "PASS",
+      "seconds": 0.05,
+      "detail": {
+        "actual": {
+          "valid_luxury_16x9.adreplica": {
+            "slots": 6,
+            "applied": 3
+          },
+          "valid_textonly_1x1.adreplica": {
+            "slots": 6,
+            "applied": 0
+          },
+          "valid_dialogue_cjk_anchors.adreplica": {
+            "slots": 6,
+            "applied": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "RT-DE",
+      "suite": "api-replica",
+      "title": "纯字幕蓝图直出门 feasible",
+      "status": "PASS",
+      "seconds": 0.01,
+      "detail": {
+        "actual": {
+          "feasible": false,
+          "zero_model_steps": 3,
+          "generation_steps": [
+            "{'step': 'shot_1', 'detail': '镜头画面需生成（有画",
+            "{'step': 'shot_2', 'detail': '镜头画面需生成（有画",
+            "{'step': 'shot_3', 'detail': '镜头画面需生成（有画",
+            "{'step': 'shot_4', 'detail': '镜头画面需生成（有画",
+            "{'step': 'voice', 'detail': '台词语音合成（4 段台"
+          ],
+          "blockers": []
+        }
+      }
+    },
+    {
+      "id": "RT-INST",
+      "suite": "api-replica",
+      "title": "蓝图实例化：项目→节点→script+绑定",
+      "status": "FAIL",
+      "seconds": 1.45,
+      "detail": {
+        "error": "HTTP 503 | detail={'code': 'canvas_node_conflict', 'message': 'Agent Canvas persistence conflict.', 'details': {}}",
+        "fix": "模型安装默认值未配置：在系统设置里为 replica 节点类型配置默认模型"
+      }
+    }
+  ]
+}

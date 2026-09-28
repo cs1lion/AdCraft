@@ -1,0 +1,9 @@
+Material: videos/rep_fastcut_9x16_15s.mp4
+Ground truth: 15s / 9:16 / six shots, cuts around 0, 2.5, 5, 7.5, 10, 12.5 seconds
+Usage: paste as the user_description field of POST /api/v1/replica/teardown
+
+—— paste the text below ——
+Full-piece clone for a new product launch. Keep the six-shot structure, the
+2.5-second average shot length and the on-screen-text-driven rhythm. Replace
+the product with sample_product.png, rewrite all captions in English for a
+sleep-aid gadget, and keep the closing BUY NOW beat.

@@ -1,0 +1,9 @@
+素材：videos/rep_tutorial_1x1_16s.mp4
+真值：16 秒 / 1:1 / 四段编号步骤（STEP 1 PREP → STEP 2 MIX → STEP 3 COOK → STEP 4 PLATE），每段 4 秒，静态画面
+用法：作为 POST /api/v1/replica/teardown 的 user_description 字段，或工作台「复刻目标」
+
+—— 粘贴以下内容 ——
+换主题不换结构。原片是 16 秒方形四段编号教程（STEP 1 PREP → STEP 2 MIX →
+STEP 3 COOK → STEP 4 PLATE），静态浅底深字、编号驱动。要求：保留编号步骤
+结构与静态画面系统，把主题从烹饪换成"手机摄影四步出片"，每段屏上文字改为
+对应步骤的中文短句，保留 STEP 编号句式。

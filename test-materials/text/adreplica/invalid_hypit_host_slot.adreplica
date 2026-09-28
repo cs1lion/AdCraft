@@ -1,0 +1,26 @@
+<advideo version="1" kind="replica-blueprint" aspect="9:16" duration="12">
+  <meta source="反例样例" format="handwritten-sample">
+    <goal>反例：hypit 原生槽位词汇 kind="host" 不在本语法词汇表内，导入应 422（error_type: adreplica_parse，unknown slot kind）</goal>
+    <reading>除槽位词汇外均为合法结构，用于隔离单一缺陷。</reading>
+  </meta>
+  <cast>
+    <slot kind="host" label="主持人" source="原片主播" replace-with="" />
+    <slot kind="product" label="商品" source="原片商品" replace-with="" />
+  </cast>
+  <script>
+    <beat id="ib1" role="hook" dur="0-6">缺陷隔离样例段落一</beat>
+    <beat id="ib2" role="cta" dur="6-12">缺陷隔离样例段落二</beat>
+  </script>
+  <timeline>
+    <shot id="is1" size="medium" motion="static" start="0" dur="6" cut="cut" text="" recreate="" during="ib1">占位镜头一</shot>
+    <shot id="is2" size="medium" motion="static" start="6" dur="6" cut="cut" text="" recreate="" during="ib2">占位镜头二</shot>
+  </timeline>
+  <events>
+  </events>
+  <rhythm avg-shot="6" curve="平直" cuts="0,6" />
+  <systems captions="" music="">
+  </systems>
+  <constraints>
+    <constraint>预期导入失败并返回结构化错误，不静默降级</constraint>
+  </constraints>
+</advideo>
