@@ -210,17 +210,25 @@ L2 可交互性 → L3 状态反馈 → L4 负例 → L5 留痕。
 | D4 | ✔ | Blender/MCP 具名错误可行动提示（单测锁定，实机需 Blender） |
 | D5 | ✔ | 三处保存失败可见 + 可重试 |
 | D6 | ✔ | 3D 草稿持久化 + beforeunload |
-| D7 | ◧ | 前端在途守卫 + renderId 可恢复；**真·幂等仍是后端契约缺口（未做）** |
+| D7 | ✔ | 前端在途守卫 + renderId 可恢复 + **真·幂等闭环**（v2 指纹复用事实端到端透传：重复提交 → 同一 render + "未重复出片"如实提示；203f0ffe + c574937c） |
 | D8 | ✔ | 任务化 + 协作式真取消 + 总预算 timeout（生产路径 mutation 已验证） |
 | E1 | ✔ | 变体并排字幕预览卡 + recipe 应用链路 |
 | E2 | ✔ | 配方导入导出接到源码 tab（死端点 −2） |
 | E3 | ✔ | 分镜 finding 端点到 UI 全链路 |
 | E4 | ✔ | 多轮记忆补传三 props |
-| E5 | ◧ | 422/漂移逐条可读；`/variant-render-plans` 前端入口仍缺（E1 延伸） |
+| E5 | ✔ | 422/漂移逐条可读；`/variant-render-plans` 审片入口已接（漂移实机路径闭合；f2a69f10 + d997586d） |
 | E6 | ✔ | scene-3d render/async 入口 + 直出真取消（死端点 −3） |
 | E7 | ✔ | 端点吞异常可查询（既有提交） |
 | E8 | ✔ | 配方库降级可见 + 可重试 |
 
-**可达性账本**：已知死端点 33 → **28**（零新增）。**测试基线**：web 全量
-2556 passed / 80 failed（80 条与基线逐条一致，零新增）；api replica+scene3d
-1030 passed；ruff 改动文件全绿。
+**可达性账本**：已知死端点 33 → **27**（recipe export/import、render/async、
+render/{job_id}、render/{job_id}/cancel、variant-render-plans 累计接活 6 个；
+baseline json 同步缩账）。**测试基线**：web 全量 2563 passed / 75 deterministic
+failed（全量跑另有 1 条已知偶发）；api replica+scene3d+final_composition 1060
+passed；api 全量 2433 passed / 0 failed；ruff `app/ tests/ scripts/` 全绿。
+
+### P5 进展（同批完成）
+
+失败基线 80 → **75**（修 5 个文件：过期断言 ×4、依赖残留 ×1、闸误报 ×1）；
+逐条定责台账见 `docs/plans/p5-frontend-failure-triage.md`（剩 10 文件 / 75 条
+按根因分类 + 2 项设计裁决豁免 + 此后纪律：新增失败 = 0）。
