@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 G6：teardown 拆解缓存（相同视频+参数复用报告，零重复 LLM 额度）
+
+- **`teardown_cache.py`（新模块，纯函数 + 磁盘）**：缓存键 = schema 版本 + **视频内容 sha256** + num_frames + user_description（归一化）+ 模型名 + 转录 (source, reason)——任何影响报告的因素变化都会换键，"用 A 视频的报告回答 B 视频"这类缓存事故在结构上不可能。存储 `<media_data_dir>/replica_teardown_cache/<key>.json`（运行时数据不进 git），原子写入（tmp + replace）。
+- **诚实边界全部落地**：① 只缓存**完整成功**的分析（LLM 失败/校验失败不进缓存）；② 命中时 `report.constraints` 追加可见标注"本报告来自拆解缓存…未重新调用 LLM"（只进内存结果、不回写缓存文件，不叠加），并经 `cached`/`cache_key` 一路透出到端点响应与前端徽标；③ 转录前置派生键（whisperx 启用时命中仍先跑本地转录，换取"降级转录的报告不会被 whisperx 正常的运行命中"的精确性；引擎默认关闭时零成本）；④ 损坏/键不匹配/schema 漂移的缓存一律按 miss，退化为全价分析并自愈重写。
+- **端点**：`POST /replica/teardown` += `use_cache`（默认 true；false 强制重算）；响应 += `cached`/`cache_key`。E2E 第二次起命中（正是 G6 要的省额度+提速）。
+- **前端**：报告区缓存命中徽标"♻️ 未调用 LLM（零新增额度消耗）"，title 带缓存键。
+- **测试**：+16（键对内容/参数/模型/转录各自敏感 + description 归一化 + 确定性；载荷原子往返；缺失/损坏/漂移/无 report 全按 miss；命中跳过 LLM 且报告一致；标注只进内存；use_cache=false 强制重算；内容变/目标变即 miss；损坏自愈；失败不写缓存；端点透传与默认开；缓存报告进蓝图 constraints 不断链）。既有 teardown fixture 增加缓存目录隔离（不隔离会让"LLM 失败应抛出"被共享缓存命中悄悄抵消——测试抓到的真耦合）。
+- **验证**：replica 全套 **164 passed / 3 skip**（skip = 本机无 ffmpeg）；全量后端 **2002 passed**（4 失败 = depth-image 既有基线，零新增）；ruff（E4/E7/E9/F）本线文件全绿；契约检查 185 paths 通过（TeardownResponse +2 字段）；前端 tsc 0 error、replica 前端 42 passed（Teardown 13 + BlueprintPanel 17 + 其余）。
+
 ### Added — 拉片复刻 G3：字幕语义/可见时间分离 + handoff（hypit caption-fine 移植），渲染器 visible 窗落地
 
 - **schema（加法、向后兼容）**：`WorkflowV2TimelineSubtitleStyle` += `lead_seconds`/`tail_seconds`/`handoff`（cut/overlap）。默认值 0/0/overlap = 旧行为逐字节不变（旧时间线、编辑器手排 clip 零影响）；前端 `V2TimelineSubtitleStyle` 镜像同步（可选字段）。

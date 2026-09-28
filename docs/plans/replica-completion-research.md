@@ -17,7 +17,8 @@
 > 下一片，边界已明——需要蓝图词流保留 + ASS `{\k}`）。仍开放：词级 karaoke、
 > G4 narrative token 层、G5 `.adrecipe`、G6 teardown 缓存。下文矩阵与缺口清单
 > 为当日快照，保留作历史记录。
-## 1. 完成度矩阵
+
+> **2026-09-28 深夜更新（G6 增量）**：**G6 已闭合**——teardown 拆解缓存（内容 hash + 参数 + 模型 + 转录状态派生键，命中跳过全部 LLM，损坏按 miss 自愈），端点 `use_cache` 开关 + `cached`/`cache_key` 溯源 + 前端徽标；**G3 的语义/可见时间分离也已闭合**（见 CHANGELOG）。仍开放：词级 karaoke 烧录（G3 后半，需 ASS `{\k}` + 蓝图词流保留）、G4 narrative token 层、G5 `.adrecipe`。下文为当日快照。## 1. 完成度矩阵
 
 | 子系统 | 状态 | 证据 |
 |---|---|---|

@@ -140,6 +140,14 @@ def mocked_teardown(monkeypatch, tmp_path):
             str(output_dir / f"keyframe_{i:02d}.png") for i in range(num_keyframes)
         ],
     )
+    # G6 缓存隔离：默认缓存目录是共享的 media_data_dir——不隔离的话同一
+    # 会话里先跑的测试写缓存、后跑的测试命中，"LLM 失败应抛出"这类断言
+    # 会被缓存命中悄悄抵消。每个测试一个 tmp 缓存目录。
+    monkeypatch.setattr(
+        _teardown_module,
+        "teardown_cache_dir",
+        lambda media_dir: tmp_path / "teardown_cache",
+    )
     return calls, synthesis_payload, video
 
 

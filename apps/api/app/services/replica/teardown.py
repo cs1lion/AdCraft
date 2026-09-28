@@ -16,6 +16,7 @@ chat/completions + image_url），在测试中整体 monkeypatch，无网络依�
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
+from app.services.replica.teardown_cache import (
+    CACHE_SCHEMA_VERSION,
+    load_cached_teardown,
+    save_cached_teardown,
+    teardown_cache_dir,
+    teardown_cache_key,
+)
 from app.services.scene3d.reference_upload import (
     VideoMetadata,
     extract_keyframes_from_video,
@@ -161,6 +170,15 @@ class TeardownResult:
     video_metadata: VideoMetadata
     num_frames_analyzed: int
     user_description: str | None = None
+    # G6 缓存溯源：True = 本报告来自缓存（未调用 LLM）。缓存是优化不是
+    # 真相源，"这份报告没花新额度"必须说得出口。
+    cached: bool = False
+    cache_key: str = ""
+
+
+#: 缓存命中时追加进 report.constraints 的用户可见标注（与 fixture 降级标注
+#: 同一区块：报告里"这份东西怎么来的"永远可见）。
+CACHED_REPORT_NOTE = "本报告来自拆解缓存（相同视频内容与参数），未重新调用 LLM"
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +618,9 @@ def analyze_reference_teardown(
     video_path: str | Path,
     num_frames: int = DEFAULT_NUM_FRAMES,
     user_description: str | None = None,
+    *,
+    use_cache: bool = True,
+    cache_dir: Path | None = None,
 ) -> TeardownResult:
     """分析参考视频，产出拉片拆解报告 + 复刻分镜草稿。
 
@@ -607,6 +628,9 @@ def analyze_reference_teardown(
         video_path: 参考视频文件路径。
         num_frames: 均匀抽帧数（clamp 到 [MIN_NUM_FRAMES, MAX_NUM_FRAMES]）。
         user_description: 用户补充说明，引导 LLM 读片。
+        use_cache: 命中内容 hash + 参数 + 模型 + 转录状态相同的缓存时直接
+            复用（跳过全部 LLM 调用，结果标注 ``cached=True``）。
+        cache_dir: 缓存目录（默认 ``<media_data_dir>/replica_teardown_cache``）。
 
     Raises:
         AnalysisError: 配置缺失 / 输入非法 / LLM 失败 / 报告校验失败。
@@ -624,6 +648,43 @@ def analyze_reference_teardown(
             f"(max {MAX_TEARDOWN_DURATION_SECONDS:.0f}s for a teardown)",
             error_type="input",
         )
+
+    # 2. 模型身份 + 词级转录（缓存键的两个输入）。转录前置是有意为之：
+    # 转录的 source/reason 决定报告内容（进键），换来"降级转录的报告不会
+    # 被 whisperx 正常的运行命中"的精确性；引擎默认关闭时转录零成本。
+    # client 在缓存检查前构建（不产生连接；命中即关）——配置校验只此一条
+    # 路径，不复制"LLM 未配置"的第二份判断。
+    from app.services.replica.transcribe import transcribe_reference_video
+
+    transcript = transcribe_reference_video(video_path)
+    transcript_info = TeardownTranscriptInfo(**transcript.to_report_dict())
+    client, base_url, api_key, model = _build_llm_client()
+
+    def _close_client() -> None:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+    # 2.5 G6 缓存：命中即返回（不抽帧、不调 LLM）
+    resolved_cache_dir = cache_dir or teardown_cache_dir(get_settings().media_data_dir)
+    cache_key = ""
+    if use_cache:
+        cache_key = teardown_cache_key(
+            video_path=video_path,
+            num_frames=num_frames,
+            user_description=user_description,
+            model=model,
+            transcript_source=str(transcript_info.source),
+            transcript_reason=transcript_info.reason,
+        )
+        cached = _teardown_result_from_cache(
+            load_cached_teardown(resolved_cache_dir, cache_key),
+            user_description=user_description,
+            cache_key=cache_key,
+        )
+        if cached is not None:
+            _close_client()
+            return cached
 
     # 2. 均匀抽帧（复用 scene3d 基建；时间戳按同一匀排公式还原）。
     # 临时目录必须覆盖到逐帧分析：帧文件在分析时仍要读取——此前 with 块
@@ -646,15 +707,7 @@ def analyze_reference_teardown(
             for i in range(extracted)
         ]
 
-        # 2.5 词级转录（hypit 的"时间脊柱"）：whisperX 可选依赖，不可用时
-        # 显式降级（source/reason 可查询），拖垮拆解的是不可接受的静默。
-        from app.services.replica.transcribe import transcribe_reference_video
-
-        transcript = transcribe_reference_video(video_path)
-        transcript_info = TeardownTranscriptInfo(**transcript.to_report_dict())
-
         # 3. LLM：逐帧分析 → 综合拆解（词级转录可用时进入综合视野）
-        client, base_url, api_key, model = _build_llm_client()
         try:
             frame_analyses = [
                 _analyze_teardown_frame(
@@ -681,9 +734,7 @@ def analyze_reference_teardown(
                 transcript=transcript_info,
             )
         finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
+            _close_client()
 
     # 4. normalize + schema 校验（LLM 输出不可信）
     shots = _normalize_shots(teardown_data, metadata.duration_seconds)
@@ -707,10 +758,70 @@ def analyze_reference_teardown(
     report.replica_storyboard_draft = build_replica_draft(report)
     report.constraints = _build_constraints(len(frame_analyses), transcript)
 
-    return TeardownResult(
+    result = TeardownResult(
         report=report,
         frame_analyses=frame_analyses,
         video_metadata=metadata,
         num_frames_analyzed=len(frame_analyses),
         user_description=user_description,
+        # 新算的报告同样带上它落盘的缓存键（cached=False 但键可追溯）；
+        # use_cache=False 时没有键，留空——不假装自己有缓存身份。
+        cache_key=cache_key if use_cache else "",
+    )
+
+    # 5.5 G6 缓存写入：只缓存完整成功的分析（fixture 降级/失败不进缓存）。
+    # 尽力而为——写失败只是下次全价，不影响本次结果。
+    if use_cache and cache_key:
+        save_cached_teardown(
+            resolved_cache_dir,
+            cache_key,
+            {
+                "cache_schema": CACHE_SCHEMA_VERSION,
+                "key": cache_key,
+                "num_frames_analyzed": result.num_frames_analyzed,
+                "report": report.model_dump(mode="json"),
+                "frame_analyses": [
+                    dataclasses.asdict(frame) for frame in frame_analyses
+                ],
+                "video_metadata": dataclasses.asdict(metadata),
+            },
+        )
+
+    return result
+
+
+def _teardown_result_from_cache(
+    payload: dict[str, Any] | None,
+    *,
+    user_description: str | None,
+    cache_key: str,
+) -> TeardownResult | None:
+    """把缓存 payload 复核成 TeardownResult；任何复核失败返回 None（miss）。
+
+    **缓存数据不可信**：schema 会漂移（升级后旧格式）、文件会被手改——
+    所以逐字段 model_validate，失败即当 miss 退化为全价分析，绝不把坏数据
+    当报告返回。命中时追加缓存标注（constraints），并在结果上置 cached。
+    """
+    if payload is None:
+        return None
+    try:
+        report = TeardownReport.model_validate(payload.get("report"))
+        frames = [
+            TeardownFrameAnalysis(**frame)
+            for frame in (payload.get("frame_analyses") or [])
+            if isinstance(frame, dict)
+        ]
+        metadata = VideoMetadata(**payload.get("video_metadata") or {})
+        num_frames_analyzed = int(payload.get("num_frames_analyzed", len(frames)))
+    except Exception:
+        return None
+    report.constraints = [*report.constraints, CACHED_REPORT_NOTE]
+    return TeardownResult(
+        report=report,
+        frame_analyses=frames,
+        video_metadata=metadata,
+        num_frames_analyzed=num_frames_analyzed,
+        user_description=user_description,
+        cached=True,
+        cache_key=cache_key,
     )

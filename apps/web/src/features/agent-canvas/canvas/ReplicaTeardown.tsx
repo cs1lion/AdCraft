@@ -157,6 +157,8 @@ export function ReplicaTeardown({
   const [cancelled, setCancelled] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [videoMeta, setVideoMeta] = useState<TeardownVideoMetadata | null>(null);
+  // G6：拆解缓存溯源（命中 = 未调用 LLM 的复用报告）
+  const [cacheInfo, setCacheInfo] = useState<{ cached: boolean; cacheKey: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [report, setReport] = useState<TeardownReport | null>(null);
   const [goal, setGoal] = useState<string>("");
@@ -192,6 +194,7 @@ export function ReplicaTeardown({
     setError(null);
     setCancelled(false);
     setReport(null);
+    setCacheInfo(null);
     setCopied(false);
     setBlueprintNodeId(null);
     try {
@@ -214,6 +217,12 @@ export function ReplicaTeardown({
       }
       setReport(body.report as TeardownReport);
       setVideoMeta((body.video_metadata as TeardownVideoMetadata) ?? null);
+      // G6 缓存溯源：命中时如实告知"未消耗新 LLM 额度"（缓存是优化，不是秘密）
+      setCacheInfo(
+        body.cached
+          ? { cached: true, cacheKey: typeof body.cache_key === "string" ? body.cache_key : "" }
+          : null,
+      );
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setCancelled(true);
@@ -546,6 +555,21 @@ export function ReplicaTeardown({
             <div style={{ lineHeight: 1.6 }}>
               {report.whole_piece_reading || "（未生成）"}
             </div>
+            {cacheInfo?.cached && (
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: "3px 8px",
+                  borderRadius: 3,
+                  background: "#1e3a1e",
+                  color: "#8f8",
+                  fontSize: 10,
+                }}
+                title={cacheInfo.cacheKey ? `缓存键 ${cacheInfo.cacheKey}` : undefined}
+              >
+                ♻️ 缓存命中：相同视频与参数的既有拆解报告，未调用 LLM（零新增额度消耗）
+              </div>
+            )}
           </div>
 
           {/* 结构 Beats */}

@@ -70,6 +70,9 @@ class TeardownResponse(BaseModel):
     video_metadata: dict[str, Any] = Field(default_factory=dict)
     num_frames_analyzed: int = 0
     user_description: str | None = None
+    # G6 缓存溯源：True = 报告来自缓存（未调用 LLM）。"没花新额度"要看得见。
+    cached: bool = False
+    cache_key: str = ""
 
 
 class BlueprintRequest(BaseModel):
@@ -321,6 +324,7 @@ async def teardown_reference_video(
     asset_id: str | None = Form(None),
     user_description: str | None = Form(None),
     num_frames: int = Form(DEFAULT_NUM_FRAMES),
+    use_cache: bool = Form(True),
 ) -> TeardownResponse:
     """拉片复刻：拆解一条参考视频，产出结构化拆解报告 + 复刻分镜草稿。
 
@@ -330,6 +334,9 @@ async def teardown_reference_video(
     Product boundary (also surfaced in report.constraints): the teardown
     replicates STRUCTURE AND RELATIONSHIPS, not pixels — shot boundaries and
     camera motion are LLM inferences from sparse frames, not measurements.
+
+    G6 缓存：同一视频内容 + 抽帧数 + 复刻目标 + 模型 + 转录状态的重复拆解
+    直接复用报告（跳过全部 LLM 调用；``use_cache=false`` 强制重算）。
     """
     video_path, is_temp = await _resolve_source_path(file, asset_id)
 
@@ -342,6 +349,7 @@ async def teardown_reference_video(
             video_path=video_path,
             num_frames=clamped_frames,
             user_description=user_description,
+            use_cache=use_cache,
         )
     except AnalysisError as exc:
         raise HTTPException(
@@ -369,6 +377,8 @@ async def teardown_reference_video(
         video_metadata=_video_metadata_to_dict(result.video_metadata),
         num_frames_analyzed=result.num_frames_analyzed,
         user_description=result.user_description,
+        cached=result.cached,
+        cache_key=result.cache_key,
     )
 
 

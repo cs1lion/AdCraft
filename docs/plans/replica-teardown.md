@@ -242,3 +242,23 @@ TeardownResponse{report, frame_analyses, video_metadata}
   （`ReplicaBeatV2` 词列，schema 加法）+ ASS `{\k}` 发射 + 媒体验收。
 - **测试**：+9（见 CHANGELOG 顶部条目）；replica 全套 167 passed / 3 skip
   （skip = 本机无 ffmpeg）；契约检查 185 paths 通过（style +3 字段）。
+
+## 15. 已交付：G6 teardown 拆解缓存（2026-09-28）
+
+**动机**：完成度研究 G6——同一 asset 重复拆解每次全量重付 LLM 费用（N+1 次
+多模态调用），429 时只能 fixture 降级。
+
+- **键**（`teardown_cache.py`，纯函数）：schema 版本 + 视频内容 sha256 +
+  num_frames + user_description（归一化）+ 模型名 + 转录 (source, reason)。
+  内容 hash 而非 asset_id——同一资产重上传/替换字节都会换键；参数/模型/
+  转录状态任何变化都换键（缓存能造的最坏事故是张冠李戴，结构上排除）。
+- **只缓存完整成功的分析**；失败/校验失败不写盘。命中跳过抽帧 + 全部 LLM。
+- **诚实边界**：命中在 `report.constraints` 追加可见标注（只进内存、不回写，
+  不叠加）；`cached`/`cache_key` 透出到端点与前端徽标；损坏/漂移/键不匹配
+  一律按 miss 并自愈重写。whisperx 启用时命中仍先跑转录（键精确性优先），
+  引擎默认关闭时零成本。
+- **端点**：`use_cache`（默认 true，false 强制重算）。E2E 第二次起命中。
+- **测试抓到的真耦合**：默认缓存目录是共享 media_data_dir——不隔离的话同
+  会话先跑的测试写缓存、后跑的测试命中，"LLM 失败应抛出"被缓存命中悄悄
+  抵消。既有 fixture 已加 tmp 缓存目录隔离（教训：有状态优化的默认值必须
+  在测试里显式隔离）。

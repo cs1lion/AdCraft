@@ -144,6 +144,26 @@ describe("ReplicaTeardown", () => {
     expect(screen.getByText(/1\. \[0\.0–2\.1s\] closeup/)).toBeTruthy();
   });
 
+  it("surfaces the cache-hit provenance without claiming new LLM spend", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({
+        success: true,
+        report: REPORT,
+        num_frames_analyzed: 8,
+        cached: true,
+        cache_key: "abc123",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReplicaTeardown assetId="asset-123" />);
+    fireEvent.click(screen.getByText("🎬 拉片复刻"));
+
+    await waitFor(() => expect(screen.getByText(/缓存命中/)).toBeTruthy());
+    expect(screen.getByText(/未调用 LLM/)).toBeTruthy();
+  });
+
   it("sends the selected replica goal as user_description", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       status: 200,
