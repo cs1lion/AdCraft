@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — D1 成片音轨：G7 media 测试路径合法化（地基任务第一步）
+
+- **问题**：`test_replica_direct_execute_render_media.py` 把合成 BGM 写到 `library/bgm_e2e.mp4`,而 `v2_data_boundary.py` 顶层白名单仅 `{assets, v2}`——`library/` 被拒。在有 ffmpeg 的机器上该 media 用例因此**真实失败**;在无 ffmpeg 的机器上 `@pytest.mark.media` 直接 skip,被误记为"通过"(交接 guide 记录的"G7 从未真正执行")。
+- **改动**:单行路径 `library/` → `assets/audio/bgm_e2e.mp4`(合法),加一行白名单注释;**未删任何断言**(`role: bgm/sfx` 锁定保留)。related to `plan_direct_execute_render` / `V2FinalCompositionRenderer` 音频图——若路径合法后仍失败,即产品缺陷,须深挖而非改测试绕过。
+- **验证(诚实)**:本机(WSL)**无 ffmpeg/ffprobe**,该 media 用例仍为 **3 skipped**(ffmpeg not on PATH)——路径已合法化,但"成片真有音轨 + ffprobe 探到音频流"这一**完成判据需在有 ffmpeg 的机器上跑**方能留证,现记 **ENV-SKIP**,**不声称通过**。
+
 ### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
 
 - **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。

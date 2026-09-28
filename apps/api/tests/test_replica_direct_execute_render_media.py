@@ -199,7 +199,8 @@ def test_resolved_bgm_renders_real_audio_into_final_video(
     renderer, workflow, item, slot, settings = render_env
 
     # 1) 合成一条真实音频资产（6s 正弦波，aac/mp4——与合成链容器一致）
-    bgm_rel = "library/bgm_e2e.mp4"
+    # v2_data_boundary 顶层白名单仅 {assets, v2}：library/ 会被拒，改用合法音频路径
+    bgm_rel = "assets/audio/bgm_e2e.mp4"
     bgm_path = tmp_path / bgm_rel
     bgm_path.parent.mkdir(parents=True, exist_ok=True)
     synth = subprocess.run(
