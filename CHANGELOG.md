@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **改动**:单行路径 `library/` → `assets/audio/bgm_e2e.mp4`(合法),加一行白名单注释;**未删任何断言**(`role: bgm/sfx` 锁定保留)。related to `plan_direct_execute_render` / `V2FinalCompositionRenderer` 音频图——若路径合法后仍失败,即产品缺陷,须深挖而非改测试绕过。
 - **验证(诚实)**:本机(WSL)**无 ffmpeg/ffprobe**,该 media 用例仍为 **3 skipped**(ffmpeg not on PATH)——路径已合法化,但"成片真有音轨 + ffprobe 探到音频流"这一**完成判据需在有 ffmpeg 的机器上跑**方能留证,现记 **ENV-SKIP**,**不声称通过**。
 
+### Fixed — D3 导演指令闸门失败走红色错误通道
+
+- **问题**:`DirectorCommandBar.tsx` 两处 gate 拒绝分支把 `status.ok` 设成 `true`——触发事件(:199)与导演运动指令(:296)被闸门拒绝时,状态被渲染成"成功"灰 note 而非红色 error,用户以为指令生效实则被拒(ADR 0012:gate 是契约)。
+- **改动**:两处 `ok: true` → `ok: false`,并保留 `gate.error` 文案(红字里点名被拒原因/op)。乐观预览(`onApply(previewScript)`)行为不变,只是把"未过闸门"如实升级为错误通道,不再欺骗用户。
+- **验收/验证(诚实)**:ENV-SKIP——本机**无 node**,无法跑 `vitest src/.../DirectorCommandBar.test.tsx`,也未能渲染组件取证"红色报错";代码改动为确定性的布尔纠正。**遗留(需有 node 环境回填)**:补一条组件回归测试——mock `applyDirectorMotion` 返回 `{ok:false,error}` → 选对象/指令 → 点执行 → 断言错误文案渲染在 **error 通道**(非灰 note),跑通 vitest 后回填结果。
+
 ### Added — 端点可达性检查（把"后端做完但用户看不到"变成可执行闸门）
 
 - **问题**：`check-agent-canvas-backend-contract` 比对的是 schema 形状，管不到"谁调用了什么"。2026-09-28 实测：205 条后端路由里 **31 条无任何消费方**——其中包含 G5 `.adrecipe` 的唯一出口（变体渲染计划）、库素材人工解析的唯一入口，以及 3D 线的进度与取消端点。它们后端完整、测试全绿、文档标 ✅，但用户永远看不到。

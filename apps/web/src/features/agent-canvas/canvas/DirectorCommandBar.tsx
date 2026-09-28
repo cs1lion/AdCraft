@@ -196,7 +196,7 @@ export function DirectorCommandBar({
         onApply(gate.appliedSceneScript);
         setStatus({ ok: true, message: `触发事件已过闸门：${trigger} @ frame ${frame}` });
       } else {
-        setStatus({ ok: true, message: `触发事件未过闸门：${gate.error ?? "未知"}` });
+        setStatus({ ok: false, message: `触发事件未过闸门：${gate.error ?? "未知"}` });
       }
     } catch (error) {
       setStatus({ ok: false, message: error instanceof Error ? error.message : String(error) });
@@ -293,7 +293,7 @@ export function DirectorCommandBar({
 
         setStatus({
 
-          ok: true,
+          ok: false,
 
           message: `已预览：${activeTarget.label} · ${presets.find((entry) => entry.id === presetId)?.label ?? presetId}（${gate.error ? `未过闸门：${gate.error}` : "已预览"}）。`,
 
