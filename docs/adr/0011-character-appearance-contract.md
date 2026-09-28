@@ -2,9 +2,15 @@
 
 ## Status
 
-Proposed（2026-09-27）。等待资产/素材管线 owner 确认"结构化色板由谁落库"后转 Accepted。
-本 ADR 由 V0.2 §5 Continuity State 的**服装维度**触发——该维度此前留下半句"需要资产层的
-结构化外观契约（ADR 级）"，本 ADR 即那一句的记录与决策形状。
+**B 路径：Accepted（2026-09-27 落地）**；**A 路径：Proposed（2026-09-28）**。
+B 路径（character-design 节点 `output_asset_id` ↔ 其 `structured_content.appearance_palette`
+即桥）已实现：`agent_canvas_node_execution._read_sibling_character_palettes` +
+`wardrobe_drift.check_cross_node_character_drift(asset_palettes=...)` +
+`character_palette_vs_asset_drift` 看门。A 路径（资产库持久化
+`AssetVersionMetadataV2.structured_content`）为 Proposed：落点与读侧参考实现已逐行核对并记录在
+下方「Path A 实施草案（读侧参考实现，不迁移写侧）」，但 schema/迁移/写侧改动与排期仍等素材管线
+owner 拍板（见该节末尾的决策项）。本 ADR 由 V0.2 §5 Continuity State 的**服装维度**触发——该维度
+此前留下半句"需要资产层的结构化外观契约（ADR 级）"，本 ADR 即那一句的记录与决策形状。
 
 ## Context
 
@@ -91,6 +97,150 @@ advisory 不阻断；唯一允许 FAIL 的是"确定的坏"（例如声明色板
 
 两条路都可行；**推荐 B 作为过渡、A 作为终点**——B 不阻塞施工且立刻可用，A 才是身份
 事实的应有归宿。本 ADR 不替素材管线 owner 选 A 的排期。
+
+## Path A 实施草案（读侧参考实现，不迁移写侧）
+
+> 2026-09-28。本节是 A 路径的**规格与读侧参考实现**，不是实施许可：写侧/持久化的任何改动归
+> 素材管线 owner（见文末决策项）。本节所有落点结论都已对着
+> `app/schemas/v2_asset_library.py` 与 `app/persistence/asset_library_repository.py` 逐行核对。
+
+### A.1 落点判定：`structured_content` 今天能落在哪、读侧怎么拿到它
+
+`app/schemas/v2_asset_library.py` 里描述"一个不可变版本"的只有一对类：`AssetVersionCreate`（写）
+与 `AssetVersionMetadataV2`（读）。两者都继承 `_AssetLibraryModel`（`extra="forbid"` +
+`frozen=True`），且**今天都没有 `structured_content` 字段**——这正是 B 路径存在的原因。该文件
+已占用的自由 JSON 槽只有两个（列名见 `app/persistence/models.py` 的 `AssetVersionRow`）：
+
+| 现有字段 | 对应列 | 现状 |
+|---|---|---|
+| `AssetVersionCreate.metadata` / `AssetVersionMetadataV2.metadata` | `asset_versions.metadata_json` | 已被 `workflow_asset_version` 投影占用，且 `mark_version_unavailable` 会原地改写它 |
+| `AssetVersionCreate.quality` / `AssetVersionMetadataV2.quality` | `asset_versions.quality_json` | 技术质量用 |
+
+读侧是**逐列枚举**的，这是最容易被漏的一处：`asset_library_repository.py` 的 `_version_select()`
+显式列出列（没有 `select(AssetVersionRow)`），`_version_from_row()` 按这组固定 key 构造
+`AssetVersionMetadataV2`。因此"加一列却不同改这两处"= 对所有读方不可见：`resolve_versions`、
+`find_version`、`find_latest_ready_versions`、`find_versions_by_id`、`list_versions_for_slot`、
+`list_versions_for_workflow`、`_get_version`，以及 `AssetEntityMemberV2.version`
+（`get_entity` / `AssetLibraryEntityDetailV2` 这条线）会一起失明。
+
+所以 A 路径唯一不 Invent 新概念的位置是：`asset_versions` 上一个 nullable 的
+`structured_content_json` 列，经 `AssetVersionCreate.structured_content` →
+`AssetVersionMetadataV2.structured_content` 这一对（与其他版本字段同款）投影，再用**已存在**的
+`V2AssetLibraryRepository.find_latest_ready_versions(asset_ids)` 读出（一次有界查询、不碰文件
+系统、同一资产的最新 `ready` 版本才是"它现在穿什么"）。前端侧唯一出口是
+`app/schemas/agent_canvas.py` 的 `ProjectAssetV2`（`ProjectAssetSummaryV2 = ProjectAssetV2`）：
+它今天只有 `prompt_provenance` / `actual_media_facts` / `generation_provenance` / `quality_metadata`
+四个 `dict[str, JsonValue]` 透传槽，**没有结构化内容专属字段**——"前端今天拿不到资产色板"这件事
+在 schema 上是可见的，不是猜的。
+
+### A.2 Schema / 持久化 delta（精确到字段名与类型）
+
+**1. `app/schemas/v2_asset_library.py`**（两处，紧邻 `quality` 同款形状）
+
+* 写侧模型 `AssetVersionCreate`：`structured_content: dict[str, JsonValue] | None = None`
+  （没有色板声明的旧版本写 NULL——可选、加性）
+* 读侧模型 `AssetVersionMetadataV2`：`structured_content: dict[str, JsonValue] | None = None`
+  （类保持 `frozen=True`：调用方无法原地改返回的 payload）
+* 不动 `AssetEntityMemberCreate` / `AssetEntityMemberV2`：色板是**版本**属性，不是成员关系
+  属性；fork（`derived_from_entity_id`）只能靠 pin 到哪个版本来继承外观，而不是在成员行上再抄
+  一份。
+
+**2. `app/persistence/models.py`**：
+
+```python
+AssetVersionRow.structured_content_json: Mapped[str | None] = mapped_column(Text)
+```
+
+（与 `quality_json` 同款 nullable Text；表名 `asset_versions`）
+
+**3. `app/persistence/asset_library_repository.py`**（读侧，本草案范围内）：
+
+* `_version_select()`：加 `AssetVersionRow.structured_content_json`
+* `_version_from_row()`：
+  `structured_content=_json_object(str(row["structured_content_json"])) if row["structured_content_json"] is not None else None`
+  （与 `quality` 同 guard；`_json_object` 已在脏 payload 上抛
+  `V2PersistenceError("asset_library_metadata_invalid", ...)`）
+* 写侧三处——`_create_asset_version_in_transaction` 的 `insert(...)` 字面量、
+  `_import_asset_version_in_transaction` 的 `update(...)` 值、`mark_version_unavailable` 的
+  `values(...)`——**在本草案范围之外**，归 owner。不写这三处，新读侧字段恒为 `None`：
+  也就是说 B→A 迁移本质是一次"取数来源"的开关切换，不是看门重写。
+
+**4. 迁移**
+
+* 新 revision 沿用仓库现有格式，`20260928_01_add_asset_version_structured_content.py`，
+  `revision = "20260928_01"`、`down_revision = "20260927_01"`（当前 head），
+  `op.batch_alter_table("asset_versions")` + `batch.add_column(sa.Column("structured_content_json", sa.Text(), nullable=True))`，
+  直接照抄 `20260915_02` 的写法。
+* 只加 nullable 列，**不 backfill 历史版本**：历史资产"没声明"是"还没决定"，不是数据缺陷。
+* `app/persistence/schema.py` 的 `verify_v2_schema` 会拿 models 与 alembic head 对账：模型加了列
+  而没有迁移 = drift，启动即失败（这是仓库故意设计的早失败，别绕过它）。
+* 落库顺序沿用 `20260927_01` 的教训（迁移漏了，旧库 CHECK 直接拒写）：先 migration，后 schema
+  字段，后 repository 读侧，最后才切来源。
+
+### A.3 读侧参考实现（签名 + docstring，不含实现）
+
+```python
+def read_declared_appearance_palettes(
+    asset_ids: Sequence[str],
+    *,
+    repository: V2AssetLibraryRepository,
+) -> dict[str, list[str]]:
+    """每个角色资产**声明**的服装色板（ADR 0011，Path A）。
+
+    输入是场景脚本绑定的 character asset id；输出是 asset id → 1–4 个规范化
+    （大写、`#` 前缀、保序去重）hex。取数来自资产库的
+    ``AssetVersionMetadataV2.structured_content``，经
+    ``repository.find_latest_ready_versions`` 一次有界查询读出：同一资产的最新
+    ``ready`` 版本才是"它现在穿什么"。
+
+    资产**没有**声明时，该 asset id 不出现在返回映射里：未声明 = "还没决定"，
+    调用方据此跳过，而不是发明一个颜色。任何读取失败都降级为空映射，并让调用方
+    可查询地说明"为什么本次没跑"（ADR 决策 5 的语气）；本函数绝不把异常抛给看门。
+
+    B→A 迁移时**只改这一个函数**：今天它在 character-design 节点的
+    ``structured_content`` 里读（``_read_sibling_character_palettes``），Path A
+    落地后改读资产库；``wardrobe_drift.check_cross_node_character_drift`` 的签名
+    与 ``character_palette_vs_asset_drift`` 判定一字不改。
+    """
+```
+
+### A.4 什么必须不变
+
+* **写/持久化路径**：不加列、不写 insert/update 值、不改 `metadata_json` 既有键、不动
+  result-commit 权威。本 ADR 这节不授权任何写侧改动。
+* **看门**：`check_cross_node_character_drift` 的签名、`character_palette_vs_asset_drift` 的成立
+  条件（`PALETTE_MATCH_TOLERANCE = 60.0` 内同色、资产未声明即跳过、未绑角色不在范围）与它置于
+  `len(scripts_by_node) < 2` 早退**之前**的位置。
+* **声明侧**：`CharacterDesignAssetContentV2.appearance_palette`（B 路径的产出字段）与
+  `CharacterAppearance.palette`（预演侧字段）都保持原样——A 不是第三份色板字段，只是同一事实的
+  新存储归属。
+* **产出侧**：`CharacterMaterializationResultV1.structured_content` 原地不动；A 只决定它落到
+  **哪里**，不改变它是什么。
+* **不可变版本**：历史行不得回填色板；换装 = 新版本（`parent_version_id` 接续），与 `version_no`
+  的单向性一致。
+* **契约形状**：`_AssetLibraryModel` 的 `extra="forbid"` / `frozen=True`；所有新字段 Optional。
+* **语气**：仍是 advisory；决策 5 里唯一允许 FAIL 的形状不变。
+
+### A.5 等 owner 拍板的决策（两个选项及其后果）
+
+**问题：结构化外观色板在资产库里放在哪种"家"里？**
+
+* **选项 1（推荐）：专门的列 + 类型化字段**——`asset_versions.structured_content_json` ↔
+  `AssetVersionCreate.structured_content` / `AssetVersionMetadataV2.structured_content`。
+  **后果**：色板成为资产库里的一等公民，写入即经 pydantic 校验（`extra="forbid"` 会当场拒掉
+  形状不对的 payload），可加 schema 级约束与索引，与"资产是真相源"的定位一致，前端也能拿到一个
+  有名字的字段；代价是一次 alembic 迁移 + 写侧三处 + `verify_v2_schema` 对账，跨素材管线，
+  需要 owner 排期。
+* **选项 2（零迁移的退路）：塞进既有的 `metadata_json`**——例如
+  `AssetVersionCreate.metadata["appearance_palette"]`，读侧 `_version_select()` 一字不改。
+  **后果**：今天就能落地、无迁移、不被 owner 排期阻塞，预演侧看门可立即改为读资产库；代价是
+  这个文件里唯一的自由 JSON 家已被 `workflow_asset_version` 投影占用、且被
+  `mark_version_unavailable` 原地改写——"两处真相"的风险会从资产库里长回来，payload 也不再经
+  `AssetVersionCreate` 的类型化校验（坏形状要到读侧 `_json_object` 才炸）。它还会立下先例：
+  此后任何结构化内容都可以不走 schema，而这正是本 ADR 想钉住的反面。
+
+未决策前，B 路径照常服务（已落地、零依赖 A）；一旦拍板选项 1，迁移只改 A.3 那一个函数的取数
+来源，看门判定不变。
 
 ## 与现有架构的兼容性
 
