@@ -301,6 +301,20 @@ class ReplicaAnchorEventV2(_AdMediaModel):
     affinity: Literal["left", "right"] = "right"
 
 
+class ReplicaBeatWordV2(_AdMediaModel):
+    """段落台词里的一个词（词级 karaoke 的时间原子，G3 后半）。
+
+    来自词级转录（whisperX 词流按段落窗归集）：``text`` 是词面，时间为
+    转录实测。**时间是派生数据**——与锚点词窗同纪律，不进 ``.adreplica``
+    文档（文档存绑定、编译对时），因此手改文档导入后 words 为空、字幕退化为
+    行级（不造假时间）。
+    """
+
+    text: str = Field(min_length=1, max_length=512)
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
+
+
 class ReplicaBeatV2(_AdMediaModel):
     beat_id: str = Field(min_length=1, max_length=64)
     role: str = Field(default="body", max_length=32)
@@ -310,6 +324,8 @@ class ReplicaBeatV2(_AdMediaModel):
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(ge=0)
     anchor_event_ids: list[str] = Field(default_factory=list, max_length=64)
+    # 词级 karaoke 的词窗（无转录时为空 → 行级字幕，向后兼容）
+    words: list[ReplicaBeatWordV2] = Field(default_factory=list, max_length=512)
 
 
 class ReplicaShotV2(_AdMediaModel):

@@ -18,6 +18,8 @@
 > G4 narrative token 层、G5 `.adrecipe`、G6 teardown 缓存。下文矩阵与缺口清单
 > 为当日快照，保留作历史记录。
 
+> **2026-09-28 第三更（G3 后半增量）**：**词级数据层已闭合**——`ReplicaBeatV2.words`（转录词窗，单归宿归属）+ 工作台词流展示；**词级 karaoke 在零模型通道被证伪**（有台词必 TTS → 不可行，通道内不存在词级对齐内容），死分支已撤、决策已记录（`replica-teardown.md` §16）；karaoke 真实归属 = 生成通道 + 剪辑域 ASS `{\k}`（需 `SubtitleCue` 词级时间，后续片）。仍开放：G4 narrative token 层、G5 `.adrecipe`。
+
 > **2026-09-28 深夜更新（G6 增量）**：**G6 已闭合**——teardown 拆解缓存（内容 hash + 参数 + 模型 + 转录状态派生键，命中跳过全部 LLM，损坏按 miss 自愈），端点 `use_cache` 开关 + `cached`/`cache_key` 溯源 + 前端徽标；**G3 的语义/可见时间分离也已闭合**（见 CHANGELOG）。仍开放：词级 karaoke 烧录（G3 后半，需 ASS `{\k}` + 蓝图词流保留）、G4 narrative token 层、G5 `.adrecipe`。下文为当日快照。## 1. 完成度矩阵
 
 | 子系统 | 状态 | 证据 |

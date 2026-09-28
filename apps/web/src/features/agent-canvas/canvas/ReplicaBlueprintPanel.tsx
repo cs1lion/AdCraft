@@ -578,6 +578,33 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
               <div style={{ color: "#8f8", marginBottom: 3 }}>
                 [{beat.start_seconds.toFixed(1)}–{beat.end_seconds.toFixed(1)}s] {beat.role}
               </div>
+              {beat.words && beat.words.length > 0 && (
+                <div
+                  style={{
+                    marginBottom: 4,
+                    padding: "3px 6px",
+                    background: "#141428",
+                    border: "1px solid #2a2a4a",
+                    borderRadius: 3,
+                    fontSize: 9,
+                    lineHeight: 1.8,
+                  }}
+                  title="词级转录词流（hypit 时间脊柱）：词锚解析与词级字幕的时间基准"
+                >
+                  <span style={{ color: "#666" }}>词流 {beat.words.length} 词：</span>{" "}
+                  {beat.words.map((word, wordIndex) => (
+                    <span
+                      key={`${beat.beat_id}_w${wordIndex}`}
+                      style={{ color: "#9c9", marginRight: 6, whiteSpace: "nowrap" }}
+                    >
+                      {word.text}
+                      <span style={{ color: "#556" }}>
+                        （{word.start_seconds.toFixed(1)}–{word.end_seconds.toFixed(1)}s）
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
               {beat.anchor_event_ids.map((eventId) => {
                 const anchor = blueprint.anchor_events.find((a) => a.event_id === eventId);
                 if (!anchor) return null;

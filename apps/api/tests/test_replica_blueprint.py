@@ -481,3 +481,112 @@ def test_instantiate_applies_slot_updates(instantiate_client) -> None:
     )
     assert product["replace_with"] == "洗面奶A"
     assert product["applied"] is True
+
+
+# ---------------------------------------------------------------------------
+# 词级 karaoke 数据层：段落词窗（G3 后半，2026-09-28）
+# ---------------------------------------------------------------------------
+
+
+def test_beat_words_populated_from_transcript_window() -> None:
+    """段落词窗 = 同一词流按段落时间窗归集（与锚点解析同源同规则）。"""
+    from app.schemas.agent_canvas_ad_media import (
+        ReplicaBeatV2,
+        ReplicaBlueprintContentV2,
+    )
+
+    blueprint = ReplicaBlueprintContentV2(
+        beats=[
+            ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=1.5),
+            ReplicaBeatV2(beat_id="b2", start_seconds=1.5, end_seconds=3.0),
+        ],
+    )
+
+    resolved = bp.resolve_word_anchors(blueprint, _WORDS)
+
+    # 词中点归窗：了(1.4-1.6) 中点 1.5 → 归 b2
+    assert [(w.text, w.start_seconds, w.end_seconds) for w in resolved.beats[0].words] == [
+        ("别再", 0.2, 0.5),
+        ("这样", 0.5, 0.9),
+        ("洗脸", 0.9, 1.4),
+    ]
+    assert [(w.text, w.start_seconds, w.end_seconds) for w in resolved.beats[1].words] == [
+        ("了", 1.4, 1.6),
+    ]
+    # 纯函数：原对象不变
+    assert blueprint.beats[0].words == []
+
+
+def test_beat_words_without_transcript_stay_empty() -> None:
+    """无转录词流 → words 为空（行级字幕，向后兼容；不造假时间）。"""
+    from app.schemas.agent_canvas_ad_media import (
+        ReplicaBeatV2,
+        ReplicaBlueprintContentV2,
+    )
+
+    blueprint = ReplicaBlueprintContentV2(
+        beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+    )
+
+    assert bp.resolve_word_anchors(blueprint, []) is blueprint
+    assert blueprint.beats[0].words == []
+
+
+def test_beat_words_and_anchor_resolution_coexist() -> None:
+    """词窗填充与锚点解析互不干扰（同一次调用，两个出口）。"""
+    from app.schemas.agent_canvas_ad_media import (
+        ReplicaAnchorEventV2,
+        ReplicaBeatV2,
+        ReplicaBlueprintContentV2,
+    )
+
+    blueprint = ReplicaBlueprintContentV2(
+        beats=[ReplicaBeatV2(beat_id="b1", start_seconds=0.0, end_seconds=3.0)],
+        anchor_events=[
+            ReplicaAnchorEventV2(event_id="e1", kind="sfx", beat_id="b1", trigger="这样洗脸"),
+        ],
+    )
+
+    resolved = bp.resolve_word_anchors(blueprint, _WORDS)
+
+    assert resolved.anchor_events[0].word == "这样洗脸"
+    assert len(resolved.beats[0].words) == 4
+
+
+def test_teardown_report_with_transcript_carries_beat_words() -> None:
+    """有转录的报告 → 蓝图带词窗；无转录 → 空（默认路径零影响）。"""
+    with_words = bp.blueprint_from_teardown(
+        _report_with_transcript(),
+        source_asset_id="asset-1",
+        duration_seconds=12.0,
+    )
+    assert any(beat.words for beat in with_words.beats)
+
+    without_words = bp.blueprint_from_teardown(
+        _teardown_report(),
+        source_asset_id="asset-1",
+        duration_seconds=12.0,
+    )
+    assert all(beat.words == [] for beat in without_words.beats)
+
+
+def test_adreplica_roundtrip_drops_derived_word_timings() -> None:
+    """文档只存绑定不存派生时间：导出→导入后 words 为空（如实降级，不造假）。
+
+    词窗时间是转录派生数据（与锚点词窗同纪律），进 .adreplica 会让手改文档
+    时"时间看起来是真的"——宁可导入后退化为行级。
+    """
+    from app.services.replica import adreplica as adr
+
+    blueprint = bp.blueprint_from_teardown(
+        _report_with_transcript(),
+        source_asset_id="asset-1",
+        duration_seconds=12.0,
+    )
+    assert any(beat.words for beat in blueprint.beats)
+
+    reimported = adr.blueprint_from_adreplica(adr.adreplica_from_blueprint(blueprint))
+
+    assert all(beat.words == [] for beat in reimported.beats)
+    # 台词文本（绑定）不丢
+    assert any(beat.line.strip() for beat in reimported.beats)

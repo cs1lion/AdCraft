@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 拉片复刻 G3 后半：词级数据层（段落词窗 + 工作台词流）；词级 karaoke 的死路已证伪并记录
+
+- **数据层**：`ReplicaBeatV2.words`（加法字段，无转录时为空 = 行级字幕，向后兼容）+ `resolve_word_anchors` 从转录词流按段落窗归集词面与实测时间。归属规则是**单归宿** `[start, end)`（收尾段闭口）——锚点解析共享的包含端点会把边界词同时归两段（匹配无害，但词级字幕会重复渲染同一个词）。坏词条目逐项跳过（转录数据不可信）。前端镜像类型同步。
+- **真实消费者**：复刻工作台锚点 tab 展示段落词流（"词流 N 词" + 每词时间戳）——hypit 的"时间脊柱"第一次对人可见，也是词锚编辑的时间基准。
+- **负面结果（诚实记录，比硬凑的实现有价值）**：曾尝试在 direct-execute 编译层做逐词 cue（word_reveal），实现后跑门时发现**结构性死路**——可行性门规定"有台词的 beat 必须 TTS"（模型调用），而词级对齐内容（词窗）只存在于有台词的片子：**零模型费通道里不可能有词级对齐内容**。已撤掉该死分支（schema/编译/渲染器三处），改在 `_subtitle_cues` 文档字符串记录决策。词级 karaoke 的真实归属：生成通道（TTS 落音后词窗对齐口播）+ 剪辑域 ASS writer 的 `{\k}` 高亮——列为后续片，前提条件已写明。
+- **文档边界**：词窗时间是派生数据，按既定纪律**不进 `.adreplica`**（手改文档导入后 words 为空、字幕退化为行级，不造假时间）——往返测试锁定该行为。
+- **测试**：后端 +5（词窗归集/无转录 identity/与锚点共存/带转录报告带词窗/往返丢弃派生时间）+ 前端 +1（词流 chip 渲染）。`replica 全套 169 passed / 3 skip`；全量后端 **2007 passed**（4 失败 = depth-image 既有基线，零新增）；ruff app/ 全绿；契约检查通过；前端 tsc/eslint 0 error、canvas 全量零新增失败。
+
 ### Added — 拉片复刻 G6：teardown 拆解缓存（相同视频+参数复用报告，零重复 LLM 额度）
 
 - **`teardown_cache.py`（新模块，纯函数 + 磁盘）**：缓存键 = schema 版本 + **视频内容 sha256** + num_frames + user_description（归一化）+ 模型名 + 转录 (source, reason)——任何影响报告的因素变化都会换键，"用 A 视频的报告回答 B 视频"这类缓存事故在结构上不可能。存储 `<media_data_dir>/replica_teardown_cache/<key>.json`（运行时数据不进 git），原子写入（tmp + replace）。

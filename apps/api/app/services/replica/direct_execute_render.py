@@ -197,6 +197,13 @@ def _subtitle_cues(
 
     相邻 cue 间隔 < ``MIN_CUE_GAP_SECONDS`` 时合并到前一条（字幕不闪跳）；
     总时长封顶到内容末端。
+
+    **词级 karaoke 不属于这一层**（2026-09-28 决策记录）：本层只服务零模型费
+    通道，而该通道的结构性前提是"无台词"——有 ``line`` 的 beat 必被可行性门
+    判为需 TTS（模型调用）而不可行。词级对齐内容（``beat.words``，来自转录）
+    只存在于有台词的片子，它的消费者是生成通道（TTS 落音后词窗对齐口播）与
+    剪辑域 ASS writer 的 ``{\\k}`` 高亮——在那两层落地前，这里不预留死分支。
+    词流本身已在蓝图侧保留（``ReplicaBeatV2.words``）并在工作台可见。
     """
     word_events_by_beat: dict[str, list] = {}
     for event in blueprint.anchor_events:
@@ -377,21 +384,22 @@ def _merge_adjacent_cues(
                     },
                 )
                 continue
-        merged.append(
-            WorkflowV2TimelineClip(
-                clip_id=cue.clip_id,
-                track_id=cue.track_id,
-                clip_type="subtitle",
-                start_time=min(cue.start_time, total),
-                duration=max(
-                    0.01, min(cue.duration, total - min(cue.start_time, total))
-                ),
-                text=cue.text,
-                subtitle_style=cue.subtitle_style,
-                metadata=dict(cue.metadata),
-            )
-        )
+        merged.append(_clamped_cue(cue, total))
     return merged
+
+
+def _clamped_cue(cue: WorkflowV2TimelineClip, total: float) -> WorkflowV2TimelineClip:
+    start = min(cue.start_time, total)
+    return WorkflowV2TimelineClip(
+        clip_id=cue.clip_id,
+        track_id=cue.track_id,
+        clip_type="subtitle",
+        start_time=start,
+        duration=max(0.01, min(cue.duration, total - start)),
+        text=cue.text,
+        subtitle_style=cue.subtitle_style,
+        metadata=dict(cue.metadata),
+    )
 
 
 def _bgm_clips(

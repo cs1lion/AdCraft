@@ -4329,6 +4329,8 @@ export interface ReplicaBeatV2 {
   start_seconds: number;
   end_seconds: number;
   anchor_event_ids: string[];
+  /** 词级转录词流（whisperX 可用时）：词级锚定/字幕的时间基准；时间为派生数据，不进 .adreplica */
+  words?: Array<{ text: string; start_seconds: number; end_seconds: number }>;
 }
 
 export interface ReplicaShotV2 {

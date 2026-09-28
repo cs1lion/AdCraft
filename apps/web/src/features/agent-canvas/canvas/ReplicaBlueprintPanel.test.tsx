@@ -110,6 +110,28 @@ describe("ReplicaBlueprintPanel", () => {
     expect(screen.getByText(/空复刻蓝图/)).toBeTruthy();
   });
 
+  it("shows the beat word stream (whisperX time spine) when words exist", () => {
+    const node = replicaNode();
+    const content = node.structured_content as unknown as ReplicaBlueprintContentV2;
+    content.beats = content.beats.map((beat) =>
+      beat.beat_id === "b1"
+        ? {
+            ...beat,
+            words: [
+              { text: "别再", start_seconds: 0.2, end_seconds: 0.5 },
+              { text: "这样", start_seconds: 0.5, end_seconds: 0.9 },
+            ],
+          }
+        : beat,
+    );
+    render(<ReplicaBlueprintPanel node={node} />);
+    fireEvent.click(screen.getByText(/锚点事件\(2\)/));
+    expect(screen.getByText(/词流 2 词/)).toBeTruthy();
+    // 时间戳 chip 是词流独有（锚点触发文本里也有"别再"，不断言它）
+    expect(screen.getByText(/0\.2–0\.5s/)).toBeTruthy();
+    expect(screen.getByText(/0\.5–0\.9s/)).toBeTruthy();
+  });
+
   it("renders slots, anchors and shots tabs", () => {
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
     // slots tab (default)

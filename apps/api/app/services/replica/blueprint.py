@@ -22,6 +22,7 @@ from typing import Literal
 from app.schemas.agent_canvas_ad_media import (
     ReplicaAnchorEventV2,
     ReplicaBeatV2,
+    ReplicaBeatWordV2,
     ReplicaBlueprintContentV2,
     ReplicaShotV2,
     ReplicaSlotV2,
@@ -304,7 +305,59 @@ def resolve_word_anchors(
             )
         )
     del events_by_id
-    return blueprint.model_copy(update={"anchor_events": new_events})
+
+    # 词级 karaoke（G3 后半）：段落词窗从同一词流按段落时间窗归集。
+    # 与锚点解析同源（中点归窗），但归属规则是**单归宿**——``[start, end)``，
+    # 收尾段闭口：共享规则的包含端点会让边界词同时归两段（锚点匹配无害，
+    # 词级字幕会重复渲染同一个词）。确定性优先，无转录时保持 identity。
+    words_by_beat: dict[str, list[ReplicaBeatWordV2]] = {
+        beat.beat_id: [] for beat in blueprint.beats
+    }
+    if words_by_beat:
+        last_beat_id = blueprint.beats[-1].beat_id
+        for raw in transcript_words:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                w_start = float(raw.get("start_seconds", 0.0))
+                w_end = float(raw.get("end_seconds", w_start))
+            except (TypeError, ValueError):
+                continue
+            text = str(raw.get("text") or "")
+            if not text.strip():
+                continue
+            midpoint = (w_start + w_end) / 2
+            target = next(
+                (
+                    beat
+                    for beat in blueprint.beats
+                    if beat.start_seconds <= midpoint < beat.end_seconds
+                ),
+                None,
+            )
+            if target is None and midpoint >= blueprint.beats[-1].start_seconds:
+                # 段落表没覆盖到的尾部词归最后一段（不丢词、不造词）
+                target = blueprint.beats[-1]
+            if target is None:
+                continue
+            try:
+                words_by_beat[target.beat_id].append(
+                    ReplicaBeatWordV2(
+                        text=text,
+                        start_seconds=round(w_start, 3),
+                        end_seconds=round(w_end, 3),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue  # 坏词条目逐项跳过（转录数据不可信）
+    new_beats = [
+        beat.model_copy(update={"words": words_by_beat.get(beat.beat_id, [])})
+        for beat in blueprint.beats
+    ]
+    del last_beat_id
+    return blueprint.model_copy(
+        update={"anchor_events": new_events, "beats": new_beats}
+    )
 
 
 def _words_in_window(

@@ -262,3 +262,18 @@ TeardownResponse{report, frame_analyses, video_metadata}
   会话先跑的测试写缓存、后跑的测试命中，"LLM 失败应抛出"被缓存命中悄悄
   抵消。既有 fixture 已加 tmp 缓存目录隔离（教训：有状态优化的默认值必须
   在测试里显式隔离）。
+
+## 16. G3 后半：词级数据层落地 + 一条死路的证伪（2026-09-28）
+
+- **数据层**：`ReplicaBeatV2.words`（词面 + 转录实测时间）；`resolve_word_anchors`
+  按段落窗归集，单归宿规则 `[start, end)`（边界词不双算）。工作台锚点 tab
+  展示段落词流（"时间脊柱"对人可见）。
+- **证伪的死路（记录决策，比留死代码有价值）**：direct-execute 编译层做逐词
+  cue 在结构上不成立——可行性门规定有台词的 beat 必须 TTS（生成步骤），而
+  词级对齐内容只随台词存在：零模型费通道里没有词级对齐内容可渲染。三处
+  尝试性改动（style 字段/逐词 cue/渲染器定位）已全部撤回。
+- **词级 karaoke 的真实归属（后续片，前提已明）**：① 生成通道——TTS 落音
+  后词窗与口播对齐（蓝图 `words` 即其数据源，本轮已备好）；② 剪辑域 ASS
+  writer（`timeline_subtitle_writer.cues_to_ass`）发射 `{\k}` 高亮——需要
+  cue 模型带词级时间（`SubtitleCue` 当前无此字段），是编辑域 schema 的
+  加法变更。两条都未启动，不做浑水摸鱼的中间态。
