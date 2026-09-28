@@ -17,8 +17,10 @@ from app.schemas.workflow_v2 import (
     WorkflowSlotV2,
     WorkflowV2,
     WorkflowV2Timeline,
+    WorkflowV2TimelineClip,
     WorkflowV2TimelineRenderSettings,
 )
+
 from app.schemas.workflow_v2_composition import V2SimpleCompositionPlan
 from app.services.llm_context_sanitizer import sanitize_context_for_llm_text
 from app.services.v2_data_boundary import validate_v2_data_path, validate_v2_relative_path
@@ -38,6 +40,11 @@ from app.services.v2_media_toolchain_capabilities import (
     V2MediaToolchainCapabilityService,
 )
 
+
+#: 纯字幕直出（ADR 0010 R1）的占位画面：深灰蓝纯色源（不伪造品牌/内容）
+PLACEHOLDER_COLOR = "0x141428"
+PLACEHOLDER_ASSET_ID = "__placeholder_video__"
+PLACEHOLDER_TRACK_ID = "track-video-placeholder"
 
 FFmpegRunner = Callable[..., subprocess.CompletedProcess[str]]
 MediaProbe = Callable[[Path, str], "V2MediaProbeResult | dict[str, Any]"]
@@ -222,7 +229,17 @@ class V2FinalCompositionRenderer:
                 code="final_composition_not_llm_generation",
                 message=f"Final composition renderer only supports final_video, got {slot.slot_type}.",
             )
-        if not any(clip.enabled and clip.clip_type == "video" for clip in timeline.clips):
+        video_clips_present = any(
+            clip.enabled and clip.clip_type == "video" for clip in timeline.clips
+        )
+        # 纯字幕直出（ADR 0010 R1）：编译层在 timeline.metadata 里诚实标注
+        # needs_placeholder_video——渲染器据此自动补一个占位 video clip
+        # （纯色源），让 feasible 蓝图能走完渲染；无标记仍按原约束拒绝。
+        placeholder_requested = (
+            not video_clips_present
+            and bool(timeline.metadata.get("needs_placeholder_video"))
+        )
+        if not video_clips_present and not placeholder_requested:
             return self._failure(
                 payload,
                 [],
@@ -275,6 +292,19 @@ class V2FinalCompositionRenderer:
         source_paths: list[Path] = []
         source_asset_ids: list[str] = []
         source_version_ids: list[str] = []
+        # 渲染产物目录提前建好：占位视频（needs_placeholder_video）也落在这里
+        render_id = _safe_render_id(payload.get("render_id")) or f"render_{uuid4().hex[:12]}"
+        output_rel = (
+            Path("v2")
+            / "runs"
+            / workflow.workflow_id
+            / "composition"
+            / render_id
+            / "final-ad-video.mp4"
+        )
+        output_path = self._data_dir / output_rel
+        validate_v2_data_path(self._data_dir, output_path, operation="v2-final-composition-render")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         for clip in sorted(
             timeline.clips,
             key=lambda candidate: (
@@ -331,6 +361,57 @@ class V2FinalCompositionRenderer:
                     source_duration_seconds=probe.duration_seconds,
                 )
             )
+        if placeholder_requested and not any(
+            resolved.clip.clip_type == "video" for resolved in resolved_clips
+        ):
+            placeholder_path = output_path.parent / "placeholder-video.mp4"
+            try:
+                self._generate_placeholder_video(
+                    path=placeholder_path,
+                    width=width,
+                    height=height,
+                    fps=timeline.fps,
+                    duration=timeline.duration_seconds,
+                    encoder=capabilities.selected_video_encoder,
+                )
+            except Exception as exc:  # noqa: BLE001 - 渲染失败显式化
+                return self._failure(
+                    payload,
+                    source_asset_ids,
+                    code="placeholder_video_generation_failed",
+                    message=f"Placeholder video generation failed: {str(exc)[:200]}",
+                )
+            placeholder_probe = self._probe_result(placeholder_path, "video")
+            if placeholder_probe.error:
+                return self._failure(
+                    payload,
+                    source_asset_ids,
+                    code="placeholder_video_generation_failed",
+                    message="Generated placeholder video could not be probed.",
+                )
+            placeholder_clip = WorkflowV2TimelineClip(
+                clip_id="video_placeholder",
+                track_id=PLACEHOLDER_TRACK_ID,
+                clip_type="video",
+                start_time=0.0,
+                duration=round(timeline.duration_seconds, 3),
+                source_asset_id=PLACEHOLDER_ASSET_ID,
+                source_version_id=PLACEHOLDER_ASSET_ID,
+                enabled=True,
+                metadata={"placeholder": True, "source": "solid-color"},
+            )
+            resolved_clips.append(
+                V2ResolvedTimelineClip(
+                    input_index=len(source_paths),
+                    clip=placeholder_clip,
+                    track_order=0,
+                    source_has_audio=False,
+                    source_duration_seconds=timeline.duration_seconds,
+                )
+            )
+            source_paths.append(placeholder_path)
+            source_asset_ids.append(PLACEHOLDER_ASSET_ID)
+            source_version_ids.append(PLACEHOLDER_ASSET_ID)
         try:
             visual_graph = build_visual_filter_graph(resolved_clips, canvas)
             audio_graph = build_audio_filter_graph(
@@ -345,18 +426,6 @@ class V2FinalCompositionRenderer:
                 code="v2_media_toolchain_subtitle_font_missing",
                 message=str(exc),
             )
-        render_id = _safe_render_id(payload.get("render_id")) or f"render_{uuid4().hex[:12]}"
-        output_rel = (
-            Path("v2")
-            / "runs"
-            / workflow.workflow_id
-            / "composition"
-            / render_id
-            / "final-ad-video.mp4"
-        )
-        output_path = self._data_dir / output_rel
-        validate_v2_data_path(self._data_dir, output_path, operation="v2-final-composition-render")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         command = build_ffmpeg_render_command(
             ffmpeg_path=self._settings.ffmpeg_path,
             source_paths=[path.as_posix() for path in source_paths],
@@ -1344,6 +1413,36 @@ class V2FinalCompositionRenderer:
         if not absolute_path.exists():
             return None
         return record, absolute_path
+
+    def _generate_placeholder_video(
+        self,
+        *,
+        path: Path,
+        width: int,
+        height: int,
+        fps: int,
+        duration: float,
+        encoder: str,
+    ) -> None:
+        """生成纯色占位视频（零模型费直出的画面兜底，ADR 0010 R1）。"""
+        command = [
+            self._settings.ffmpeg_path,
+            "-y",
+            "-f", "lavfi",
+            "-i", f"color=c={PLACEHOLDER_COLOR}:s={width}x{height}:d={duration:.3f}:r={fps}",
+            "-c:v", encoder,
+            "-pix_fmt", "yuv420p",
+            str(path),
+        ]
+        result = self._runner(command, capture_output=True, text=True, check=False)
+        returncode = (
+            result.get("returncode") if isinstance(result, dict) else result.returncode
+        )
+        stderr = (
+            result.get("stderr", "") if isinstance(result, dict) else (result.stderr or "")
+        )
+        if returncode not in (0, None):
+            raise RuntimeError(f"ffmpeg placeholder generation failed: {stderr[-200:]}")
 
     def _probe_result(self, path: Path, media_type: str) -> V2MediaProbeResult:
         return V2MediaProbeResult.from_payload(

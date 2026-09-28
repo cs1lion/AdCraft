@@ -961,3 +961,190 @@ def test_endpoint_add_shot_and_frame_ops_round_trip() -> None:
     assert [shot["camera"] for shot in script["shots"]] == ["cam1", "cam_2"]
     assert [kf["frame"] for kf in script["cameras"][1]["keyframes"]] == [60]
     assert [kf["frame"] for kf in script["characters"][0]["keyframes"]] == [0, 90]
+
+
+# ---------------------------------------------------------------------------
+# Director motion endpoint (/scene-3d/director-motion)
+# ---------------------------------------------------------------------------
+
+
+def test_director_motion_endpoint_expands_camera_preset() -> None:
+    client = _endpoint_client()
+    response = client.post(
+        "/scene-3d/director-motion",
+        json={
+            "scene_script": base_script().model_dump(mode="json"),
+            "intent": "camera_motion",
+            "target_id": "cam1",
+            "preset_id": "push_in",
+            "start_frame": 0,
+            "duration_frames": 30,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["operations"]
+    assert all(op["op"] == "add_keyframe" for op in body["operations"])
+    frames = [kf["frame"] for kf in body["applied_scene_script"]["cameras"][0]["keyframes"]]
+    assert 15 in frames and 30 in frames
+
+
+def test_director_motion_endpoint_expands_character_preset() -> None:
+    client = _endpoint_client()
+    response = client.post(
+        "/scene-3d/director-motion",
+        json={
+            "scene_script": base_script().model_dump(mode="json"),
+            "intent": "character_motion",
+            "target_id": "char_a",
+            "preset_id": "walk_to",
+            "start_frame": 30,
+            "duration_frames": 60,
+            "target_position": [6, 0, 0],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["target"] == "char_a"
+    keyframes = body["applied_scene_script"]["characters"][0]["keyframes"]
+    assert any(kf["frame"] == 90 and kf["position"] == [6.0, 0.0, 0.0] for kf in keyframes)
+
+
+def test_director_motion_endpoint_rejects_unknown_preset() -> None:
+    client = _endpoint_client()
+    response = client.post(
+        "/scene-3d/director-motion",
+        json={
+            "scene_script": base_script().model_dump(mode="json"),
+            "intent": "camera_motion",
+            "target_id": "cam1",
+            "preset_id": "walk_to",
+            "start_frame": 0,
+            "duration_frames": 15,
+        },
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "director_motion_preset_intent_mismatch"
+
+
+
+# ---------------------------------------------------------------------------
+# Prop / environment type fallback (degraded ops, not rejections)
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_prop_type_degrades_to_nearest_primitive(service) -> None:
+    """An add_prop with an unknown type that has a fallback is applied (degraded)."""
+    base = base_script()
+    # 'locker' is not a known PropType but the fallback table maps it to 'box'.
+    ops = [
+        {"op": "add_prop", "type": "locker", "position": [2, 3, 0]},  # degrades to box
+    ]
+    result = service.apply_operations(base, ops)
+    # The new prop was added with the resolved type.
+    added = [p for p in result.scene_script.props if p.id not in {x.id for x in base.props}]
+    assert len(added) == 1
+    assert added[0].type == "box"
+    # A degradation warning was recorded.
+    assert any("locker" in w for w in result.warnings), result.warnings
+
+
+def test_unknown_environment_type_degrades_to_nearest_primitive(service) -> None:
+    base = base_script()
+    # 'column' is not a known EnvironmentType but the fallback table maps it to 'pillar'.
+    ops = [
+        {"op": "add_environment", "type": "column", "position": [4, 4, 0]},  # degrades to pillar
+    ]
+    result = service.apply_operations(base, ops)
+    added = [e for e in result.scene_script.environment if e.id not in {x.id for x in base.environment}]
+    assert len(added) == 1
+    assert added[0].type == "pillar"
+    assert any("column" in w for w in result.warnings), result.warnings
+
+
+def test_unknown_type_with_no_fallback_still_rejects(service) -> None:
+    base = base_script()
+    ops = [
+        {"op": "add_prop", "type": "quantum_flux_capacitor", "position": [2, 3, 0]},
+    ]
+    with pytest.raises(SceneOperationError) as excinfo:
+        service.apply_operations(base, ops)
+    assert any(v.get("code") == "object_type_unsupported" for v in excinfo.value.violations)
+    # Nothing was applied.
+    assert excinfo.value.violations
+
+
+# ---------------------------------------------------------------------------
+# Trigger event endpoint (/scene-3d/trigger-event)
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_event_endpoint_expands_sit_trigger() -> None:
+    client = _endpoint_client()
+    response = client.post(
+        "/scene-3d/trigger-event",
+        json={
+            "scene_script": base_script().model_dump(mode="json"),
+            "trigger": "sit",
+            "trigger_target_id": "char_a",
+            "trigger_frame": 45,
+            "then_ops": [
+                {
+                    "op": "add_keyframe",
+                    "kind": "camera",
+                    "id": "cam1",
+                    "frame": 45,
+                    "position": [3.0, -3.0, 1.5],
+                    "look_at": [0.0, 0.0, 1.0],
+                }
+            ],
+            "then_frame": 45,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["trigger"] == "sit"
+    assert body["operations"]
+    assert body["applied_scene_script"]
+
+
+def test_trigger_event_endpoint_rejects_unknown_trigger() -> None:
+    client = _endpoint_client()
+    response = client.post(
+        "/scene-3d/trigger-event",
+        json={
+            "scene_script": base_script().model_dump(mode="json"),
+            "trigger": "explode",
+            "trigger_target_id": "char_a",
+            "trigger_frame": 45,
+            "then_ops": [],
+            "then_frame": 45,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is False
+    assert body["error_code"] == "trigger_unknown"
+
+
+def test_trigger_event_endpoint_arrive_requires_position() -> None:
+    client = _endpoint_client()
+    response = client.post(
+        "/scene-3d/trigger-event",
+        json={
+            "scene_script": base_script().model_dump(mode="json"),
+            "trigger": "arrive",
+            "trigger_target_id": "char_a",
+            "trigger_frame": 30,
+            "then_ops": [],
+            "then_frame": 30,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is False
+    assert body["error_code"] == "trigger_target_missing"

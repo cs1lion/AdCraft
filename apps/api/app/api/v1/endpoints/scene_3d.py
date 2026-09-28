@@ -1259,6 +1259,10 @@ class DialogueLipSyncRequest(BaseModel):
         description="[{character_id, text, start_time?, emotion?}]; start_time omitted = sequential",
     )
     syllables_per_second: float = Field(4.0, ge=1.0, le=12.0)
+    apply_gestures: bool = Field(
+        default=False,
+        description="V3 dialogue-as-performance: translate the speech/emotion envelope into programmatic body gestures (arm raise / forward lean / head shake) layered on top of the lip-sync keyframes; the same SpeechSegment list is the single source of truth."
+    )
     propose_advisories: bool = Field(
         default=False,
         description=(
@@ -1299,6 +1303,7 @@ async def apply_dialogue_lip_sync_endpoint(
             request.scene_script,
             request.dialogue_lines,
             syllables_per_second=request.syllables_per_second,
+            apply_gestures=request.apply_gestures,
         )
         summary = result.summary
         # Optional LLM proposal layer for the shot advisories (V0.2
@@ -1695,6 +1700,110 @@ async def check_scene_consistency_endpoint(
         error_count=len(report.errors),
         warning_count=len(report.warnings),
         issues=[issue.to_dict() for issue in report.issues],
+    )
+
+
+class StoryboardRequest(BaseModel):
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+
+
+class StoryboardResponse(BaseModel):
+    success: bool
+    scene_name: str = ""
+    total_shots: int = 0
+    total_frames: int = 0
+    shots: list[dict[str, Any]] = []
+    all_keyframe_frames: list[int] = []
+    error: str | None = None
+    error_code: str | None = None
+
+
+@router.post("/storyboard", response_model=StoryboardResponse)
+async def export_storyboard_endpoint(
+    request: StoryboardRequest,
+) -> StoryboardResponse:
+    """Export a storyboard strip + shot list for a SceneScript (V3)."""
+    from app.schemas.scene_script import SceneScriptRoot
+    from app.services.scene3d.storyboard_export import build_storyboard
+
+    try:
+        scene_script = SceneScriptRoot.model_validate(request.scene_script)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"SceneScript failed schema validation: {str(e)[:300]}", "error_code": "scene_script_invalid"},
+        ) from e
+
+    try:
+        strip = build_storyboard(scene_script)
+    except ValueError as e:
+        return StoryboardResponse(success=False, error=str(e)[:300], error_code="storyboard_expansion_failed")
+
+    return StoryboardResponse(
+        success=True,
+        scene_name=strip.scene_name,
+        total_shots=strip.total_shots,
+        total_frames=strip.total_frames,
+        shots=[entry.to_dict() for entry in strip.shots],
+        all_keyframe_frames=list(strip.all_keyframe_frames),
+    )
+
+
+class ContinuitySuggestionsRequest(BaseModel):
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+    segments: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional SpeechSegment list for the emotion check; omit to skip.",
+    )
+
+
+class ContinuitySuggestionsResponse(BaseModel):
+    success: bool
+    suggestions: list[dict[str, Any]] = []
+    untranslated: list[dict[str, Any]] = []
+    error: str | None = None
+    error_code: str | None = None
+
+
+@router.post("/continuity-suggestions", response_model=ContinuitySuggestionsResponse)
+async def continuity_suggestions_endpoint(
+    request: ContinuitySuggestionsRequest,
+) -> ContinuitySuggestionsResponse:
+    """Convert continuity advisory findings into conversational suggestions (V3)."""
+    from app.schemas.scene_script import SceneScriptRoot
+    from app.services.scene3d.continuity_suggestions import build_continuity_suggestions
+
+    try:
+        scene_script = SceneScriptRoot.model_validate(request.scene_script)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"SceneScript failed schema validation: {str(e)[:300]}", "error_code": "scene_script_invalid"},
+        ) from e
+
+    segments = None
+    if request.segments is not None and len(request.segments) > 0:
+        from app.services.scene3d.speech_orchestration import SpeechSegment
+        segments = []
+        for index, entry in enumerate(request.segments):
+            try:
+                segments.append(
+                    SpeechSegment(
+                        segment_id=str(entry.get("segment_id") or f"seg_{index}"),
+                        character_id=str(entry.get("character_id") or ""),
+                        text=str(entry.get("text") or ""),
+                        start_time=float(entry.get("start_time") or 0.0),
+                        end_time=float(entry.get("end_time") or 0.0),
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+    suggestions, untranslated = build_continuity_suggestions(scene_script, segments)
+    return ContinuitySuggestionsResponse(
+        success=True,
+        suggestions=[s.to_dict() for s in suggestions],
+        untranslated=untranslated,
     )
 
 # ---------------------------------------------------------------------------

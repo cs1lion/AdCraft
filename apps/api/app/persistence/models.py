@@ -847,7 +847,7 @@ class AgentCanvasNodeRow(Base):
     __tablename__ = "agent_canvas_nodes"
     __table_args__ = (
         CheckConstraint(
-            "node_type IN ('text', 'script', 'image', 'video', 'audio', 'editing', 'scene-3d', 'voice-cast')",
+            "node_type IN ('text', 'script', 'image', 'video', 'audio', 'editing', 'scene-3d', 'voice-cast', 'replica')",
             name="ck_agent_canvas_nodes_type",
         ),
         CheckConstraint(

@@ -147,6 +147,8 @@ class DirectExecuteResponse(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     zero_model_steps: list[dict[str, Any]] = Field(default_factory=list)
     generation_steps: list[dict[str, Any]] = Field(default_factory=list)
+    # P4 pace 预检告警（预估口播超出台落窗的台词；不影响 feasible）
+    pace_warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VariantRenderPlansRequest(BaseModel):
@@ -239,6 +241,8 @@ class DirectExecuteRenderBridgeResponse(BaseModel):
     events_cursor: int = 0
     output_url: str | None = None
     rejected: list[str] = Field(default_factory=list)
+    # P4 pace 预检告警：渲染发起时一并在场（台词超窗在花钱前说出来）
+    pace_warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class InstantiateRequest(BaseModel):
@@ -879,6 +883,7 @@ async def render_blueprint_direct_execute(
         dropped_unresolved_clip_ids=list(outcome.dropped_unresolved_clip_ids),
         events_cursor=outcome.events_cursor,
         output_url=outcome.output_url,
+        pace_warnings=[dict(w) for w in outcome.pace_warnings],
     )
 
 

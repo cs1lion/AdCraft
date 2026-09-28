@@ -34,6 +34,10 @@ class DirectExecutePlan:
     blockers: tuple[str, ...]
     zero_model_steps: tuple[dict, ...]
     generation_steps: tuple[dict, ...]
+    #: P4 pace 预检告警（预估口播时长超出段落窗的台词）。**不影响 feasible**：
+    #: 这是内容问题不是成本问题——门回答"能不能零模型费直出"，pace 回答
+    #: "这句台词念不念得完"。告警逐条可行动（删词 or 加窗）。
+    pace_warnings: tuple[dict, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +45,7 @@ class DirectExecutePlan:
             "blockers": list(self.blockers),
             "zero_model_steps": list(self.zero_model_steps),
             "generation_steps": list(self.generation_steps),
+            "pace_warnings": list(self.pace_warnings),
         }
 
 
@@ -84,6 +89,23 @@ def plan_direct_execute(blueprint: ReplicaBlueprintContentV2) -> DirectExecutePl
             _step("voice", f"台词语音合成（{len(spoken)} 段台词需要 TTS）")
         )
 
+    # P4 pace 预检（零成本）：每段台词的预估口播时长 vs 它的段落窗。
+    # 超窗不拦截（内容问题不是成本问题），但必须在花钱合成前说出来。
+    from app.services.replica.estimate import estimate_beat_pace
+
+    pace_warnings: list[dict] = []
+    for beat in spoken:
+        window = max(0.0, beat.end_seconds - beat.start_seconds)
+        check = estimate_beat_pace(text=beat.line, window_seconds=window)
+        if not check["fits"]:
+            pace_warnings.append(
+                {
+                    "beat_id": beat.beat_id,
+                    "role": beat.role,
+                    "text": beat.line,
+                    **check,
+                }
+            )
     # 槽位：人物/商品替换已应用 → 需生成对应主体
     for slot in blueprint.slots:
         if slot.applied and slot.kind in {"character", "product"}:
@@ -111,4 +133,5 @@ def plan_direct_execute(blueprint: ReplicaBlueprintContentV2) -> DirectExecutePl
         blockers=tuple(blockers),
         zero_model_steps=tuple(zero_model),
         generation_steps=tuple(generation),
+        pace_warnings=tuple(pace_warnings),
     )

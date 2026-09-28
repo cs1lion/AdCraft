@@ -42,6 +42,57 @@ def _run(command: list[str]) -> None:
         )
 
 
+def build_caption_only_video(out_dir: Path) -> Path:
+    """纯字幕可行样片（direct-execute R1 渲染验收的 E2E 载体）。
+
+    与 sample_ad_4shots 的差别：所有镜头只有屏上文字、无动作描述——
+    direct-execute 可行性门判 feasible=True，占位画面 + 字幕轨可直出。
+    """
+    texts = [
+        ("0x141428", "HALF PRICE SALE", "white"),
+        ("0x23233f", "NEW PRODUCT", "white"),
+        ("0x3a1f2f", "DAY 7 RESULT", "white"),
+        ("0x2a1f3f", "BUY NOW", "yellow"),
+    ]
+    shot_paths: list[Path] = []
+    for index, (color, text, text_color) in enumerate(texts, start=1):
+        shot_path = out_dir / f"_cap{index}.mp4"
+        text_escaped = text.replace(":", r"\:").replace("'", r"\'")
+        vf = (
+            f"drawtext=fontfile={FONT}:text='{text_escaped}':fontsize=64:"
+            f"fontcolor={text_color}:x=(w-tw)/2:y=(h-th)/2:borderw=3:bordercolor=black"
+        )
+        _run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", f"color=c={color}:s={W}x{H}:d={SHOT_SECONDS}:r={FPS}",
+                "-f", "lavfi", "-i", f"sine=frequency={660 + index * 110}:duration={SHOT_SECONDS}",
+                "-vf", vf,
+                "-af", "volume=0.3",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest",
+                str(shot_path),
+            ]
+        )
+        shot_paths.append(shot_path)
+
+    concat_list = out_dir / "_concat_cap.txt"
+    concat_list.write_text(
+        "\n".join(f"file '{p.as_posix()}'" for p in shot_paths), encoding="utf-8"
+    )
+    final = out_dir / "sample_caption_only.mp4"
+    _run(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
+            "-c", "copy", str(final),
+        ]
+    )
+    for shot in shot_paths:
+        shot.unlink()
+    concat_list.unlink()
+    return final
+
+
 def build_video(out_dir: Path) -> Path:
     shot_paths: list[Path] = []
     for index, (color, text, freq, text_color) in enumerate(SHOTS, start=1):
@@ -161,13 +212,14 @@ def main() -> None:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     video = build_video(out_dir)
+    caption_video = build_caption_only_video(out_dir)
     product, host = build_images(out_dir)
     (out_dir / "sample_brief.txt").write_text(BRIEF, encoding="utf-8")
     (out_dir / "sample_handwritten.adreplica").write_text(
         HANDWRITTEN_ADREPLICA, encoding="utf-8"
     )
     print(f"samples written to {out_dir}:")
-    for path in (video, product, host):
+    for path in (video, caption_video, product, host):
         print(f"  {path.name}  {path.stat().st_size} bytes")
 
 

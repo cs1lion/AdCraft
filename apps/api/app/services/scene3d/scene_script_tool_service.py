@@ -45,6 +45,11 @@ from app.schemas.scene_script import (
     ShotType,
 )
 
+from app.services.scene3d.prop_type_fallback import (
+    resolve_environment_fallback,
+    resolve_prop_fallback,
+)
+
 # Scene bounds (mirrors the MCP client's client-side bbox).
 BBOX_HALF_EXTENT = 50.0
 BBOX_MAX_HEIGHT = 30.0
@@ -197,7 +202,7 @@ class SceneScriptToolService:
                     }
                 )
                 continue
-            op_violations = self._validate_operation(working, operation, index)
+            op_violations = self._validate_operation(working, operation, index, warnings=warnings)
             if op_violations:
                 violations.extend(op_violations)
                 continue
@@ -257,9 +262,9 @@ class SceneScriptToolService:
 
     # -- validation ------------------------------------------------------------
 
-    def _validate_operation(
-        self, script: SceneScriptRoot, operation: dict[str, Any], index: int
-    ) -> list[dict[str, Any]]:
+    def _validate_operation(self, script, operation, index, *, warnings=None):
+        """Validate one op; append degradation notes to ``warnings`` when the
+        nearest-primitive fallback table resolves an unknown type."""
         violations: list[dict[str, Any]] = []
         kind = operation["op"]
 
@@ -269,6 +274,11 @@ class SceneScriptToolService:
                 entry["message"] = message
             violations.append(entry)
 
+        def note_degradation(code: str, message: str, path: str) -> None:
+            """Record a degradation instead of rejecting; the caller's warnings list picks it up."""
+            if warnings is not None:
+                warnings.append(f"[{{code}}] {message} ({path})")
+
         if kind in {"add_environment", "add_prop", "add_character"}:
             enum_type = {
                 "add_environment": EnvironmentType,
@@ -276,11 +286,25 @@ class SceneScriptToolService:
             }.get(kind)
             object_type = operation.get("type")
             if enum_type is not None and object_type not in _enum_members(enum_type):
-                reject(
-                    "object_type_unsupported",
-                    f"type '{object_type}' is not a known {enum_type.__name__}",
-                    path=f"operations[{index}].type",
-                )
+                # Consult the nearest-primitive fallback table before rejecting.
+                fallback: str | None = None
+                if kind == "add_prop":
+                    fallback = resolve_prop_fallback(str(object_type))
+                elif kind == "add_environment":
+                    fallback = resolve_environment_fallback(str(object_type))
+                if fallback is not None:
+                    note_degradation(
+                        "object_type_degraded",
+                        f"type '{object_type}' is not a known primitive; using '{fallback}' as stand-in",
+                        f"operations[{index}].type",
+                    )
+                    operation["type"] = fallback  # rewrite in place; _apply_operation sees the resolved value
+                else:
+                    reject(
+                        "object_type_unsupported",
+                        f"type '{object_type}' is not a known {enum_type.__name__}" + " and has no fallback",
+                        path=f"operations[{index}].type",
+                    )
             position = _position(operation.get("position"))
             if position is None:
                 reject("position_invalid", "position must be [x, y, z]", path=f"operations[{index}].position")

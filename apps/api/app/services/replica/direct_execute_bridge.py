@@ -90,7 +90,8 @@ class ReplicaRenderOutcome:
     events_cursor: int = 0
     output_url: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
+    # P4 pace 预检告警（预估口播超窗）：渲染发起时随响应透出
+    pace_warnings: tuple[dict[str, Any], ...] = ()
 
 def strip_unresolved_clips(
     timeline: WorkflowV2Timeline,
@@ -184,4 +185,5 @@ def render_replica_blueprint(
         dropped_unresolved_clip_ids=dropped,
         events_cursor=getattr(started, "events_cursor", 0),
         output_url=getattr(started, "output_url", None),
+        pace_warnings=tuple(dict(w) for w in gate.pace_warnings),
     )

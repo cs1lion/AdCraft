@@ -7,7 +7,6 @@ authored per dialogue line), but nothing read it against the cut — so a script
 can flip 恐惧 → 喜悦 across a hard cut with no beat and no one notices.
 
 This module asks the question, it does not answer it: an emotion whiplash is
-often exactly right (a reveal, a rebuttal, a joke landing). The advisory fires
 only when the whiplash has no pause to read as intentional — a silence long
 enough to hide a cut is how a script says "time passed / mood turned". With one,
 silence is doing the work; without one, the author should at least LOOK.

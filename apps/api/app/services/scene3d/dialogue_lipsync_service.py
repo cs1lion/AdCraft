@@ -187,6 +187,7 @@ def apply_dialogue_lip_sync(
     tts_engine: TTSEngine | None = None,
     syllables_per_second: float = 4.0,
     audio_path: str | None = None,
+    apply_gestures: bool = False,
 ) -> DialogueLipSyncResult:
     """Apply dialogue-driven lip-sync keyframes to a SceneScript.
 
@@ -377,4 +378,28 @@ def apply_dialogue_lip_sync(
             )
         ],
     }
+    # 台词即表演（V3 ④）：把语调/情绪包络翻译成程序化身体手势，叠加在
+    # 已合并的唇形上。同一份 SpeechSegment 列表是单一事实源——
+    # “说多久 → 演多长”与唇形共用一套算术，不另起炉灶。
+    gesture_count = 0
+    if apply_gestures:
+        from app.services.scene3d.gesture_performance import (
+            merge_gestures_into_scene_script,
+        )
+
+        before = sum(len(char.keyframes) for char in merged.characters)
+        merged = merge_gestures_into_scene_script(merged, list(timeline.segments))
+        after = sum(len(char.keyframes) for char in merged.characters)
+        gesture_count = after - before
+
+    summary["gesture_applied"] = apply_gestures
+    summary["gesture_keyframe_count"] = gesture_count
+    if apply_gestures:
+        try:
+            merged = SceneScriptRoot.model_validate(merged.model_dump(mode="json"))
+        except Exception as exc:
+            raise DialogueLipSyncError(
+                "gesture_merge_invalid",
+                f"Gesture merge produced an invalid SceneScript: {str(exc)[:300]}",
+            ) from exc
     return DialogueLipSyncResult(scene_script=merged, summary=summary)
