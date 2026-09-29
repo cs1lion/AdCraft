@@ -195,6 +195,31 @@ async def build_from_outline(
             film_ids.append(created.node_id)
             workflow = workflow_repository.get_workflow(request.workflow_id)
 
+        # 设定图 → 成片镜头的参考图绑定：视频节点因此等设定图生成完毕，以其为
+        # image_reference 出片（依赖由绑定驱动，run 自然排序）。走 runtime 的
+        # bindings 服务（与 v2 端点同款，带角色/世界设定策略校验）。
+        from app.api.v2.endpoints.agent_canvas import create_agent_canvas_runtime
+        from app.core.config import get_settings
+        from app.schemas.agent_canvas import CanvasBindingCreateRequestV2
+
+        settings = get_settings()
+
+        runtime = create_agent_canvas_runtime(settings, bootstrap_model_policy=False)
+        for setting_id, film_id in zip(setting_ids, film_ids):
+            try:
+                runtime.bindings.create(
+                    request.workflow_id,
+                    CanvasBindingCreateRequestV2(
+                        source={"kind": "node_output", "source_node_id": setting_id},
+                        target_node_id=film_id,
+                        input_role="image_reference",
+                    ),
+                    expected_revision=workflow.revision,
+                )
+            except V2PersistenceError as exc:
+                raise _film_persistence_error(exc)
+            workflow = workflow_repository.get_workflow(request.workflow_id)
+
     from app.api.v2.endpoints.agent_canvas import create_agent_canvas_runtime
     from app.services.agent_canvas_accepted_background import (
         AcceptedBackgroundOperation,
@@ -202,8 +227,7 @@ async def build_from_outline(
         AcceptedBackgroundWork,
     )
 
-    settings = get_settings()
-    runtime = create_agent_canvas_runtime(settings, bootstrap_model_policy=False)
+    # runtime 与 settings 在绑定段已构造，直接复用
     run_request = CanvasRunRequestV2(
         scope="selected_nodes",
         node_ids=(*setting_ids, *film_ids),

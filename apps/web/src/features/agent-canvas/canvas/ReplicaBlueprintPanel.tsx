@@ -123,11 +123,15 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
 
   const [tab, setTab] = useState<TabKey>("slots");
   // 一键复刻成片（2026-09-29 简约好用分支）：选好槽位 → 一个按钮 → 每镜一个
-  // video 节点 + 一次 run；镜头齐了自动铺时间线（S8）。
+  // video 节点 + 一次 run。script 节点 / 蓝图词汇 / instantiate 都是内部实现。
   const [filmBusy, setFilmBusy] = useState(false);
   const [filmError, setFilmError] = useState<string | null>(null);
   const [filmShots, setFilmShots] = useState<Array<{ node_id: string; title: string }>>([]);
   const [shotStatus, setShotStatus] = useState<Record<string, string>>({});
+  // 概念断奶（2026-09-29）：锚点/镜头表/源码是高级入口，默认收起——
+  // 作者默认只见"导演台 + 槽位替换（含一键成片）"。
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const [slots, setSlots] = useState<ReplicaSlotV2[]>(blueprint.slots);
   const [removedAnchors, setRemovedAnchors] = useState<string[]>(
     blueprint.anchor_events.filter((a) => !a.keep).map((a) => a.event_id),
@@ -858,27 +862,6 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         fontFamily: "monospace",
       }}
     >
-      <div style={{ display: "flex", gap: 2, marginBottom: 8 }}>
-        {tabs.map((entry) => (
-          <button
-            key={entry.key}
-            onClick={() => setTab(entry.key)}
-            style={{
-              padding: "3px 10px",
-              border: "none",
-              borderRadius: 3,
-              background: tab === entry.key ? "#3a3a6a" : "transparent",
-              color: tab === entry.key ? "#fff" : "#888",
-              cursor: "pointer",
-              fontSize: 11,
-              fontFamily: "monospace",
-            }}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
-
       {error && (
         <div
           style={{
