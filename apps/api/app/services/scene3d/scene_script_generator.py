@@ -123,9 +123,20 @@ class LLMSceneScriptGenerator:
         client = self._client_factory(timeout=self._timeout_seconds)
         try:
             content = self._request_completion(client, description=text)
+        except SceneScriptGenerationError as exc:
+            # 2026-09-29 live: a reasoning model burned its whole budget on
+            # reasoning and returned an empty message — the node run died with
+            # no way forward.  A rough deterministic draft the author edits is
+            # strictly better than a dead end; the name says what happened
+            # (degradation named, never silent).
+            if "empty message" not in str(exc):
+                raise
+            draft = TemplateSceneScriptGenerator().generate(description=text)
+            return draft.model_copy(
+                update={"scene": draft.scene.model_copy(update={"name": f"【草稿】{draft.scene.name}"})}
+            )
         finally:
             client.close()
-
         result = parse_llm_output(content)
         if not result.success or result.scene_script is None:
             raise SceneScriptGenerationError(

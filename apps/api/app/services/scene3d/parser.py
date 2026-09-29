@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from app.schemas.scene_script import SceneScriptRoot
+from app.services.scene3d.llm_json_salvage import prune_extra_fields, salvage_json_text
 
 
 @dataclass
@@ -105,24 +106,43 @@ def parse_llm_output(llm_output: str) -> ParseResult:
             ],
         )
 
-    # Parse JSON
+    # Parse JSON — with a local salvage pass first (2026-09-29 live: the model
+    # emitted a trailing comma and the whole generation died on it).
+    data: dict | None = None
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError as exc:
-        return ParseResult(
-            success=False,
-            raw_json=raw_json,
-            error=f"Invalid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}",
-            error_details=[
-                "Check for trailing commas, unclosed brackets, or unescaped quotes",
-                f"Error near: ...{raw_json[max(0, exc.pos - 30):exc.pos + 30]}...",
-            ],
-        )
+        repaired = salvage_json_text(raw_json)
+        if repaired is not None:
+            try:
+                data = json.loads(repaired)
+                raw_json = repaired
+            except json.JSONDecodeError:
+                data = None
+        if data is None:
+            return ParseResult(
+                success=False,
+                raw_json=raw_json,
+                error=f"Invalid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}",
+                error_details=[
+                    "Check for trailing commas, unclosed brackets, or unescaped quotes",
+                    f"Error near: ...{raw_json[max(0, exc.pos - 30):exc.pos + 30]}...",
+                ],
+            )
 
     # Validate against SceneScript schema
     try:
         scene_script = SceneScriptRoot.model_validate(data)
     except ValidationError as exc:
+        # Extra fields the model echoed back (context leakage) are pruned and
+        # re-validated before failing — one local retry, no provider call.
+        pruned = prune_extra_fields(data, exc.errors())
+        if pruned is not None:
+            try:
+                scene_script = SceneScriptRoot.model_validate(pruned)
+                return ParseResult(success=True, scene_script=scene_script, raw_json=raw_json)
+            except ValidationError:
+                pass
         details = []
         for err in exc.errors():
             loc = " -> ".join(str(loc) for loc in err.get("loc", []))

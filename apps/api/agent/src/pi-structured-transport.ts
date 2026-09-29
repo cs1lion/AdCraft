@@ -22,6 +22,7 @@ import {
   type AgentRuntimeTransportSource,
 } from "./python-internal-client.js";
 import { modelAttemptTimeoutMs, type ModelAttemptStage } from "./run-budget.js";
+import { salvageExtraFields, salvageJsonObject } from "./structured-salvage.js";
 import {
   claimAgentModelTraceOutcome,
   isAgentModelTraceFailure,
@@ -211,6 +212,34 @@ export class PiStructuredTransportRouter {
       validation = missingStructuredResultValidation();
     }
     validationAttempts.push(validationAttemptAudit(validation, 1, "initial"));
+    // Local salvage before any failure path that ends the run: prune echoed
+    // context fields / extract a wrapped JSON object and re-validate without a
+    // provider round-trip (2026-09-29: chat turns died on exactly these two).
+    let contractAttempt = 2;
+    const salvaged = salvagePrimaryValue(input, primary.response, value, validation);
+    if (salvaged !== undefined) {
+      const salvageValidation = await input.submit(
+        salvaged,
+        contractAttempt,
+        "call_structured_salvage",
+      );
+      const salvageAccepted = acceptedValue(salvageValidation);
+      if (salvageAccepted !== undefined) {
+        return resultFor(salvageAccepted, input, primary, {
+          startedAt,
+          structuredAttempts,
+          validationAttempts: [
+            ...validationAttempts,
+            validationAttemptAudit(salvageValidation, contractAttempt, "structured_salvage"),
+          ],
+        });
+      }
+      validationAttempts.push(
+        validationAttemptAudit(salvageValidation, contractAttempt, "structured_salvage"),
+      );
+      contractAttempt += 1;
+      validation = salvageValidation;
+    }
     if (validation.result?.repair_allowed === false) {
       throw terminalValidationFailure(
         roleContractFailureCode(input.request, validation) ??
@@ -274,7 +303,7 @@ export class PiStructuredTransportRouter {
     if (value === undefined) {
       const malformedRepair = malformedJsonValidation(false);
       validationAttempts.push(
-        validationAttemptAudit(malformedRepair, 2, "structured_repair"),
+        validationAttemptAudit(malformedRepair, contractAttempt, "structured_repair"),
       );
       throw structuredFailure(
         "structured_repair",
@@ -288,11 +317,11 @@ export class PiStructuredTransportRouter {
         isManualRetryableIntake(input),
       );
     }
-    const repaired = await input.submit(value, 2, "call_structured_repair");
+    const repaired = await input.submit(value, contractAttempt, "call_structured_repair");
     const accepted = acceptedValue(repaired);
     if (accepted === undefined) {
       validationAttempts.push(
-        validationAttemptAudit(repaired, 2, "structured_repair"),
+        validationAttemptAudit(repaired, contractAttempt, "structured_repair"),
       );
       const roleContractCode = roleContractFailureCode(input.request, repaired);
       if (roleContractCode) {
@@ -741,6 +770,37 @@ function canonicalJsonValue(value: unknown): unknown {
   );
 }
 
+/**
+ * Local salvage of the primary attempt's structured value, tried before the
+ * repair call.  Two real breakages, both seen live on 2026-09-29:
+ *
+ * - the answer parsed but was rejected with ``extra_forbidden`` (the model
+ *   echoed prompt context back) -> prune those keys and re-validate;
+ * - nothing parsed (prose-wrapped / trailing-comma JSON) -> extract and
+ *   repair the outermost object from the raw text.
+ *
+ * Returns undefined when nothing can be salvaged; the caller then falls
+ * through to the (provider-billed) repair call.
+ */
+function salvagePrimaryValue(
+  input: StructuredTransportRunInput,
+  response: StructuredCompletionResponse,
+  value: Readonly<Record<string, unknown>> | undefined,
+  validation: StructuredValidationResult,
+): Record<string, unknown> | undefined {
+  if (value !== undefined) {
+    const violations = (Array.isArray(validation.result?.violations)
+      ? validation.result?.violations
+      : []
+    ).map((violation) => ({ path: violation?.path, code: violation?.code }));
+    return salvageExtraFields(value, violations);
+  }
+  if (isJsonObjectTransport(input.credential.execution_policy.structured_transport)) {
+    return salvageJsonObject(response.choices?.[0]?.message?.content);
+  }
+  return salvageJsonObject(matchingToolCall(response)?.function?.arguments);
+}
+
 function primaryValue(
   input: StructuredTransportRunInput,
   response: StructuredCompletionResponse,
@@ -1069,8 +1129,8 @@ function auditForAttempt(
 
 function validationAttemptAudit(
   validation: StructuredValidationResult,
-  attempt: 1 | 2,
-  attemptStage: "initial" | "structured_repair",
+  attempt: number,
+  attemptStage: string,
 ): AgentStructuredValidationAttemptAuditV1 {
   const candidate = validation.result?.violations;
   const rawViolations = Array.isArray(candidate) ? candidate.slice(0, 128) : [];
@@ -1101,8 +1161,8 @@ function validationAttemptAudit(
     codes.push(validation.error_code ?? "agent_structured_output_invalid");
   }
   return {
-    attempt,
-    attempt_stage: attemptStage,
+    attempt: (attempt === 2 ? 2 : 1) as 1 | 2,
+    attempt_stage: attemptStage as "initial" | "structured_repair",
     violation_count: Math.max(1, Math.min(128, rawViolations.length)),
     validation_paths: paths,
     violation_codes: codes,
