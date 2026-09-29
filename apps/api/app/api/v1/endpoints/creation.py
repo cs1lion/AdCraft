@@ -48,6 +48,21 @@ class BuildFromOutlineResponse(BaseModel):
     reused: bool = False
 
 
+class AssembleFilmRequest(BaseModel):
+    """S8 成片合成：把镜头 video 节点按序铺到 final-composition 时间线并渲染。"""
+
+    workflow_id: str = Field(min_length=1)
+    node_ids: list[str] = Field(default_factory=list)
+
+
+class AssembleFilmResponse(BaseModel):
+    success: bool
+    render_id: str = ""
+    clip_count: int = 0
+    skipped: int = 0
+    error: str = ""
+
+
 @router.post("/expand-outline", response_model=ExpandOutlineResponse)
 async def expand_outline(request: ExpandOutlineRequest) -> ExpandOutlineResponse:
     """创作纲领 → 分镜清单（一次 LLM 调用，无副作用）。"""
@@ -222,4 +237,102 @@ async def build_from_outline(
         film_node_ids=film_ids,
         execution_id=accepted.execution_id,
         reused=reused,
+    )
+
+
+@router.post("/assemble-film", response_model=AssembleFilmResponse)
+async def assemble_film(request: AssembleFilmRequest) -> AssembleFilmResponse:
+    """S8：镜头节点 → 画布时间线 video track（按序铺满，幂等）。
+
+    随后尝试 v2 final-composition 渲染；canvas 工作流不在 authoring 存储
+    （2026-09-29 实机确认的架构缺口）时返回带码失败 + finding，不假装成片。
+    """
+
+    from app.api.v1.endpoints.replica import _canvas_node_service, _film_persistence_error
+    from app.core.config import get_settings
+    from app.persistence.database import create_v2_database
+    from app.persistence.timeline_repository import TimelineRepository
+    from app.services.creation.film_assembly import plan_assembly
+
+    node_service, workflow_repository = _canvas_node_service()
+    try:
+        workflow = workflow_repository.get_workflow(request.workflow_id)
+    except Exception as exc:  # noqa: BLE001 - mapped below
+        raise _film_persistence_error(exc)
+
+    nodes = [n for n in workflow.nodes if n.node_id in set(request.node_ids)]
+    if not nodes:
+        return AssembleFilmResponse(success=False, error="没有等到任何镜头节点。")
+    missing = [n.node_id for n in nodes if not n.output_asset_id]
+    if missing:
+        return AssembleFilmResponse(
+            success=False,
+            error=f"{len(missing)} 个镜头尚未生成完（asset 未就绪），无法合成。",
+        )
+
+    settings = get_settings()
+    database = create_v2_database(settings.media_data_dir)
+    session = database.session_factory()
+    try:
+        repo = TimelineRepository(session)
+        timeline = repo.get_by_workflow_id(request.workflow_id)
+        video_track = next((t for t in repo.get_tracks(timeline.timeline_id) if t.type == "video"), None)
+        if video_track is None:
+            return AssembleFilmResponse(success=False, error="时间线上没有 video track。")
+        plan = plan_assembly(video_track.track_id, nodes)
+        placed = 0
+        for clip in plan.placements:
+            existing = repo.get_clips_for_node(clip.source_node_id)
+            if existing:
+                continue
+            repo.add_clip(
+                track_id=clip.track_id,
+                start_time=clip.start_time,
+                duration=clip.duration,
+                asset_id=clip.asset_id,
+                asset_version_id=clip.asset_version_id,
+                source_node_id=clip.source_node_id,
+            )
+            placed += 1
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - mapped below
+        session.rollback()
+        raise _film_persistence_error(exc)
+    finally:
+        session.close()
+
+    # 最终渲染：标准 v2 栈。canvas 工作流不在 authoring 存储时明确失败。
+    render_error = ""
+    try:
+        from app.schemas.workflow_v2 import WorkflowV2TimelineRenderRequest
+        from app.services.v2_final_composition_render_service import (
+            V2FinalCompositionRenderService,
+        )
+        from app.services.v2_final_composition_timeline import (
+            V2FinalCompositionTimelineService,
+        )
+
+        timeline_service = V2FinalCompositionTimelineService(settings)
+        timeline = timeline_service.get_timeline(request.workflow_id)
+        started = V2FinalCompositionRenderService(settings).start_render(
+            request.workflow_id,
+            WorkflowV2TimelineRenderRequest(
+                timeline_id=timeline.timeline.timeline_id,
+                timeline_version=timeline.timeline.version,
+            ),
+        )
+        render_id = started.render_id
+    except Exception as exc:  # noqa: BLE001 - 渲染缺口如实上报
+        render_id = ""
+        render_error = (
+            "final_render_unavailable_for_canvas_workflow: v2 final-composition 渲染栈绑在 "
+            f"authoring 存储（workflows 表为空），够不到 canvas 工作流：{str(exc)[:200]}"
+        )
+
+    return AssembleFilmResponse(
+        success=True,
+        render_id=render_id,
+        clip_count=placed,
+        skipped=len(plan.placements) - placed,
+        error=render_error,
     )

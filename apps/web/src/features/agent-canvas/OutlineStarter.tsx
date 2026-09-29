@@ -64,6 +64,52 @@ export function OutlineStarter({ workflowId }: { workflowId: string }) {
         throw new Error(body?.error || `搭建失败 (HTTP ${response.status})`);
       }
       setStatus("已开画（设定图与成片镜头生成中，节点上可见进度）");
+      // 轮询成片镜头，齐了自动铺时间线（S8）。
+      void (async () => {
+        const deadline = Date.now() + 30 * 60 * 1000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 6000));
+          try {
+            const wf = await fetch(`/api/v2/workflows/${workflowId}`);
+            const data = (await wf.json()) as {
+              nodes?: Array<{ node_id: string; title?: string; status?: string }>;
+            };
+            const films = (data.nodes ?? []).filter((n) =>
+              (n.title ?? "").startsWith("成片镜头"),
+            );
+            if (films.length === 0) continue;
+            const ready = films.filter((n) => n.status === "ready");
+            if (ready.length < films.length) {
+              setStatus(`生成中（${ready.length}/${films.length} 镜就绪）`);
+              continue;
+            }
+            const asm = await fetch("/api/v1/creation/assemble-film", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                workflow_id: workflowId,
+                node_ids: ready.map((n) => n.node_id),
+              }),
+            });
+            const asmBody = (await asm.json().catch(() => null)) as {
+              clip_count?: number;
+              render_id?: string;
+              error?: string;
+            } | null;
+            setStatus(
+              asmBody?.render_id
+                ? `✓ 成片渲染中（${asmBody.render_id}）`
+                : asmBody?.clip_count
+                  ? `✓ 已铺上时间线（${asmBody.clip_count} 镜）——在时间线编辑器里可见`
+                  : "镜头已生成，等待合成",
+            );
+            if (asmBody?.error) setError(asmBody.error);
+            return;
+          } catch {
+            // 轮询失败不打断；下一轮再试
+          }
+        }
+      })();
     } catch (err) {
       setError(err instanceof Error ? err.message : "搭建失败");
       setStatus(null);

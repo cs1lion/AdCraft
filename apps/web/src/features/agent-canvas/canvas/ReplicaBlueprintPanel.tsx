@@ -123,7 +123,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
 
   const [tab, setTab] = useState<TabKey>("slots");
   // 一键复刻成片（2026-09-29 简约好用分支）：选好槽位 → 一个按钮 → 每镜一个
-  // video 节点 + 一次 run。script 节点 / 蓝图词汇 / instantiate 都是内部实现。
+  // video 节点 + 一次 run；镜头齐了自动铺时间线（S8）。
   const [filmBusy, setFilmBusy] = useState(false);
   const [filmError, setFilmError] = useState<string | null>(null);
   const [filmShots, setFilmShots] = useState<Array<{ node_id: string; title: string }>>([]);
@@ -560,6 +560,32 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         setShotStatus(Object.fromEntries(statuses));
         if (statuses.every(([, status]) => status === "ready" || status === "failed")) break;
       }
+      // S8：镜头齐了 → 铺到时间线（合成）；v2 渲染栈对 canvas 工作流不可达
+      // （2026-09-29 实证的架构缺口），失败如实带码上屏，不假装成片。
+      const readyIds = shots
+        .filter((shot) => (shotStatus[shot.node_id] ?? "") === "ready")
+        .map((shot) => shot.node_id);
+      if (readyIds.length > 0) {
+        const asm = await fetch("/api/v1/creation/assemble-film", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workflow_id: node.workflow_id, node_ids: readyIds }),
+        });
+        const asmBody = (await asm.json().catch(() => null)) as {
+          clip_count?: number;
+          render_id?: string;
+          error?: string;
+        } | null;
+        if (asmBody?.render_id) {
+          setShotStatus((prev) => ({ ...prev, __film: `render:${asmBody.render_id}` }));
+        } else if (asmBody?.clip_count) {
+          setShotStatus((prev) => ({
+            ...prev,
+            __film: `timeline:${asmBody.clip_count}`,
+          }));
+        }
+        if (asmBody?.error) setFilmError(asmBody.error);
+      }
     } catch (err) {
       setFilmError(err instanceof Error ? err.message : "生成失败");
     } finally {
@@ -934,6 +960,16 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                 </div>
               );
             })}
+            {shotStatus.__film?.startsWith("timeline:") && (
+              <div style={{ fontSize: 9, marginTop: 2, color: "#8cf" }}>
+                ✓ 已铺上时间线（{shotStatus.__film.slice("timeline:".length)} 镜）——在时间线编辑器里可见
+              </div>
+            )}
+            {shotStatus.__film?.startsWith("render:") && (
+              <div style={{ fontSize: 9, marginTop: 2, color: "#8f8" }}>
+                ✓ 成片渲染中（{shotStatus.__film.slice("render:".length)}）
+              </div>
+            )}
           </div>
           <div style={{ color: "#888", fontSize: 10, marginBottom: 6 }}>
             槽位 = 复刻时要替换的成分（留空 = 保留原片值）
