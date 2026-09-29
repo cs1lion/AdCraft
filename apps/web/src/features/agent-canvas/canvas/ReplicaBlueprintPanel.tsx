@@ -122,6 +122,12 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const { setAgentCanvasWorkflow } = useApp();
 
   const [tab, setTab] = useState<TabKey>("slots");
+  // 一键复刻成片（2026-09-29 简约好用分支）：选好槽位 → 一个按钮 → 每镜一个
+  // video 节点 + 一次 run。script 节点 / 蓝图词汇 / instantiate 都是内部实现。
+  const [filmBusy, setFilmBusy] = useState(false);
+  const [filmError, setFilmError] = useState<string | null>(null);
+  const [filmShots, setFilmShots] = useState<Array<{ node_id: string; title: string }>>([]);
+  const [shotStatus, setShotStatus] = useState<Record<string, string>>({});
   const [slots, setSlots] = useState<ReplicaSlotV2[]>(blueprint.slots);
   const [removedAnchors, setRemovedAnchors] = useState<string[]>(
     blueprint.anchor_events.filter((a) => !a.keep).map((a) => a.event_id),
@@ -504,6 +510,63 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // 1) 先落盘当前编辑（与"一键生成"同纪律：节点是真相源，不含未保存编辑）；
   // 2) 桥端点内部跑可行性门——非可行即 422 + rejected 缺失清单，不渲染；
   // 3) 渲染是 detached 的：拿到 render_id 后轮询 v2 渲染状态端点。
+  // 一键复刻成片：当前槽位 → 后端编排（每镜一个 video 节点 + 一次 run）→
+  // 逐镜轮询直到终态。作者只按一个按钮，其余都是内部实现。
+  const generateFilm = useCallback(async () => {
+    setFilmBusy(true);
+    setFilmError(null);
+    try {
+      const slotUpdates: Record<string, string> = {};
+      for (const slot of slots) slotUpdates[slot.kind] = slot.replace_with;
+      const response = await fetch("/api/v1/replica/generate-film", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workflow_id: node.workflow_id,
+          replica_node_id: node.node_id,
+          slot_updates: slotUpdates,
+        }),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        success?: boolean;
+        shots?: Array<{ node_id: string; title: string }>;
+        detail?: { error?: string } | string;
+      } | null;
+      if (!response.ok || !body?.success) {
+        const detail = body?.detail;
+        const message = typeof detail === "string" ? detail : detail?.error;
+        throw new Error(message || `生成失败 (HTTP ${response.status})`);
+      }
+      const shots = body.shots ?? [];
+      setFilmShots(shots);
+      setShotStatus(Object.fromEntries(shots.map((shot) => [shot.node_id, "排队中"])));
+      // 逐镜轮询直到终态（4s 一拍；video 生成通常 1–3 分钟/镜）
+      const deadline = Date.now() + 30 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        const statuses = await Promise.all(
+          shots.map(async (shot) => {
+            try {
+              const res = await fetch(
+                `/api/v2/workflows/${node.workflow_id}/nodes/${shot.node_id}`,
+              );
+              const data = (await res.json()) as { status?: string };
+              return [shot.node_id, data.status ?? "unknown"] as const;
+            } catch {
+              return [shot.node_id, "查询失败"] as const;
+            }
+          }),
+        );
+        setShotStatus(Object.fromEntries(statuses));
+        if (statuses.every(([, status]) => status === "ready" || status === "failed")) break;
+      }
+    } catch (err) {
+      setFilmError(err instanceof Error ? err.message : "生成失败");
+    } finally {
+      setFilmBusy(false);
+    }
+  }, [node.workflow_id, node.node_id, slots]);
+
   const startDirectRender = useCallback(async () => {
     // D7 idempotency guard: never fire a second direct-execute while one is in flight.
     if (renderPhase === "starting" || renderPhase === "polling") return;
@@ -823,6 +886,55 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
 
       {tab === "slots" && (
         <div>
+          {/* 一键复刻成片：作者唯一需要按的按钮 */}
+          <div
+            style={{
+              background: "#141428",
+              border: "1px solid #2a2a4a",
+              borderRadius: 4,
+              padding: "6px 8px",
+              marginBottom: 8,
+            }}
+          >
+            <button
+              onClick={() => void generateFilm()}
+              disabled={filmBusy}
+              title="按当前槽位生成全部镜头（重复点击会复用已生成的镜头）"
+              style={{
+                background: filmBusy ? "#2a2a4a" : "#2a6a3a",
+                border: "none",
+                color: filmBusy ? "#666" : "#fff",
+                padding: "4px 12px",
+                borderRadius: 3,
+                cursor: filmBusy ? "default" : "pointer",
+                fontSize: 10,
+                fontFamily: "monospace",
+              }}
+            >
+              {filmBusy ? "⏳ 生成中…" : "🎬 生成复刻成片"}
+            </button>
+            {filmError && (
+              <div style={{ color: "#f88", fontSize: 9, marginTop: 4 }}>
+                生成失败：{filmError}
+              </div>
+            )}
+            {filmShots.map((shot) => {
+              const status = shotStatus[shot.node_id] ?? "排队中";
+              return (
+                <div
+                  key={shot.node_id}
+                  style={{
+                    fontSize: 9,
+                    marginTop: 2,
+                    color: status === "ready" ? "#8f8" : status === "failed" ? "#f88" : "#9ab",
+                  }}
+                >
+                  {shot.title}：
+                  {status === "ready" ? "✓ 已生成" : status === "failed" ? "✗ 失败" : status}
+                </div>
+              );
+            })}
+          </div>
           <div style={{ color: "#888", fontSize: 10, marginBottom: 6 }}>
             槽位 = 复刻时要替换的成分（留空 = 保留原片值）
           </div>

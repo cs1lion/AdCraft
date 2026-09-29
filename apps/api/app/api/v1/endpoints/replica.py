@@ -300,6 +300,33 @@ class InstantiateResponse(BaseModel):
     binding_id: str = ""
 
 
+class FilmGenerateRequest(BaseModel):
+    """一键复刻成片：蓝图 + 槽位 → 逐镜 video 节点 + 一次 run。
+
+    ``slot_updates`` 会在生成前落到 replica 节点上（持久化槽位状态）；
+    ``model_ref`` 可显式指定视频模型，缺省走工作流默认。
+    """
+
+    workflow_id: str = Field(min_length=1)
+    replica_node_id: str = Field(min_length=1)
+    slot_updates: dict[str, str] = Field(default_factory=dict)
+    model_ref: str | None = Field(default=None, min_length=3, max_length=320)
+
+
+class FilmShotNodeV1(BaseModel):
+    node_id: str
+    shot_index: int
+    title: str
+
+
+class FilmGenerateResponse(BaseModel):
+    success: bool
+    execution_id: str = ""
+    shots: list[FilmShotNodeV1] = Field(default_factory=list)
+    reused: bool = False
+    workflow_revision: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1013,6 +1040,20 @@ async def import_blueprint_adreplica(request: AdReplicaImportRequest) -> Bluepri
     )
 
 
+def _film_persistence_error(error: Exception) -> HTTPException:
+    """Map a persistence error to HTTP with its stable code (mirrors v2 mapping)."""
+
+    from app.persistence.errors import V2PistenceError as _Err
+
+    if isinstance(error, _Err):
+        status = getattr(error, "status_code", None) or 409
+        return HTTPException(
+            status_code=status,
+            detail={"error": str(error), "code": getattr(error, "code", "persistence_error")},
+        )
+    return HTTPException(status_code=500, detail={"error": str(error)})
+
+
 def _canvas_node_service() -> tuple[AgentCanvasNodeService, Any]:
     """Construct the canvas node service against the v2 database.
 
@@ -1171,4 +1212,188 @@ async def instantiate_blueprint(request: InstantiateRequest) -> InstantiateRespo
         script_text=plan.script_text,
         workflow_revision=workflow.revision + 1,
         binding_id=binding.binding_id,
+    )
+
+
+@router.post("/generate-film", response_model=FilmGenerateResponse)
+async def generate_replica_film(
+    request: FilmGenerateRequest,
+    background_tasks: BackgroundTasks,
+) -> FilmGenerateResponse:
+    """一键复刻成片：蓝图（已应用的槽位）→ 每镜一个 video 节点 → 一次 run。
+
+    这是作者看到的唯一一步：选好槽位、按下生成。script 节点 / 蓝图词汇 /
+    旧的 instantiate 仪式都是内部实现。重复调用复用已有"复刻镜头*"节点
+    （retry_failed），不在画布上堆重复镜头。
+    """
+
+    from uuid import uuid4
+
+    from app.core.config import get_settings
+    from app.persistence.errors import V2PersistenceError
+    from app.schemas.agent_canvas import CanvasNodePatchRequestV2
+    from app.schemas.agent_canvas_runtime import CanvasRunRequestV2
+    from app.services.replica.blueprint import BLUEPRINT_VERSION, apply_slot_updates
+    from app.services.replica.film import FILM_NODE_TITLE_PREFIX, plan_film_shots
+
+    node_service, workflow_repository = _canvas_node_service()
+    try:
+        workflow = workflow_repository.get_workflow(request.workflow_id)
+        node = workflow_repository.get_node(request.workflow_id, request.replica_node_id)
+    except V2PersistenceError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": str(exc), "code": getattr(exc, "code", "not_found")},
+        )
+    if node.node_type != "replica":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Node {request.replica_node_id} is {node.node_type}, not a replica blueprint",
+        )
+    from app.schemas.agent_canvas_ad_media import ReplicaBlueprintContentV2
+
+    try:
+        blueprint = ReplicaBlueprintContentV2.model_validate(node.structured_content)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid replica blueprint content: {exc}",
+        )
+    if blueprint.blueprint_version != BLUEPRINT_VERSION:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported blueprint version: {blueprint.blueprint_version}",
+        )
+    plans = plan_film_shots(blueprint)
+    if not plans:
+        raise HTTPException(status_code=422, detail="Blueprint carries no shots to film.")
+
+    if request.slot_updates:
+        updated = apply_slot_updates(blueprint, request.slot_updates)
+        try:
+            node_service.patch(
+                request.workflow_id,
+                request.replica_node_id,
+                CanvasNodePatchRequestV2(
+                    structured_content=updated.model_dump(mode="json")
+                ),
+                expected_revision=workflow.revision,
+            )
+        except V2PersistenceError as exc:
+            raise _film_persistence_error(exc)
+        blueprint = updated
+        workflow = workflow_repository.get_workflow(request.workflow_id)
+
+    # Reuse the previous film's shot nodes when the shot count still matches.
+    existing = [
+        candidate
+        for candidate in workflow.nodes
+        if candidate.node_type == "video"
+        and (candidate.title or "").startswith(FILM_NODE_TITLE_PREFIX)
+    ]
+    reused = len(existing) == len(plans)
+    shot_nodes: list[CanvasNodeV2] = []
+    if reused:
+        shot_nodes = sorted(
+            existing,
+            key=lambda candidate: int(
+                "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+            ),
+        )
+    else:
+        position = node.position
+        for offset, plan in enumerate(plans):
+            create_request = CanvasNodeCreateRequestV2(
+                node_type="video",
+                creative_role="storyboard_video",
+                title=plan.title,
+                generation_prompt=plan.generation_prompt,
+                structured_content=plan.segment,
+                position={
+                    "x": float(position.x) + 320.0 * (offset % 3),
+                    "y": float(position.y) + 260.0 + 220.0 * (offset // 3),
+                },
+                **(
+                    {
+                        "model_ref": request.model_ref,
+                        "model_selection_mode": "explicit",
+                    }
+                    if request.model_ref
+                    else {}
+                ),
+            )
+            try:
+                created = node_service.create(
+                    request.workflow_id,
+                    create_request,
+                    expected_revision=workflow.revision,
+                )
+            except V2PersistenceError as exc:
+                raise _film_persistence_error(exc)
+            shot_nodes.append(created)
+            workflow = workflow_repository.get_workflow(request.workflow_id)
+
+    if reused and request.model_ref:
+        for candidate in shot_nodes:
+            if candidate.model_ref == request.model_ref:
+                continue
+            try:
+                node_service.patch(
+                    request.workflow_id,
+                    candidate.node_id,
+                    CanvasNodePatchRequestV2(
+                        model_ref=request.model_ref,
+                        model_selection_mode="explicit",
+                    ),
+                    expected_revision=workflow.revision,
+                )
+            except V2PersistenceError as exc:
+                raise _film_persistence_error(exc)
+            workflow = workflow_repository.get_workflow(request.workflow_id)
+
+    from app.api.v2.endpoints.agent_canvas import create_agent_canvas_runtime
+
+    settings = get_settings()
+    runtime = create_agent_canvas_runtime(settings, bootstrap_model_policy=False)
+    canvas_request = CanvasRunRequestV2(
+        scope="selected_nodes",
+        node_ids=tuple(candidate.node_id for candidate in shot_nodes),
+        retry_failed=True,
+        source_action="replica_film_generation",
+    )
+    try:
+        accepted = runtime.run_service.start_or_extend(
+            request.workflow_id,
+            canvas_request,
+            idempotency_key=f"replica-film-{request.replica_node_id}-{uuid4().hex}",
+            expected_revision=workflow.revision,
+        )
+    except V2PersistenceError as exc:
+        raise _film_persistence_error(exc)
+    background_tasks.add_task(
+        runtime.accepted_background.run,
+        AcceptedBackgroundWork(
+            operation=AcceptedBackgroundOperation.CANVAS_RUN_RESUME,
+            workflow_id=request.workflow_id,
+            resource_type=AcceptedBackgroundResourceType.EXECUTION,
+            resource_id=accepted.execution_id,
+            callback=runtime.scheduler.resume,
+            args=(accepted.execution_id,),
+        ),
+    )
+    return FilmGenerateResponse(
+        success=True,
+        execution_id=accepted.execution_id,
+        shots=[
+            FilmShotNodeV1(
+                node_id=candidate.node_id,
+                shot_index=int(
+                    "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+                ),
+                title=candidate.title or "",
+            )
+            for candidate in shot_nodes
+        ],
+        reused=reused,
+        workflow_revision=workflow.revision,
     )
