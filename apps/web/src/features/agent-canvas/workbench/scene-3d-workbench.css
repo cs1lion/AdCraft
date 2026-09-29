@@ -1420,3 +1420,51 @@
   color: inherit;
   cursor: pointer;
 }
+
+/* 语言搭建（2026-09-29 简约好用分支） */
+.scene-language-builder {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: #12121f;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+}
+
+.scene-language-builder__row {
+  display: flex;
+  gap: 6px;
+}
+
+.scene-language-builder__row input {
+  flex: 1;
+  background: #0d0d16;
+  border: 1px solid #2a2a4a;
+  border-radius: 3px;
+  color: #cde;
+  font-size: 10px;
+  padding: 3px 6px;
+}
+
+.scene-language-builder__row button,
+.scene-language-builder__chips button {
+  background: #2a2a4a;
+  border: none;
+  color: #cde;
+  border-radius: 3px;
+  font-size: 9px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.scene-language-builder__chips {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.scene-language-builder__hint {
+  color: #8f8;
+  font-size: 9px;
+  margin-top: 3px;
+}

@@ -29,6 +29,7 @@ import { Scene3DRenderControls } from "../canvas/Scene3DRenderControls.tsx";
 import { FourLinePromptEditor } from "./FourLinePromptEditor.tsx";
 import { NodeWorkbenchError } from "./NodeWorkbenchError.tsx";
 import { SceneImageIntake } from "../canvas/SceneImageIntake.tsx";
+import { SceneLanguageBuilder } from "../canvas/SceneLanguageBuilder.tsx";
 import { WhiteModelOpLog } from "../canvas/WhiteModelOpLog.tsx";
 import {
   clearScene3dDraft,
@@ -773,6 +774,14 @@ function Scene3DEditSection({
           {fullscreen ? "⤡ 退出全屏" : "⤢ 全屏导演台"}
         </button>
       </div>
+      {/* 语言搭建（2026-09-29）：说一句“加一张桌子在左边”，预览实时长出来 */}
+      {draftScript && (
+        <SceneLanguageBuilder
+          script={draftScript}
+          onChange={setDraftScript}
+          disabled={saving}
+        />
+      )}
       <WhiteModelOpLog
         report={
           (node.structured_content?.white_model_report as Record<string, unknown> | undefined) ??
