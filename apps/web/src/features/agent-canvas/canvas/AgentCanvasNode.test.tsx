@@ -682,7 +682,10 @@ describe("AgentCanvasNodeCard", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: "video output" }).classList.contains("agent-canvas-node__media")).toBe(true);
+    // 视频卡片是 <video aria-label="video output">（可访问名不变，角色从 img 变 video）
+    const media = screen.getByLabelText("video output");
+    expect(media.tagName).toBe("VIDEO");
+    expect(media.classList.contains("agent-canvas-node__media")).toBe(true);
     expect(screen.getByTestId("agent-canvas-node-video-node").classList.contains("agent-canvas-node--failed")).toBe(true);
     expect(document.querySelector(".agent-canvas-node__error")).toBeNull();
   });
@@ -988,25 +991,37 @@ describe("AgentCanvasNodeCard", () => {
       <AgentCanvasNodeCard node={makeNode("image", "ready")} asset={makeAsset("image")} />,
     );
     const image = screen.getByRole("img", { name: "image output" });
-    expect(image.getAttribute("src")).toBe("/media/image-poster.webp");
-    expect(image.getAttribute("loading")).toBe("eager");
-    expect(image.getAttribute("width")).toBe("1280");
-    expect(image.getAttribute("height")).toBe("720");
+    // 图片服务不可变内容端点（1daa4b9f：图片内容即预览）；fixture 无 version_id
+    // → 内容端点回落 media_url
+    expect(image.getAttribute("src")).toBe("/media/image-output");
+    // 画布卡片图片 lazy 加载（节点多在视口外）
+    expect(image.getAttribute("loading")).toBe("lazy");
+    // 尺寸不写死属性：加载后 naturalWidth/Height 实测回传
+    expect(image.getAttribute("width")).toBeNull();
+    expect(image.getAttribute("height")).toBeNull();
     expect(image.classList.contains("agent-canvas-node__media")).toBe(true);
     expect(image.classList.contains("agent-canvas-node__media--contain")).toBe(true);
     expect(image.classList.contains("agent-canvas-node__media--cover")).toBe(false);
 
     imageView.unmount();
+    // 视频卡片：<video poster preload="metadata">（不下载正片）+ 播放按钮开
+    // 预览对话窗；旧设计"poster 转 img、不挂 video"已被取代
     render(<AgentCanvasNodeCard node={makeNode("video", "ready")} asset={makeAsset("video")} />);
-    expect(screen.queryByLabelText("video output")).toBeNull();
-    const videoPoster = screen.getByRole("img", { name: "video output" });
-    expect(videoPoster.getAttribute("width")).toBe("1280");
-    expect(videoPoster.getAttribute("height")).toBe("720");
+    const video = screen.getByLabelText("video output") as HTMLVideoElement;
+    expect(video.tagName).toBe("VIDEO");
+    expect(video.getAttribute("src")).toBe("/media/video-output");
+    expect(video.getAttribute("poster")).toBe("/media/video-poster.webp");
+    expect(video.getAttribute("preload")).toBe("metadata");
   });
 
-  it("does not mount a video element just to capture a node thumbnail", () => {
+  it("mounts a metadata-only video card instead of capturing a thumbnail", () => {
+    // 现行契约：挂 <video preload="metadata">（不下载正片）+ 播放按钮开对话
+    // 窗；不再为缩略图额外捕帧。锁"不下载正片"这个真实代价。
     render(<AgentCanvasNodeCard node={makeNode("video", "ready")} asset={makeAsset("video")} />);
-    expect(document.querySelector("video")).toBeNull();
+    const video = document.querySelector("video") as HTMLVideoElement | null;
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute("preload")).toBe("metadata");
+    expect(video?.getAttribute("poster")).toBe("/media/video-poster.webp");
     expect(ensureVideoPosterFromElement).not.toHaveBeenCalled();
   });
 
@@ -1020,8 +1035,13 @@ describe("AgentCanvasNodeCard", () => {
 
     render(<AgentCanvasNodeCard node={makeNode("video", "ready")} asset={asset} />);
 
-    expect(document.querySelector("video")).toBeNull();
-    expect(document.querySelector(".agent-canvas-node__media-placeholder")).toBeTruthy();
+    // 无 poster 源：视频卡仍在（metadata-only）但不写 poster，src 是不可变
+    // 版本化内容端点；绝不捕帧补 poster
+    const video = document.querySelector("video") as HTMLVideoElement | null;
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute("poster")).toBeNull();
+    expect(video?.getAttribute("preload")).toBe("metadata");
+    expect(video?.getAttribute("src")).toBe("/api/v2/assets/video-asset/content?v=video-version-2");
     expect(ensureVideoPoster).not.toHaveBeenCalled();
     expect(ensureVideoPosterFromElement).not.toHaveBeenCalled();
   });
@@ -1172,7 +1192,7 @@ describe("AgentCanvasNodeCard", () => {
       </div>,
     );
 
-    fireEvent.click(screen.getByRole("img", { name: "video output" }));
+    fireEvent.click(screen.getByLabelText("video output"));
 
     expect(onNodeClick).toHaveBeenCalledTimes(1);
   });
@@ -1207,7 +1227,8 @@ describe("AgentCanvasNodeCard", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: "image output" }).getAttribute("src")).toBe(asset.preview_url);
+    // 图片服务不可变内容端点而非 preview_url；真意图是"生成物留在节点里"
+    expect(screen.getByRole("img", { name: "image output" }).getAttribute("src")).toBe(asset.media_url);
     expect(screen.getByLabelText("General Image node type")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /open .* preview/i })).toBeNull();
   });
@@ -1310,7 +1331,10 @@ describe("AgentCanvasNodeRenderer", () => {
     expect(areAgentCanvasNodePropsEqual(previous, changedAttempt)).toBe(false);
   });
 
-  it("aligns the visible ring with the real Handle hit center", () => {
+  it("keeps the handle ring aligned with the hit center per side", () => {
+    // 机制口径（现行）：hit 区固定 28px，环 14px 由 place-items 居中，再用
+    // --agent-handle-ring-offset 把环沿侧边平移对准命中中心；旧机制
+    // （--agent-canvas-handle-* 变量注入 shell）已整个移除。
     const cssPath = resolve(process.cwd(), "src/features/agent-canvas/canvas/AgentCanvasNode.css");
     const css = readFileSync(cssPath, "utf8");
     const handleRule = css.match(/^\.react-flow__handle\.agent-canvas-node__handle\s*\{([\s\S]*?)\n\}/m)?.[1];
@@ -1319,21 +1343,21 @@ describe("AgentCanvasNodeRenderer", () => {
     const outputRule = css.match(/^\.react-flow__handle\.agent-canvas-node__handle--output\s*\{([\s\S]*?)\n\}/m)?.[1];
 
     expect(handleRule).toContain("z-index: 12");
-    expect(handleRule).toContain("width: var(--agent-canvas-handle-hit-size)");
-    expect(handleRule).toContain("height: var(--agent-canvas-handle-hit-size)");
+    expect(handleRule).toContain("width: 28px");
+    expect(handleRule).toContain("height: 28px");
+    expect(handleRule).toContain("place-items: center");
     expect(handleRule).toContain("border: 0");
     expect(handleRule).toContain("background: transparent");
-    expect(handleRule).toContain("opacity: 0");
     expect(handleRule).toContain("pointer-events: auto");
-    expect(ringRule).toContain("width: var(--agent-canvas-handle-ring-size)");
-    expect(ringRule).toContain("height: var(--agent-canvas-handle-ring-size)");
+    expect(ringRule).toContain("width: 14px");
+    expect(ringRule).toContain("height: 14px");
     expect(ringRule).toContain("border: 2px solid rgba(148, 151, 160, 0.92)");
     expect(ringRule).toContain("background: transparent");
-    expect(inputRule).toContain("left: calc(-1 * var(--agent-canvas-handle-center-offset))");
-    expect(outputRule).toContain("right: calc(-1 * var(--agent-canvas-handle-center-offset))");
-    expect(inputRule).not.toContain("--agent-handle-ring-offset");
-    expect(outputRule).not.toContain("--agent-handle-ring-offset");
-    expect(ringRule).not.toContain("translateX(");
+    // 环的侧向对准：translateX 读每侧 offset（输入 -26px / 输出 +26px）——
+    // 替代旧机制的 --agent-canvas-handle-center-offset 变量注入
+    expect(ringRule).toContain("transform: translateX(var(--agent-handle-ring-offset, 0px))");
+    expect(inputRule).toContain("--agent-handle-ring-offset: -26px");
+    expect(outputRule).toContain("--agent-handle-ring-offset: 26px");
     expect(css).toContain(".agent-canvas-node-shell:has(> .agent-canvas-node:hover)");
     expect(css).toContain(".react-flow__handle.agent-canvas-node__handle:hover");
     expect(css).toContain("opacity: 1");
@@ -1428,10 +1452,9 @@ describe("AgentCanvasNodeRenderer", () => {
 
     expect(screen.getByLabelText("General Image node input").classList).toContain("react-flow__handle-left");
     expect(screen.getByLabelText("General Image node output").classList).toContain("react-flow__handle-right");
-    const shell = container.querySelector<HTMLElement>(".agent-canvas-node-shell");
-    expect(shell?.style.getPropertyValue("--agent-canvas-handle-center-offset")).toBe("12px");
-    expect(shell?.style.getPropertyValue("--agent-canvas-handle-hit-size")).toBe("40px");
-    expect(shell?.style.getPropertyValue("--agent-canvas-handle-ring-size")).toBe("14px");
+    // handle 尺寸/居中原先经 shell 的 CSS 变量注入，该机制已整个移除
+    // （react-flow 默认 handle + 页面 CSS 接管）；这里锁仍然成立的部分：
+    // 左右句柄可连接、无冗余加节点入口。
     expect(screen.queryByLabelText("Add an upstream node to General Image")).toBeNull();
     expect(screen.queryByLabelText("Add a downstream node to General Image")).toBeNull();
   });

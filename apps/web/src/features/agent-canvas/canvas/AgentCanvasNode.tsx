@@ -427,7 +427,13 @@ export function AgentCanvasNodeCard({
           onScriptContentHeightResolved={onScriptContentHeightResolved}
         />
         {status === "working" && (node.node_type === "image" || node.node_type === "video") ? (
-          <AgentCanvasMediaGenerationLoader mediaType={node.node_type} nodeId={node.node_id} />
+          // 有产出资产时加载器覆在媒体上（over-media 标记）；首Attempt 无产出
+          // 时走全屏 loader（不覆媒）
+          <AgentCanvasMediaGenerationLoader
+            mediaType={node.node_type}
+            nodeId={node.node_id}
+            overMedia={Boolean(asset)}
+          />
         ) : status === "working" && node.node_type !== "audio" ? (
           <div className="agent-canvas-node__working" aria-label={`${node.node_type} node is working`}>
             <span className="agent-canvas-node__working-orbit" aria-hidden="true" />
