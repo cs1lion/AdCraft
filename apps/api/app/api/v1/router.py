@@ -6,6 +6,7 @@ from app.api.v1.endpoints import (
     asset_references,
     assets,
     canvas_runtime,
+    creation,
     health,
     providers,
     provider_certifications,
@@ -28,6 +29,7 @@ api_router.include_router(provider_certifications.router)
 api_router.include_router(providers.router)
 api_router.include_router(provider_settings.router)
 api_router.include_router(replica.router)
+api_router.include_router(creation.router, prefix="/creation")
 api_router.include_router(video_editing.router)
 api_router.include_router(workflow_graph.router)
 api_router.include_router(workflow_nodes.router)

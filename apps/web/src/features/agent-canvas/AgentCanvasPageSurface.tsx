@@ -75,6 +75,7 @@ import { CreationFlowGuidance } from "./canvas/CreationFlowGuidance.tsx";
 import { AgentCanvasContextMenu } from "./canvas/AgentCanvasContextMenu.tsx";
 import { AgentCanvasLayoutConfirmation } from "./canvas/AgentCanvasLayoutConfirmation.tsx";
 import { AgentCanvasNodePicker } from "./canvas/AgentCanvasNodePicker.tsx";
+import { OutlineStarter } from "./OutlineStarter.tsx";
 import { AgentCanvasPointerBackgrounds } from "./canvas/AgentCanvasPointerBackgrounds.tsx";
 import { AgentCanvasConnectionLine } from "./canvas/AgentCanvasConnectionLine.tsx";
 import { AgentCanvasEdge } from "./canvas/AgentCanvasEdge.tsx";
@@ -2100,6 +2101,8 @@ export function AgentCanvasPage() {
                 </div>
               </div>
             </div>
+            {/* 从一句话开始（2026-09-29 简约好用分支）：纲领 → 展开分镜 → 一键生成 */}
+            {workflow.workflow_id ? <OutlineStarter workflowId={workflow.workflow_id} /> : null}
             <p className="agent-canvas-empty-hint">You can switch between them anytime —they don't limit each other.</p>
           </div>
         ) : null}
