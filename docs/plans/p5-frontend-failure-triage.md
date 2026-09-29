@@ -11,6 +11,9 @@
 | 2026-09-28（计划 §2） | 80 | 15 | D/E 工作前的实测基线 |
 | 2026-09-29 D/E 完成后 | 80 | 15 | 零新增（本阶段全部新测试绿） |
 | 2026-09-29 P5 首批修复后 | **75** | **10** | 修 5 个文件（见 §1） |
+| 2026-09-29 P5 二批（豁免转正+小批量）后 | **64** | **9** | 修 6 个文件/11 条，含一处真 bug |
+| 2026-09-29 P5 中批量后 | **49** | **5** | 修 2 个文件/15 条，含 runtime 四机制恢复 |
+| 2026-09-29 P5 大批量首批后 | **38** | **3** | 修 1 个文件/11 条，含 merge 丢失 CSS 恢复 |
 
 ## 1. 已修（5 个文件 / 5 条）
 
@@ -22,6 +25,19 @@
 | `src/pages/ProjectsPage.rename.test.tsx` | 1 | 测试硬编码 en-US 日期格式 "7/24/2026"，组件用浏览器默认 locale（zh-CN 下必挂） | 期望值改为与组件同一算法（locale 无关） | 本批 |
 | `src/quality/agentCanvasRetiredRoutes.test.ts` | 1 | D7/E6 让 ReplicaBlueprintPanel 引用 final-composition 路由族，触犯"agent-canvas 不得引用退役路由"闸；同时闸的正则误伤产品文案里的术语 | ① 路径构造移到 `src/api/finalRenderPaths.ts`（路由字面量回归 api 层）；② 闸模式精确为路由段 `/\/final-composition\//`（文案不再是误报——与可达性工具"误报比没检查更糟"同教训） | 本批 |
 
+### 二批/中批/大批量首批追加已修（2026-09-29 晚）
+
+| 文件 | 条数 | 根因 | 修法 | 提交 |
+|---|---|---|---|---|
+| `src/typographySystem.test.ts` | 1 | 白名单未涵盖可变字体轴内字重（650/620）；projects.css 的 300 出轴 | 300→400（轴外只能浏览器合成）；白名单纳入轴内档（豁免转正） | 61ec04f5 |
+| `src/styles/brandInteractionStyles.test.ts` | 1 | 两个并列主操作一明一暗的样式漂移 | __upload 恢复品牌亮底、__add 色值换 token（豁免转正） | 61ec04f5 |
+| `src/pages/HomePage.motion.test.tsx` | 2 | 观察者计数过期（Orbit 加入后 3→4）；reduced-motion 断言过宽 | 计数更新；改为"没有揭示观察者"（非动画观察者不关） | 61ec04f5 |
+| `src/features/agent-canvas/AgentCanvasPage.chrome.test.ts` | 3 | 源码形状锁停在演进前实现 | 对齐语义 snap / overlay 可见性过滤口径 | 61ec04f5 |
+| `editing/EditingPreviewStage.test.tsx` + `editingPlayableSequence.ts` | 4 | **真 bug**：时长口径混用（全部输入未裁切源时长 vs 可播放裁切窗）→ 尺比片段长、BGM 空舞台播放、钳位不到真实末端 | 解耦 `duration`（尺长）与新增 `playableDuration`（播放/钳位/BGM 口径）+2 锁定测试 | 61ec04f5 |
+| `src/app/routeProviders.test.tsx` | 9 | fixture 未跟上 /providers 配置就绪检查；Home 路水合断言过期；**win32 真 bug**：spawn npm ENOENT | URL 分发 mock；对齐 listProjects 活行为；npm.cmd + shell:true | 40d3fdc5 |
+| `runtime/useAgentCanvasRuntime.test.tsx` | 6 | 73212c76 重构连带删除四个活性机制（tests 即规格） | 恢复终态补偿 250ms / 非终态 120ms 合批 / 开流 replayChanged 门控；修 runNode 过严守卫（ready 可 Regenerate）；测试文件补 RTL cleanup（拆跨用例定时器竞态） | 40d3fdc5 |
+| `canvas/AgentCanvasNode.test.tsx` | 11 | 组件演进（媒体 URL/lazy/尺寸实测/视频 poster 卡片/handle 机制）+ **merge 冲突丢失物** | 测试对齐新契约；**恢复点阵/reveal CSS 全家+keyframes**（组件在渲染但无样式）；删死 loader CSS；补 overMedia 接线 | 5b2f1f2d |
+
 ## 2. 豁免（需设计/产品裁决，不盲修）
 
 | 文件 | 条数 | 冲突双方 | 定责 |
@@ -29,18 +45,17 @@
 | `src/styles/brandInteractionStyles.test.ts` | 1 | 测试锁"非聊天主操作用品牌亮底（`color: var(--text-inverse)`）"，CSS 实为暗底 `#292929/#f5f5f5`；同文件 `.agent-asset-browser__add` 仍遵守品牌亮底 | **设计裁决**：`.agent-asset-browser__upload` 是漂成 monochrome 的回归，还是 chrome monochrome 化的有意变更？定后单向修（改 CSS 或改测试），默认倾向恢复品牌亮底（与 `__add` 一致） |
 | `src/typographySystem.test.ts` | 1 | 测试锁字重白名单 {400,500,600,700,800,900}，CSS 用可变字体中间字重（650/620/300）。其中 650/620 在 Manrope 可变轴 (400–800) 内合法；`projects.css` 的 300 **超出轴范围**（浏览器合成） | **设计裁决 + 一处真修**：把白名单扩为"可变轴内中间字重 + 静态档"（650/620 转正），并把 `.create-plus` 的 300 改为 400（轴外合成是无意义样式） |
 
-## 3. 待修（73 条 / 8 文件）——按根因分类
+## 3. 待修（38 条 / 3 文件）——按根因分类（2026-09-29 晚）
 
 | 文件 | 条数 | 根因类别 | 证据（代表失败） | 下一步 |
 |---|---|---|---|---|
-| `workbench/AgentCanvasInlineWorkbench.test.tsx` | 22 | **组件表面漂移**：按钮/标签改名或重组（"Generate audio"×8 找不到、"Duration seconds"标签×4 找不到、"Retry video node"×1） | 大量 `Unable to find role=button/label` | 逐个对齐当前 DOM（本批未动：集中了工作台最大一块 UI 漂移，需专门一轮） |
-| `canvas/AgentCanvasNode.test.tsx` | 15 | **状态派生断言漂移**（"expected false to be true"/status 断言） | 15 条里 13 条 AssertionError | 逐条比对 `AgentCanvasNode` 当前状态机；注意本会话验证过其失败集与基线一致，非本次改动引入 |
-| `chat/useAgentCanvasChat.test.tsx` | 12 | **hook 行为漂移**：调用序列/参数/authoring 冲突店状态断言 | "expected {scope:'timeline'} to be null"×4、call-count×3 | 逐条核对 chat hook 当前契约；冲突店断言需确认是行为变更还是测试过期 |
-| `app/routeProviders.test.tsx` | 9 | **混合**：8×"API ready"等待不到（mock 就绪时序）+ 1×`spawnSync npm ENOENT` | 见证据列 | npm ENOENT 属**环境限制**（worker 内 npm 不在 PATH，ENV-SKIP 性质）；其余 8 条查 provider 就绪门 |
-| `runtime/useAgentCanvasRuntime.test.tsx` | 6 | 断言漂移 + 1 条 NodeRunBlockedError | 5 Assertion + 1 抛错 | 同上，逐条定责 |
-| `editing/EditingPreviewStage.test.tsx` | 4 | 断言漂移（预览产物断言） | 4 Assertion | 小批量，可直接修 |
-| `AgentCanvasPage.chrome.test.ts` | 3 | chrome 结构断言漂移 | 3 Assertion | 小批量，可直接修 |
-| `pages/HomePage.motion.test.tsx` | 2 | 动画偏好断言漂移 | 2 Assertion | 小批量，可直接修 |
+| `workbench/AgentCanvasInlineWorkbench.test.tsx` | 22 | **组件表面漂移**：按钮/标签改名或重组（"Generate audio"×8 找不到、"Duration seconds"标签×4 找不到、"Retry video node"×1） | 大量 `Unable to find role=button/label` | 逐个对齐当前 DOM（集中了工作台最大一块 UI 漂移，需专门一轮） |
+| `chat/useAgentCanvasChat.test.tsx` | 12 | **hook 契约漂移**：调用序列/参数/authoring 冲突店状态/guidance revision 冲突文案 | "expected {scope:'timeline'} to be null"×4、call-count/args×5、conflict×1 | 逐条核对 chat hook 当前契约；无共享根因，需逐条定责 |
+| `canvas/AgentCanvasNode.test.tsx` | 4 | **merge 丢失的行为重建**：① 揭示门控 trio（working→ready 后 awaiting→revealed 两段式）——节点卡的媒体门控（output_asset_id gate + CanvasMediaPreview revealToken 接线）在 33580aaf 合并时丢失，CSS 已由 5b2f1f2d 恢复但组件接线未接；② 状态优先级（persisted vs runtime.visible_status 谁赢）需产品定夺 | 见各用例 | 揭示 trio 按失败测试所锁规格重建卡片媒体门控；状态优先级需设计裁决 |
+
+**死代码（发现，未处理）**：`CanvasMediaPreview`/`CanvasVideoPreview` 当前无产品消费方
+（仅各自身测试）——揭示链的组件侧已在卡片中脱落，CSS 已恢复。按仓规"要么接上
+要么删"：重建卡片门控时接上，或连同 trio 测试一并退役（需设计裁决后单向执行）。
 
 ## 4. 此后纪律（对应 P5"新增失败 = 0"）
 
