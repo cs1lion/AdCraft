@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -22,6 +23,8 @@ from app.tools.media_provider_protocol import (
     MediaConfigurationError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 #: The reference roles a legacy segment's ``input_assets`` may carry as still
 #: pictures.  One definition, because the Agnes branch and the legacy content
@@ -41,8 +44,23 @@ SEEDANCE_SEGMENT_IMAGE_ROLES = frozenset(
 #: ``videos`` -- an array of objects with its own budget -- so it consumes no
 #: image slot.  That is what lets the 3D previs camera-motion reference ride
 #: alongside the finished character and scene stills instead of being traded
-#: against them, which is the whole point of the channel.
+#: against them, which is the whole point of the channel.  (The ``-flash`` SKU
+#: is the exception: it refuses the parameter outright and its payloads are
+#: images-only -- see ``_is_agnes_flash_model``.)
 SEEDANCE_SEGMENT_MOTION_ROLE = "motion_reference"
+
+
+def _is_agnes_flash_model(model_id: str | None) -> bool:
+    """The Agnes SKU whose request body may only carry images.
+
+    2026-09-29 作者裁定（测试期）：``agnes-video-2.5-flash`` 对 ``videos``
+    参数整单拒绝（HTTP 400「当前模型不支持 videos」——见
+    ``provider_model_catalog`` 该行的留痕），音频参数按"只传图片"的同一口径
+    一并收口。此函数是两个 Agnes payload 分支的开关；flash 支持视频参数后
+    删掉它的两个调用点即可恢复三数组契约。
+    """
+
+    return "flash" in (model_id or "").lower()
 
 
 def _video_generation_task_url(endpoint: str, task_id: str) -> str:
@@ -108,7 +126,13 @@ class VolcengineSeedanceAdapter:
             # decided by the union, not by the image list alone -- a segment
             # bound only to a previs clip used to ship as ``"text"`` with a
             # ``videos`` array attached to a mode that ignores it.
-            images, videos, described = _seedance_segment_reference_plan(segment)
+            # The ``-flash`` SKU is the exception to all of that: its body is
+            # images-only (2026-09-29 作者裁定), so the clip is withheld here
+            # rather than sent into a guaranteed 400.
+            images, videos, described = _seedance_segment_reference_plan(
+                segment,
+                images_only=_is_agnes_flash_model(self._settings.video_generation_model),
+            )
             if images:
                 agnes_payload["images"] = images
             if videos:
@@ -184,13 +208,21 @@ def _agnes_manifest_payload(manifest: SeedanceInputManifestV1) -> dict[str, Any]
     mode that ignores it -- the media left the building and the provider never
     saw any of it.  Any of the three arrays now selects reference mode.
 
-    Nothing is trimmed here.  How many of each kind the provider accepts is
-    already enforced per media type by ``apply_provider_reference_limits`` over
-    the same catalog ``reference_limits``, which also records what it withheld
-    as an omission; a second copy of that budget in the adapter could only
-    disagree with it, and the manifest is frozen and carries no omission field
-    to record the disagreement in.  So this layer serializes what it is given
-    and fails loudly on anything it cannot express.
+    The ``-flash`` SKU breaks the three-array rule on purpose (2026-09-29
+    作者裁定, test period): its body is images-only, so non-image inputs are
+    withheld with a warning instead of serialized.  Upstream
+    ``apply_provider_reference_limits`` should already have kept them out of
+    the manifest (the catalog row declares ``video: 0``/``audio: 0`` for that
+    SKU and records the omission); reaching the warning means it did not, and
+    the warning says which binding fell out.
+
+    Nothing else is trimmed here.  How many of each kind the provider accepts
+    is already enforced per media type by ``apply_provider_reference_limits``
+    over the same catalog ``reference_limits``, which also records what it
+    withheld as an omission; a second copy of that budget in the adapter could
+    only disagree with it, and the manifest is frozen and carries no omission
+    field to record the disagreement in.  So this layer serializes what it is
+    given and fails loudly on anything it cannot express.
     """
 
     payload: dict[str, Any] = {
@@ -207,7 +239,18 @@ def _agnes_manifest_payload(manifest: SeedanceInputManifestV1) -> dict[str, Any]
     #: (array name, position in that array, replacement) per reference, in the
     #: order the arrays are built -- which is the manifest's own order.
     described: list[tuple[str, int, str]] = []
+    images_only = _is_agnes_flash_model(manifest.model_id)
     for item in manifest.media_inputs:
+        if item.media_type != "image" and images_only:
+            logger.warning(
+                "agnes flash payload withholds %s reference %s (%s): the -flash "
+                "SKU accepts images only (2026-09-29 ruling); upstream "
+                "apply_provider_reference_limits should already have omitted it",
+                item.media_type,
+                item.binding_id,
+                item.label,
+            )
+            continue
         url = _agnes_reference_url(item)
         description = _agnes_reference_description(item)
         if item.media_type == "image":
@@ -359,6 +402,8 @@ def _seedance_segment_reference_description(asset: dict[str, Any]) -> str:
 
 def _seedance_segment_reference_plan(
     segment: dict[str, Any],
+    *,
+    images_only: bool = False,
 ) -> tuple[list[str], list[dict[str, Any]], list[tuple[str, int, str]]]:
     """Split a legacy segment's references into the three arrays Agnes accepts.
 
@@ -374,6 +419,12 @@ def _seedance_segment_reference_plan(
     model that simply ignored the reference.  That is the failure this whole
     channel used to have -- and unlike an image, a clip cannot be inlined as a
     data URL, because the payload is the file and the provider has to stream it.
+
+    ``images_only`` is the ``-flash`` carve-out (2026-09-29 作者裁定): that SKU
+    refuses the ``videos`` parameter outright, so the clip is withheld with a
+    warning rather than refused or sent -- the segment degrades to its images
+    and says so in the log, which is the only channel left once the provider
+    stopped accepting the parameter.
     """
 
     images: list[str] = []
@@ -385,6 +436,13 @@ def _seedance_segment_reference_plan(
         role = asset.get("role")
         if role not in SEEDANCE_SEGMENT_IMAGE_ROLES:
             if role != SEEDANCE_SEGMENT_MOTION_ROLE:
+                continue
+            if images_only:
+                logger.warning(
+                    "agnes flash payload withholds motion reference %s: the "
+                    "-flash SKU accepts images only (2026-09-29 ruling)",
+                    asset.get("asset_id") or asset.get("url") or "<unnamed>",
+                )
                 continue
             url = asset.get("model_input_value")
             if not isinstance(url, str):

@@ -424,6 +424,22 @@ describe("in-place regeneration contract", () => {
     }).latest_attempt?.status).toBe(status);
   });
 
+  // 2026-09-29 实机回归：拉片复刻建出的 replica 节点带
+  // creative_role="replica_blueprint"；校验集漏了这个角色时，建蓝图的
+  // mutation 响应被判 invalid（确认信息不出现），且库里已有的 replica
+  // 节点在画布上直接不渲染。
+  it("normalizes a replica_blueprint node (拉片复刻建蓝图)", () => {
+    const payload = validWorkflowPayload();
+    const node = normalizeCanvasNodeV2({
+      ...payload.nodes[0],
+      node_id: "node-replica-1",
+      node_type: "replica",
+      creative_role: "replica_blueprint",
+    });
+    expect(node.node_type).toBe("replica");
+    expect(node.creative_role).toBe("replica_blueprint");
+  });
+
   it("rejects retired variation and Binding required fields", () => {
     const payload = validWorkflowPayload();
     expect(() => normalizeCanvasNodeV2({
@@ -432,8 +448,7 @@ describe("in-place regeneration contract", () => {
     })).toThrow(/variation_draft/i);
     expect(() => normalizeCanvasBindingV2({
       ...payload.bindings[0],
-      required: false,
-    })).toThrow(/required/i);
+      required: false,    })).toThrow(/required/i);
   });
 });
 

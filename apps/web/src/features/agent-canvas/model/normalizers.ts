@@ -223,6 +223,10 @@ const CANVAS_CREATIVE_ROLES = new Set<CanvasCreativeRoleV2>([
   "scene_3d_previs",
   "storyboard_sequence",
   "storyboard_video",
+  // 复刻蓝图节点（ReplicaTeardown 建蓝图时落这个角色）。漏了它，建蓝图返回的
+  // mutation 响应会被 normalizer 判 invalid（"⚠ Invalid"toast），确认信息不
+  // 出现，且库里已有的 replica 节点在画布上直接不渲染——2026-09-29 实机发现。
+  "replica_blueprint",
   "voice_cast",
   "bgm",
   "general_text",

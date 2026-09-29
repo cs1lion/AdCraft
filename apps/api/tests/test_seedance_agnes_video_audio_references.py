@@ -177,6 +177,117 @@ class TestModeCoversEveryReferenceArray:
         }
 
 
+class TestFlashSkuIsImagesOnly:
+    """2026-09-29 作者裁定（测试期）：flash 方案的请求体只传图片。
+
+    ``agnes-video-2.5-flash`` 对 ``videos`` 参数整单拒绝（HTTP 400「当前模型
+    不支持 videos」，留痕在 ``provider_model_catalog`` 该行），音频参数按"只传
+    图片"口径一并收口。catalog 的 flash 行 ``reference_limits`` 已是
+    ``video: 0``/``audio: 0``，正常情况下 ``apply_provider_reference_limits``
+    在上游就把这类引用拦下并记入 omitted；这里的用例锁的是适配器侧的第二道
+    防线——manifest 里真出现非图片引用时，payload 不得带上它们。
+    """
+
+    FLASH_MODEL = "agnes-video-2.5-flash"
+
+    def _flash_adapter(self) -> VolcengineSeedanceAdapter:
+        return VolcengineSeedanceAdapter(Settings(video_generation_model=self.FLASH_MODEL))
+
+    def _flash_manifest(
+        self, *media: SeedanceMediaInputV1, prompt: str = "A crane up over the birch."
+    ) -> SeedanceInputManifestV1:
+        return _manifest(*media, prompt=prompt).model_copy(update={"model_id": self.FLASH_MODEL})
+
+    def test_video_and_audio_references_are_withheld_from_the_payload(self) -> None:
+        payload = self._flash_adapter().payload_for_manifest(
+            self._flash_manifest(
+                _media("board", label="Image 1"),
+                _media("previs", media_type="video"),
+                _media("theme", media_type="audio"),
+            )
+        )
+        assert payload["images"] == ["https://cdn.example.com/ref.png"]
+        assert "videos" not in payload
+        assert "audios" not in payload
+        assert payload["mode"] == "reference"
+        # 占位符与数组是同一条断言说两遍：不发的引用不得在 prompt 里留号
+        assert "<Picture 1>:" in payload["prompt"]
+        assert "<Video 1>" not in payload["prompt"]
+        assert "<Audio 1>" not in payload["prompt"]
+
+    def test_a_non_image_only_request_ships_as_text_without_arrays(self) -> None:
+        payload = self._flash_adapter().payload_for_manifest(
+            self._flash_manifest(
+                _media("previs", media_type="video"),
+                _media("theme", media_type="audio"),
+            )
+        )
+        assert payload["mode"] == "text"
+        assert set(payload) == {
+            "model",
+            "prompt",
+            "mode",
+            "seconds",
+            "size",
+            "aspect_ratio",
+        }
+        assert payload["prompt"] == "A crane up over the birch."
+
+    def test_the_withheld_reference_is_logged_with_its_binding(self, caplog) -> None:
+        """ withheld silently is the failure this channel already had once."""
+
+        with caplog.at_level("WARNING", logger="app.tools.seedance_adapter"):
+            self._flash_adapter().payload_for_manifest(
+                self._flash_manifest(_media("previs", media_type="video"))
+            )
+        assert any(
+            record.levelname == "WARNING"
+            and "previs" in record.getMessage()
+            and "images only" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_a_motion_clip_is_withheld_from_a_legacy_segment_payload(self) -> None:
+        adapter = self._flash_adapter()
+        segment = {
+            "prompt": "A crane up over the birch.",
+            "duration_seconds": 5,
+            "input_assets": [
+                {
+                    "role": "storyboard",
+                    "model_input_type": "image_url",
+                    "model_input_value": "https://cdn.example.com/board.png",
+                },
+                {
+                    "role": "motion_reference",
+                    "model_input_type": "image_url",
+                    "model_input_value": "https://cdn.example.com/previs.mp4",
+                },
+            ],
+        }
+        payload = adapter.payload_for_segment(segment)
+        assert payload["images"] == ["https://cdn.example.com/board.png"]
+        assert "videos" not in payload
+        assert payload["mode"] == "reference"
+
+    def test_the_non_flash_sku_still_carries_the_clip(self) -> None:
+        """The carve-out is per SKU, not a global removal of the channel."""
+
+        adapter = VolcengineSeedanceAdapter(Settings(video_generation_model=AGNES_MODEL))
+        segment = {
+            "prompt": "A crane up over the birch.",
+            "duration_seconds": 5,
+            "input_assets": [
+                {
+                    "role": "motion_reference",
+                    "model_input_type": "image_url",
+                    "model_input_value": "https://cdn.example.com/previs.mp4",
+                },
+            ],
+        }
+        payload = adapter.payload_for_segment(segment)
+        assert payload["videos"] == [{"url": "https://cdn.example.com/previs.mp4"}]
+        assert payload["mode"] == "reference"
 class TestReferencePlaceholders:
     def test_each_array_numbers_from_one_in_submission_order(self) -> None:
         payload = _adapter().payload_for_manifest(

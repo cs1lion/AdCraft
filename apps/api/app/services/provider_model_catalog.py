@@ -807,15 +807,22 @@ _TRUSTED_MANIFESTS = (
     # the refusal.  With a 0 below, a node bound to this SKU cannot accumulate a
     # video reference at all, which is the correct behaviour for an endpoint that
     # rejects the parameter outright.
+    #
+    # 2026-09-29 作者裁定（测试期口径"只传图片"）：``audio`` 从 3 收口为 0，
+    # ``accepted_input_types`` 同步去掉 ``audio``。上一段"``-flash`` can only
+    # ever carry ``images``/``audio``"是 09-24 的观测，本轮按作者口径再收紧：
+    # 少声明只会损失预算（少送一路参考），多声明会整单 400——与本行一贯的
+    # "under-declare"哲学同向。限免期/preview 结束或 flash 支持视频参数后，
+    # 凭一次被接受的请求把 video（及 audio）放回去。
     TrustedModelManifest(
         provider_id="volcengine_ark",
         provider_model_id="agnes-video-2.5-flash",
         display_name="Agnes Video 2.5 Flash",
         capability="video",
         capability_metadata={
-            "accepted_input_types": ["text", "image", "audio"],
+            "accepted_input_types": ["text", "image"],
             "max_references": 8,
-            "reference_limits": {"image": 5, "video": 0, "audio": 3},
+            "reference_limits": {"image": 5, "video": 0, "audio": 0},
             "reference_image_aspect_ratio_range": [0.4, 2.5],
             "supported_parameters": [
                 "aspect_ratio",

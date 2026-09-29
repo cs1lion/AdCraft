@@ -50,9 +50,42 @@ class _RuntimeModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+#: Credential-bearing key suffixes.  The check is anchored on *suffix identity*
+#: rather than a substring so identifier-style fields are not mistaken for
+#: secrets: ``start_token_id`` / ``end_token_id`` -- the replica anchor events'
+#: word-level token ids -- carry the fragment "token" and a substring check
+#: rejected the whole anchor event, which took every replica run down with a
+#: 500 ("Run intent snapshots cannot contain transport values", 2026-09-29
+#: live).  Anything ending in ``_id`` is an identifier reference, never a
+#: secret value, and ``api_key`` / ``authorization`` stay substring-checked
+#: because they name the credential itself however they are spelled.
+_FORBIDDEN_CREDENTIAL_SUFFIXES = frozenset(
+    {
+        "key",
+        "keys",
+        "token",
+        "tokens",
+        "secret",
+        "secrets",
+        "credential",
+        "credentials",
+        "authorization",
+        "authorizations",
+    }
+)
+
+
+def _is_credential_key(key: str) -> bool:
+    lowered = key.lower()
+    if lowered.endswith("_id"):
+        return False
+    if any(fragment in lowered for fragment in ("api_key", "authorization")):
+        return True
+    return lowered.rsplit("_", 1)[-1] in _FORBIDDEN_CREDENTIAL_SUFFIXES
+
+
 def _contains_forbidden_transport(value: object, *, key: str | None = None) -> bool:
-    forbidden_key_fragments = ("api_key", "token", "secret", "credential", "authorization")
-    if key and any(fragment in key.lower() for fragment in forbidden_key_fragments):
+    if key and _is_credential_key(key):
         return True
     if isinstance(value, str):
         normalized = value.strip().lower()
