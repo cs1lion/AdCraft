@@ -305,6 +305,11 @@ async def assemble_film(request: AssembleFilmRequest) -> AssembleFilmResponse:
     render_error = ""
     try:
         from app.schemas.workflow_v2 import WorkflowV2TimelineRenderRequest
+        from app.services.creation.canvas_render_bridge import (
+            BridgeShotV1,
+            bridge_canvas_workflow,
+            ensure_canvas_asset_projections,
+        )
         from app.services.v2_final_composition_render_service import (
             V2FinalCompositionRenderService,
         )
@@ -313,6 +318,35 @@ async def assemble_film(request: AssembleFilmRequest) -> AssembleFilmResponse:
         )
 
         timeline_service = V2FinalCompositionTimelineService(settings)
+        # 桥：canvas 工作流 + 资产投影进 v2 存储，标准渲染栈才够得着（幂等）。
+        ensure_canvas_asset_projections(
+            settings, [str(n.output_asset_id) for n in nodes if n.output_asset_id]
+        )
+        bridge_canvas_workflow(
+            settings,
+            request.workflow_id,
+            project_id=getattr(workflow, "project_id", None),
+            name=str(
+                getattr(workflow, "name", None)
+                or getattr(workflow, "title", None)
+                or "拉片复刻成片"
+            ),
+            shots=[
+                BridgeShotV1(
+                    index=index,
+                    asset_id=str(n.output_asset_id),
+                    asset_version_id=n.output_asset_version_id,
+                    duration_seconds=1.0,
+                )
+                for index, n in enumerate(
+                    sorted(
+                        (x for x in nodes if x.output_asset_id),
+                        key=lambda x: x.node_id,
+                    ),
+                    start=1,
+                )
+            ],
+        )
         timeline = timeline_service.get_timeline(request.workflow_id)
         started = V2FinalCompositionRenderService(settings).start_render(
             request.workflow_id,
