@@ -90,7 +90,10 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
         } else if (job.status === "failed") {
           setError(job.error || "渲染失败");
         } else if (job.status === "cancelled") {
-          setNotice("已取消：后端收到取消请求，渲染已停止。");
+          // 口径对齐 D8：协作式取消——后端只把任务标记取消并请求渲染线程在
+          // 阶段间隙停，当前阶段的 Blender 子进程可能还在收尾。不说"渲染已
+          // 停止"（endpoint 的原文也只是 "Cancellation requested."）。
+          setNotice("已取消：后端已接受取消请求，渲染将在阶段边界停止。");
         } else if (attempts >= POLL_LIMIT) {
           setError("渲染轮询超时（5 分钟）——任务可能仍在后台进行，请稍后重新提交查看。");
         }
@@ -113,7 +116,7 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
     try {
       await cancelScene3DRender(jobId);
       setStatus("cancelled");
-      setNotice("已取消：后端收到取消请求，渲染已停止。");
+      setNotice("已取消：后端已接受取消请求，渲染将在阶段边界停止。");
     } catch (err) {
       // 取消失败不假装成功：任务可能仍在跑，如实说
       setError(

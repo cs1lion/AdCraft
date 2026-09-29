@@ -861,6 +861,12 @@ describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {
     openSourceTab();
     await waitFor(() => expect(screen.getByText("🎨 字幕配方")).toBeTruthy());
 
+    // 0) 文本框常驻：没导出过也要能直接粘贴 .adrecipe 导入（E2 订正——
+    //    原条件渲染下 recipeText 为空即无文本框，"请先粘贴到文本框"的指引
+    //    对着一个不存在的控件，首次导入无从下手）
+    const emptyRecipeBox = screen.getByPlaceholderText(/<adrecipe/) as HTMLTextAreaElement;
+    expect(emptyRecipeBox.value).toBe("");
+
     // 1) 导出当前配方 → .adrecipe 文本进文本框（可改）
     fireEvent.click(screen.getByText("🎨 导出配方 .adrecipe"));
     await waitFor(() => expect(screen.getByText(/已导出配方/)).toBeTruthy());

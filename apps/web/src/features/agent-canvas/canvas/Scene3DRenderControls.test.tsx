@@ -137,7 +137,9 @@ describe("Scene3DRenderControls (E6)", () => {
       expect((cancelCall as unknown as [string, RequestInit])[1].method).toBe("POST");
     });
     await waitFor(() => expect(screen.getByTestId("scene-3d-render-notice")).toBeTruthy());
-    expect(screen.getByText(/已取消：后端收到取消请求/)).toBeTruthy();
+    expect(screen.getByText(/已取消：后端已接受取消请求/)).toBeTruthy();
+    // 不说"渲染已停止"：协作式取消只保证阶段边界停（同 D8 口径）
+    expect(screen.getByText(/渲染将在阶段边界停止/)).toBeTruthy();
   });
 
   it("surfaces a failed job with the server error", async () => {

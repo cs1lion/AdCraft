@@ -20,7 +20,7 @@
 | 文件 | 条数 | 根因 | 修法 | 提交 |
 |---|---|---|---|---|
 | `src/api/agentCanvasClient.test.ts` | 1 | frozen 连接策略契约要求全部 9 种节点类型，fixture 停在 6 种（漏 scene-3d/voice-cast/replica） | 按后端 `agent_canvas_connection_policy` 真实值补齐 `binding_kind_by_source_type` 与 `target_node_types` | 本批 |
-| `src/pages/HomeStaticBackground.asset.test.ts` | 1 | Three.js 背景移除后 `three`/`@types/three`/`@react-three/*` 依赖忘删（src 零 import） | package.json 删 4 个包 + `npm install --package-lock-only --offline` 重新生成锁 | 本批 |
+| `src/pages/HomeStaticBackground.asset.test.ts` | 1 | **误删，已恢复（订正）**：本测试断言 package.json 不得含 `three`/`@types/three`（首页 Three.js 背景移除的有意留痕）。本批据此把 `three`/`@types/three`/`@react-three/*` 4 个包删除，理由写成"依赖忘删（src 零 import）"——**该理由是误判**：`SceneScript3DPreview.tsx`（实时 3D 预览，经 `SceneScript3DEditor`/`SceneScriptPanel` 上车）一直在 import 它们。且 `--package-lock-only` 不剪枝 node_modules、测试又 `vi.mock` 掉该组件 → 本地 tsc/vitest 全绿，**干净安装（npm ci）直接断链** | 恢复 4 个依赖（package.json + 锁还原至删除前状态）；测试改锁"依赖在场"（背景资产缺席由同文件第一条测试锁）；新增 `quality/mockedModuleDependencies.test.ts` 闸：被 vi.mock 的模块，其依赖不得从 package.json 删除 | 46ec7e14（删，误）→ 订正提交（恢复） |
 | `src/features/agent-canvas/canvas/AgentCanvasNodePicker.test.tsx` | 1 | 规范节点类型扩到 9（复刻/3D/配音三线依赖），测试断言停在 6 | 更新为 9 种 + 新类型图标映射 + 标签"3D Previs" | 本批 |
 | `src/pages/ProjectsPage.rename.test.tsx` | 1 | 测试硬编码 en-US 日期格式 "7/24/2026"，组件用浏览器默认 locale（zh-CN 下必挂） | 期望值改为与组件同一算法（locale 无关） | 本批 |
 | `src/quality/agentCanvasRetiredRoutes.test.ts` | 1 | D7/E6 让 ReplicaBlueprintPanel 引用 final-composition 路由族，触犯"agent-canvas 不得引用退役路由"闸；同时闸的正则误伤产品文案里的术语 | ① 路径构造移到 `src/api/finalRenderPaths.ts`（路由字面量回归 api 层）；② 闸模式精确为路由段 `/\/final-composition\//`（文案不再是误报——与可达性工具"误报比没检查更糟"同教训） | 本批 |

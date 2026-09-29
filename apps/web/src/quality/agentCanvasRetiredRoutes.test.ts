@@ -104,4 +104,39 @@ describe("Agent Canvas production route boundary", () => {
     ];
     expect(violations).toEqual([]);
   });
+
+  // 46ec7e14 把 final-composition 路由字面量从 agent-canvas 移进了
+  // `api/finalRenderPaths.ts`——那在本闸的扫描树之外，路由引用一夜之间失去
+  // 管辖：若哪天这两个 builder 被指向别的退役路由族，没有任何灯会红。
+  // 这里把该文件纳入管辖：全文件只允许一个 final-composition state 路由族
+  // 字面量（cancel 路径由它派生），多一个退役字面量都不行。
+  it("keeps finalRenderPaths.ts the single sanctioned home for final-composition routes", () => {
+    const finalRenderPaths = readFileSync(resolve(sourceRoot, "api/finalRenderPaths.ts"), "utf8");
+
+    // 全文件唯一允许的路由字面量（cancel 路径由它派生，自身不生成新字面量）
+    const sanctionedRouteLiteral =
+      "/api/v2/workflows/${encodeURIComponent(workflowId)}/final-composition/renders/${encodeURIComponent(renderId)}";
+    const routeLiterals = [
+      ...finalRenderPaths.matchAll(/[`"']([^`"']*\/api\/[^`"']*)[`"']/g),
+    ].map((match) => match[1]);
+
+    const violations = [
+      ...routeLiterals
+        .filter((literal) => literal !== sanctionedRouteLiteral)
+        .map((literal) => `contains route literal ${literal}`),
+      ...(finalRenderPaths.includes("v2Client") ? ["imports the broad v2 client"] : []),
+      ...retiredClientMethods
+        .filter((method) => finalRenderPaths.includes(method))
+        .map((method) => `uses retired client method ${method}`),
+      // 剥掉唯一合法字面量后再跑退役路由模式：白名单之外的任何形态都算违规
+      ...retiredRoutePatterns.filter((pattern) =>
+        pattern.test(routeLiterals.reduce((text, literal) => text.replaceAll(literal, ""), finalRenderPaths)),
+      ).map((pattern) => `contains ${pattern.source}`),
+      // 消费方（ReplicaBlueprintPanel 等）依赖这两个导出
+      ...(finalRenderPaths.includes("export function finalRenderStatePath") ? [] : ["missing finalRenderStatePath export"]),
+      ...(finalRenderPaths.includes("export function finalRenderCancelPath") ? [] : ["missing finalRenderCancelPath export"]),
+    ];
+
+    expect(violations).toEqual([]);
+  });
 });

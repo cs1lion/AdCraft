@@ -1143,27 +1143,28 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                 📥 导入配方
               </button>
             </div>
-            {recipeText && (
-              <textarea
-                value={recipeText}
-                onChange={(event) => setRecipeText(event.target.value)}
-                placeholder={'<adrecipe version="1" kind="subtitle-style">…'}
-                spellCheck={false}
-                style={{
-                  width: "100%",
-                  minHeight: 64,
-                  marginBottom: 6,
-                  background: "#101018",
-                  border: "1px solid #2a2a4a",
-                  borderRadius: 3,
-                  color: "#8f8",
-                  fontSize: 10,
-                  fontFamily: "monospace",
-                  padding: "4px 6px",
-                  resize: "vertical",
-                }}
-              />
-            )}
+            {/* E2 订正：textarea 常驻。原条件渲染（recipeText 非空才出现）让
+                "请先把 .adrecipe 配方文本粘贴到文本框"无从下手——recipeText 只有
+                导出/输入后才非空，首次导入是鸡生蛋。常驻后粘贴即用。 */}
+            <textarea
+              value={recipeText}
+              onChange={(event) => setRecipeText(event.target.value)}
+              placeholder={'<adrecipe version="1" kind="subtitle-style">…'}
+              spellCheck={false}
+              style={{
+                width: "100%",
+                minHeight: 64,
+                marginBottom: 6,
+                background: "#101018",
+                border: "1px solid #2a2a4a",
+                borderRadius: 3,
+                color: "#8f8",
+                fontSize: 10,
+                fontFamily: "monospace",
+                padding: "4px 6px",
+                resize: "vertical",
+              }}
+            />
             <button
               onClick={() => void startDirectRender()}
               disabled={renderPhase === "starting" || renderPhase === "polling"}

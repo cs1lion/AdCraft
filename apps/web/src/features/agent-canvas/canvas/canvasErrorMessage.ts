@@ -43,6 +43,11 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   // MCP 桥（BlenderMcpClient）起不来：本地服务未启动时给同等级别的可行动说明。
   mcp_unavailable:
     "The Blender MCP service could not be started, so this 3D action cannot run. Start the local Blender MCP service and retry, or run without the MCP bridge.",
+  // D4: apply-operations 的 MCP 扩展操作在运行时被工具拒绝——整个批次
+  // all-or-nothing 拒绝、什么都不落（不是"操作无效"的校验问题，是桥那头的事）。
+  // 看得懂 + 说得出下一步。
+  scene_operations_mcp_failed:
+    "Some 3D scene operations were rejected by the Blender MCP service; nothing was applied. Check that the local Blender MCP service is running and healthy, then retry.",
 };
 
 export function canvasAuthoringErrorMessage(error: unknown): string {

@@ -125,6 +125,23 @@ describe("canvasAuthoringErrorMessage", () => {
     expect(message).toContain("without the MCP bridge");
   });
 
+  // D4: apply-operations 的 MCP 扩展操作运行时被拒——all-or-nothing 批次拒绝、
+  // 什么都不落。要翻译成"看得懂 + 有下一步"，不能漏后端原文。
+  it("explains rejected MCP scene operations with the next step (D4)", () => {
+    const message = canvasAuthoringErrorMessage(new V2ApiError({
+      status: 400,
+      code: "scene_operations_mcp_failed",
+      message: "1 MCP extension op(s) failed; nothing was applied.",
+      details: {},
+      violations: [],
+      suggestedActions: [],
+      payload: null,
+    }));
+    expect(message).toContain("rejected by the Blender MCP service");
+    expect(message).toContain("nothing was applied");
+    expect(message).not.toContain("MCP extension op(s) failed");
+  });
+
   // 运行期投影错误是 normalizeRuntimeError 的普通对象（非 V2ApiError 实例），
   // 同一张表必须也对它生效——否则节点上的红字仍漏出后端原始 message。
   it("maps a normalized runtime error object (node failure surface)", () => {

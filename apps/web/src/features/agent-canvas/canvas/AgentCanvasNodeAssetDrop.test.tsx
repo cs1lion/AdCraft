@@ -31,7 +31,9 @@ vi.mock("@xyflow/react", async () => {
 });
 
 // The lazy workbench and the 3D surface are irrelevant to a drop gesture.
-vi.mock("./workbench/AgentCanvasInlineWorkbench.tsx", () => ({
+// 路径订正：这个 mock 原指向 ./workbench/…（canvas 下从无该目录，vitest 静默
+// 空转——mockedModuleDependencies 闸抓到）；真文件在上层 workbench/。
+vi.mock("../workbench/AgentCanvasInlineWorkbench.tsx", () => ({
   AgentCanvasInlineWorkbench: () => null,
 }));
 
