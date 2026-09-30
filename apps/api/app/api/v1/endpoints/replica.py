@@ -1283,6 +1283,8 @@ async def generate_replica_film(
             raise _film_persistence_error(exc)
         blueprint = updated
         workflow = workflow_repository.get_workflow(request.workflow_id)
+        # 换了槽位提示词就变了——用新蓝图重算分镜（否则建出来的镜头不带替换）。
+        plans = plan_film_shots(blueprint)
 
     # Reuse the previous film's shot nodes when the shot count still matches.
     existing = [
@@ -1294,12 +1296,50 @@ async def generate_replica_film(
     reused = len(existing) == len(plans)
     shot_nodes: list[CanvasNodeV2] = []
     if reused:
-        shot_nodes = sorted(
-            existing,
-            key=lambda candidate: int(
-                "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+        # 只重跑需要重跑的镜头：
+        # ① 未完成的（failed 重试）；② 提示词和当前蓝图对不上的（槽位变了，
+        #    旧成片内容作数不了）——把新提示词写回节点，回炉重生。
+        # working 的不碰（在跑）；提示词一致的 ready 节点不碰（配额限流下
+        # 重复重跑只会让 ready 数震荡不累加）。
+        shot_nodes = []
+        for candidate, plan in zip(
+            sorted(
+                existing,
+                key=lambda candidate: int(
+                    "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+                ),
             ),
-        )
+            plans,
+        ):
+            if candidate.status == "working":
+                continue
+            # "出过片"的判据是**最近一次尝试成功**且提示词仍是当前这份：
+            #  attempt 失败后节点会保持 ready 带旧输出，光看状态会把
+            # 没过期的失败当成功，重试便永远轮不到它。
+            attempt = candidate.latest_attempt
+            attempt_ok = attempt is not None and attempt.status == "succeeded"
+            if (
+                candidate.status == "ready"
+                and candidate.output_asset_id
+                and attempt_ok
+                and (candidate.generation_prompt or "") == plan.generation_prompt
+            ):
+                continue
+            if (candidate.generation_prompt or "") != plan.generation_prompt:
+                try:
+                    node_service.patch(
+                        request.workflow_id,
+                        candidate.node_id,
+                        CanvasNodePatchRequestV2(
+                            generation_prompt=plan.generation_prompt,
+                            structured_content=plan.segment,
+                        ),
+                        expected_revision=workflow.revision,
+                    )
+                except V2PersistenceError as exc:
+                    raise _film_persistence_error(exc)
+                workflow = workflow_repository.get_workflow(request.workflow_id)
+            shot_nodes.append(candidate)
     else:
         position = node.position
         for offset, plan in enumerate(plans):
@@ -1392,7 +1432,12 @@ async def generate_replica_film(
                 ),
                 title=candidate.title or "",
             )
-            for candidate in shot_nodes
+            for candidate in sorted(
+                existing,
+                key=lambda candidate: int(
+                    "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+                ),
+            )
         ],
         reused=reused,
         workflow_revision=workflow.revision,

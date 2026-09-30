@@ -104,3 +104,15 @@ def test_segment_payload_validates_as_video_segment_content() -> None:
         segment = VideoSegmentContentV2.model_validate(plan.segment)
         assert segment.background_music is False
         assert segment.duration_seconds >= MIN_SHOT_SECONDS
+
+
+def test_applied_slot_lands_in_shot_prompt():
+    """槽位 applied 后，每镜提示词必须带替换指令（否则出片不换元素）。"""
+    from app.services.replica.blueprint import apply_slot_updates
+
+    blueprint = _blueprint()
+    kind = blueprint.slots[1].kind  # 商品
+    updated = apply_slot_updates(blueprint, {kind: "一颗新鲜红苹果，果柄上戴着一朵淡黄色小雏菊"})
+    for plan in plan_film_shots(updated):
+        assert "槽位替换" in plan.generation_prompt
+        assert "一颗新鲜红苹果" in plan.generation_prompt
