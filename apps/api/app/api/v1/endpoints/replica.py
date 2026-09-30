@@ -1043,7 +1043,7 @@ async def import_blueprint_adreplica(request: AdReplicaImportRequest) -> Bluepri
 def _film_persistence_error(error: Exception) -> HTTPException:
     """Map a persistence error to HTTP with its stable code (mirrors v2 mapping)."""
 
-    from app.persistence.errors import V2PistenceError as _Err
+    from app.persistence.errors import V2PersistenceError as _Err
 
     if isinstance(error, _Err):
         status = getattr(error, "status_code", None) or 409
@@ -1285,6 +1285,36 @@ async def generate_replica_film(
         workflow = workflow_repository.get_workflow(request.workflow_id)
         # 换了槽位提示词就变了——用新蓝图重算分镜（否则建出来的镜头不带替换）。
         plans = plan_film_shots(blueprint)
+        # 复刻改写：原片描述整体换成"同风格、新元素"版本。拿不到改写（LLM
+        # 故障/超时）就退回带槽位指令行的旧提示词，不让出片流程断。
+        try:
+            from app.services.replica.shot_rewrite import resolve_shot_rewrites
+
+            rewrites = resolve_shot_rewrites(
+                settings=get_settings(),
+                node=node,
+                blueprint=blueprint,
+                patch_node=lambda parameters: node_service.patch(
+                    request.workflow_id,
+                    request.replica_node_id,
+                    CanvasNodePatchRequestV2(parameters=parameters),
+                    expected_revision=workflow.revision,
+                ),
+            )
+            if rewrites:
+                rewritten = plan_film_shots(blueprint, rewritten_visuals=rewrites)
+                if len(rewritten) == len(plans):
+                    plans = rewritten
+        except Exception as exc:  # noqa: BLE001 - 改写失败降级，不阻断出片
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "replica shot rewrite skipped (%s); falling back to slot directive",
+                exc,
+            )
+        # 改写缓存写回会推进 workflow revision——后续 patch 前重取，否则
+        # 带着旧 revision 打必吃 revision conflict。
+        workflow = workflow_repository.get_workflow(request.workflow_id)
 
     # Reuse the previous film's shot nodes when the shot count still matches.
     existing = [
@@ -1336,8 +1366,22 @@ async def generate_replica_film(
                         ),
                         expected_revision=workflow.revision,
                     )
-                except V2PersistenceError as exc:
-                    raise _film_persistence_error(exc)
+                except V2PersistenceError:
+                    # revision 可能被并发改动：重取后再试一次，仍失败才抛。
+                    workflow = workflow_repository.get_workflow(request.workflow_id)
+                    try:
+                        node_service.patch(
+                            request.workflow_id,
+                            candidate.node_id,
+                            CanvasNodePatchRequestV2(
+                                generation_prompt=plan.generation_prompt,
+                                structured_content=plan.segment,
+                            ),
+                            expected_revision=workflow.revision,
+                        )
+                    except V2PersistenceError as retry_exc:
+                        raise _film_persistence_error(retry_exc)
+                    workflow = workflow_repository.get_workflow(request.workflow_id)
                 workflow = workflow_repository.get_workflow(request.workflow_id)
             shot_nodes.append(candidate)
     else:
@@ -1390,6 +1434,31 @@ async def generate_replica_film(
             except V2PersistenceError as exc:
                 raise _film_persistence_error(exc)
             workflow = workflow_repository.get_workflow(request.workflow_id)
+
+    if not shot_nodes:
+        # 没有需要重跑的镜头（都已按当前提示词出过片）：幂等空转，不起 run
+        # （selected_nodes 空集会直接 422/500）。
+        return FilmGenerateResponse(
+            success=True,
+            execution_id="",
+            shots=[
+                FilmShotNodeV1(
+                    node_id=candidate.node_id,
+                    shot_index=int(
+                        "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+                    ),
+                    title=candidate.title or "",
+                )
+                for candidate in sorted(
+                    existing,
+                    key=lambda candidate: int(
+                        "".join(ch for ch in (candidate.title or "") if ch.isdigit()) or 0
+                    ),
+                )
+            ],
+            reused=reused,
+            workflow_revision=workflow.revision,
+        )
 
     from app.api.v2.endpoints.agent_canvas import create_agent_canvas_runtime
 
