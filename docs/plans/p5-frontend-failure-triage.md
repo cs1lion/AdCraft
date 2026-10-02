@@ -176,3 +176,10 @@ ModelParameterControls.test 5 条保持绿的约束下动组件。
 **下一轮做法**：按 1→2→3 分小批，每批跑绿对应测试；hook 侧改动集中在
 refresh 主流程与两个 hydrate 回调，风险点是与 SSE 事件流的竞态，改后
 必须全量跑 AgentCanvasChatPanel/ConversationRecoverySurface 等同模块测试。
+
+### 减账（2026-10-02，chat hook 12 条清零）
+
+- 批次 1/2/3 全部落地（见 §7 三缺口），chat 套件 76/76；chat 模块全量
+  60 文件 560 测试零回归；全量 2677 passed / 5 failed = 17 − 12。
+- 台账仅剩：AgentCanvasNode 揭示 trio（3 条，按规格重建媒体门控）+
+  状态优先级（1 条，需设计裁决）+ routeProviders 偶发（不记账）。
