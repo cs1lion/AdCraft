@@ -133,3 +133,56 @@ def test_gate_rejection_carries_violations(client, monkeypatch) -> None:
     assert body["success"] is False
     assert body["error_code"] == "scene_operations_invalid"
     assert body["violations"][0]["code"] == "object_type_unsupported"
+
+
+def test_language_builder_entity_shape_passes_the_schema_gate() -> None:
+    # The language builder constructs entities client-side (draft-first UX,
+    # no gate roundtrip on each add). This locks the exact shape its
+    # edit-model writers produce against the schema: characters are
+    # positioned via a frame-0 keyframe (the schema has no top-level
+    # position and requires at least one keyframe), and props/environments
+    # carry no client-side fields ("kind"). extra="forbid" turns any drift
+    # into a save-time 422 — the failure this test exists to prevent.
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from app.schemas.scene_script import SceneScriptRoot
+
+    script = dict(_scene_script())
+    script["characters"] = [
+        {
+            "id": "char_lowpoly_human_m1abc",
+            "type": "lowpoly_human",
+            "character_asset_id": None,
+            "appearance": {"color": "#8B4513", "height": 1.7, "scale": 1},
+            "keyframes": [
+                {"frame": 0, "position": [-2.2, 0.0, 0.0], "rotation_y": 0.0, "action": "stand"}
+            ],
+        }
+    ]
+    script["props"] = [
+        {
+            "id": "prop_rect_table_m2abc",
+            "type": "rect_table",
+            "position": [2.2, 0.0, 0.0],
+            "scale": 1,
+            "rotation_y": 0.0,
+        }
+    ]
+    script["environment"] = [
+        {
+            "id": "env_tree_m3abc",
+            "type": "tree",
+            "position": [0.0, 2.2, 0.0],
+            "scale": 1,
+            "rotation_y": 0.0,
+        }
+    ]
+    SceneScriptRoot.model_validate(script)
+
+    # The failure mode this shape avoids: a client-side field on an entity
+    # is rejected outright (mutation of the valid shape above).
+    polluted = dict(script)
+    polluted["props"] = [{**script["props"][0], "kind": "prop"}]
+    with _pytest.raises(ValidationError):
+        SceneScriptRoot.model_validate(polluted)

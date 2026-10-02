@@ -32,7 +32,28 @@ describe("SceneLanguageBuilder", () => {
     expect(next.props).toHaveLength(1);
     expect(next.props[0]).toMatchObject({ type: "rect_table" });
     expect(next.props[0].position[0]).toBeLessThan(0);
+    // schema 合法：客户端字段（kind）不得漏进脚本，否则保存被校验拒绝
+    expect(next.props[0]).not.toHaveProperty("kind");
     expect(screen.getByText(/✓ 已添加道具/)).toBeTruthy();
+  });
+
+  it("adds a character positioned via a frame-0 keyframe (schema-valid)", () => {
+    const onChange = vi.fn();
+    render(<SceneLanguageBuilder script={script()} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText(/加一张桌子在左边/), {
+      target: { value: "加一个人物在左边" },
+    });
+    fireEvent.click(screen.getByText("添加"));
+    const next = onChange.mock.calls[0][0] as SceneScriptRoot;
+    expect(next.characters).toHaveLength(1);
+    const character = next.characters[0] as Record<string, unknown>;
+    // 角色没有顶层 position 字段，定位在关键帧里——之前 extra=forbid 一保存就炸
+    expect(character).not.toHaveProperty("position");
+    const keyframes = character.keyframes as Array<Record<string, unknown>>;
+    expect(keyframes).toHaveLength(1);
+    expect(keyframes[0]).toMatchObject({ frame: 0, action: "stand" });
+    expect((keyframes[0].position as number[])[0]).toBeLessThan(0);
+    expect(screen.getByText(/✓ 已添加人物/)).toBeTruthy();
   });
 
   it("adds an environment object from a quick chip", () => {

@@ -1,6 +1,8 @@
 /**
  * 语言搭建组件（2026-09-29 简约好用分支）。
  * 说一句“加一张桌子在左边”——预览实时长出来。快捷 chips 给最常见的实体。
+ * 实体一律由 sceneScriptEditModel 的正规写入器构造，保证 schema 合法、
+ * 保存过得了后端校验（角色经 frame-0 关键帧定位，无 kind 之类客户端字段）。
  * 关键词没命中的句子不进死胡同：出「交给 AI 试试」，走 /language-fallback
  * （白模 LLM → ops 批 → 同一闸门），applied 脚本回填同一条 draft 管道。
  */
@@ -9,6 +11,11 @@ import { useState } from "react";
 
 import { QUICK_ADDS, parseSceneLanguage } from "./sceneLanguageOps.ts";
 import { requestLanguageFallback } from "./directorOperationsClient.ts";
+import {
+  addCharacterObject,
+  addEnvironmentObject,
+  addPropObject,
+} from "./sceneScriptEditModel.ts";
 import type { SceneScriptRoot } from "../../../types/scene-script";
 
 interface SceneLanguageBuilderProps {
@@ -35,16 +42,16 @@ export function SceneLanguageBuilder({ script, onChange, disabled }: SceneLangua
       return;
     }
     setUnparsed(null);
-    const next: SceneScriptRoot = {
-      ...script,
-      props: op.kind === "prop" ? [...script.props, op as never] : script.props,
-      environment:
-        op.kind === "environment" ? [...script.environment, op as never] : script.environment,
-      characters:
-        op.kind === "character"
-          ? [...script.characters, { id: op.id, appearance: {}, keyframes: [], position: op.position } as never]
-          : script.characters,
-    };
+    // 实体由编辑模型的正规写入器构造——schema 合法（角色经 frame-0 关键帧
+    // 定位，props 环境不带客户端字段），保存时过得了 SceneScript 校验。
+    let next: SceneScriptRoot;
+    if (op.kind === "prop") {
+      next = addPropObject(script, op.type, { id: op.id, position: op.position });
+    } else if (op.kind === "environment") {
+      next = addEnvironmentObject(script, op.type, { id: op.id, position: op.position });
+    } else {
+      next = addCharacterObject(script, { id: op.id, position: op.position });
+    }
     onChange(next);
     setHint(`✓ 已添加${op.kind === "prop" ? "道具" : op.kind === "environment" ? "环境" : "人物"}：${input.trim()}`);
     setText("");

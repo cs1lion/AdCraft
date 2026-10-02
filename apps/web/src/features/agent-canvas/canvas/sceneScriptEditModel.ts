@@ -18,6 +18,7 @@
 import type {
   CameraKeyframe,
   CharacterKeyframe,
+  CharacterAppearance,
   SceneCamera,
   SceneCharacter,
   SceneEnvironment,
@@ -273,7 +274,7 @@ export function characterActionAtFrame(
 export function addEnvironmentObject(
   script: SceneScriptRoot,
   kind: string,
-  options: { id?: string; scale?: number; rotationY?: number } = {},
+  options: { id?: string; scale?: number; rotationY?: number; position?: SceneVec3 } = {},
 ): SceneScriptRoot {
   const id = options.id ?? nextFreeId(script.environment.map((object) => object.id), "env");
   const index = script.environment.length;
@@ -285,7 +286,7 @@ export function addEnvironmentObject(
       {
         id,
         type: resolvedKind as unknown as import("../../../types/scene-script.generated").EnvironmentTypeName,
-        position: spiralPosition(index),
+        position: options.position ? roundVec3(options.position) : spiralPosition(index),
         scale: options.scale ?? 1,
         rotation_y: options.rotationY ?? 0,
       },
@@ -296,7 +297,7 @@ export function addEnvironmentObject(
 export function addPropObject(
   script: SceneScriptRoot,
   kind: string,
-  options: { id?: string; scale?: number; rotationY?: number } = {},
+  options: { id?: string; scale?: number; rotationY?: number; position?: SceneVec3 } = {},
 ): SceneScriptRoot {
   const id = options.id ?? nextFreeId(script.props.map((object) => object.id), "prop");
   const index = script.props.length;
@@ -308,7 +309,7 @@ export function addPropObject(
       {
         id,
         type: resolvedKind as unknown as import("../../../types/scene-script.generated").PropTypeName,
-        position: spiralPosition(index),
+        position: options.position ? roundVec3(options.position) : spiralPosition(index),
         scale: options.scale ?? 1,
         rotation_y: options.rotationY ?? 0,
       },
@@ -457,6 +458,44 @@ export function setShotTransitionIntent(
         ? { ...shot, transition_intent: normalized.length > 0 ? normalized : null }
         : shot,
     ),
+  };
+}
+
+/**
+ * Add a plain lowpoly_human character (language builder / quick add) — no
+ * bound asset. Positioned via a frame-0 keyframe: the schema has no
+ * top-level position on characters and requires at least one keyframe, so
+ * anything else the gate rejects on save.
+ */
+export function addCharacterObject(
+  script: SceneScriptRoot,
+  options: { id?: string; position?: SceneVec3; appearance?: CharacterAppearance } = {},
+): SceneScriptRoot {
+  const id = options.id ?? nextFreeId(script.characters.map((character) => character.id), "char");
+  const index = script.characters.length;
+  return {
+    ...script,
+    characters: [
+      ...script.characters,
+      {
+        id,
+        type: "lowpoly_human",
+        character_asset_id: null,
+        appearance: options.appearance ?? {
+          color: nextCastColor(script, index),
+          height: 1.7,
+          scale: 1,
+        },
+        keyframes: [
+          {
+            frame: 0,
+            position: options.position ? roundVec3(options.position) : castPosition(index),
+            rotation_y: 0,
+            action: "stand",
+          },
+        ],
+      },
+    ],
   };
 }
 
