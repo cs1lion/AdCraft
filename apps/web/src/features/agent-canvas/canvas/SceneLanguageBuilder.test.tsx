@@ -54,6 +54,25 @@ describe("SceneLanguageBuilder", () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText(/没听懂/)).toBeTruthy();
   });
+
+  it("places a chair behind an existing table via a relative phrase", () => {
+    const onChange = vi.fn();
+    const base = script();
+    base.props = [
+      { id: "prop_rect_table_1", type: "rect_table", position: [2, 1, 0], scale: 1 },
+    ] as never;
+    render(<SceneLanguageBuilder script={base} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText(/加一张桌子在左边/), {
+      target: { value: "加一把椅子放在桌子后面" },
+    });
+    fireEvent.click(screen.getByText("添加"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0][0] as SceneScriptRoot;
+    expect(next.props).toHaveLength(2);
+    expect(next.props[1]).toMatchObject({ type: "chair" });
+    expect(next.props[1].position[1]).toBeCloseTo(2.5);
+    expect(screen.getByText(/✓ 已添加道具/)).toBeTruthy();
+  });
 });
 
 describe("SceneLanguageBuilder AI fallback", () => {

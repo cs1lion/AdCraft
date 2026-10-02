@@ -28,9 +28,9 @@ export function SceneLanguageBuilder({ script, onChange, disabled }: SceneLangua
   const apply = (input: string) => {
     const count =
       script.props.length + script.environment.length + script.characters.length;
-    const op = parseSceneLanguage(input, count);
+    const op = parseSceneLanguage(input, count, script);
     if (!op) {
-      setHint("没听懂——试试：桌子/椅子/树/墙/窗户/人物……");
+      setHint("没听懂——试试：桌子/椅子/树/墙/窗户/人物，或「放在桌子旁边」");
       setUnparsed(input.trim());
       return;
     }
