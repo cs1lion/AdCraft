@@ -16,6 +16,7 @@
 | 2026-09-29 P5 大批量首批后 | **38** | **3** | 修 1 个文件/11 条，含 merge 丢失 CSS 恢复 |
 | 2026-10-02 Item 系列合入 main 后 | **63**（62 持续 + 1 并行调度偶发） | **6** | Item 2/7 把 ReplicaBlueprintPanel 系 24 条新债带上 main，台账失真；本轮重新定责见 §5 |
 | 2026-10-02 断奶补全后 | **39**（38 持续 + 1 并行调度偶发） | **4** | BlueprintPanel 系 24 条清零（修实现非修测试，见 §5 减账） |
+| 2026-10-02 富参数工作台接线后 | **17**（16 持续 + 1 并行调度偶发） | **3** | InlineWorkbench 22 条清零（测试文件零改动，纯实现补齐，见 §6 减账） |
 
 ## 1. 已修（5 个文件 / 5 条）
 
@@ -136,3 +137,17 @@ provider 上限钳位、非整数阻塞、descriptor 门控"模型没有就别�
 
 **连带处置**：VideoAudioToggle 无测试无消费方——接线时一并补其测试；
 ModelParameterControls.test 5 条保持绿的约束下动组件。
+
+### 减账（2026-10-02，0f4bafbe）
+
+- **InlineWorkbench 22 条清零，测试文件零改动**——22 条本就是规格测试，
+  实现补齐后全部自然变绿。落地的规格线：
+  ① MediaPromptWorkbench 接入 ModelParameterControls（descriptor 驱动，
+  显式选择 > 安装默认 > default 档兜底，不参考 node.model_summary）；
+  ② VideoAudioToggle 上车（footer 开关、默认不落盘、三态禁用带原因）；
+  ③ descriptor 校验阻塞 run + legacy 参数迁移走 normalizeProviderParameters；
+  ④ retry 优先级（failed+retryable 最新尝试的 ready 节点 = Retry）；
+  ⑤ 错误通道 __image-feedback/__text-feedback 包裹 + 删 "Prompt ready" 噪音行。
+- 验证：InlineWorkbench 83/83 + ModelParameterControls/CanvasModelPicker
+  全绿；typecheck 0 error；lint 0；全量 2665/17 = 39 − 22 精确减账。
+- 剩余：chat hook 12、AgentCanvasNode 揭示 trio 4（含设计裁决）。
