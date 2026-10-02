@@ -129,7 +129,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const [filmShots, setFilmShots] = useState<Array<{ node_id: string; title: string }>>([]);
   const [shotStatus, setShotStatus] = useState<Record<string, string>>({});
   // 概念断奶（2026-09-29）：锚点/镜头表/源码是高级入口，默认收起——
-  // 作者默认只见"导演台 + 槽位替换（含一键成片）"。
+  // 作者默认只见"导演台 + 槽位替换（含一键成片）"。Item 7 只建了这个状态
+  // 没接线（页签栏被删、折叠没建），2026-10-02 补全。
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [slots, setSlots] = useState<ReplicaSlotV2[]>(blueprint.slots);
@@ -893,8 +894,62 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         </div>
       )}
 
+      {/* 概念断奶主路径：🎬 导演台 + 槽位替换；锚点/镜头表/源码收在 ⚙ 高级后面 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ color: "#fc8", fontSize: 12, fontWeight: 600 }}>🎬 导演台</span>
+        <button
+          onClick={() => {
+            if (showAdvanced) {
+              setShowAdvanced(false);
+              setTab("slots"); // 收起时落回主路径 tab
+            } else {
+              setShowAdvanced(true);
+            }
+          }}
+          style={{
+            marginLeft: "auto",
+            padding: "3px 10px",
+            border: "1px solid #2a2a4a",
+            borderRadius: 3,
+            background: showAdvanced ? "#3a3a6a" : "transparent",
+            color: showAdvanced ? "#fff" : "#888",
+            cursor: "pointer",
+            fontSize: 11,
+            fontFamily: "monospace",
+          }}
+        >
+          {showAdvanced ? "⚙ 收起高级" : "⚙ 高级"}
+        </button>
+      </div>
+      {showAdvanced && (
+        <div style={{ display: "flex", gap: 2, marginBottom: 8 }}>
+          {tabs.map((entry) => (
+            <button
+              key={entry.key}
+              onClick={() => setTab(entry.key)}
+              style={{
+                padding: "3px 10px",
+                border: "none",
+                borderRadius: 3,
+                background: tab === entry.key ? "#3a3a6a" : "transparent",
+                color: tab === entry.key ? "#fff" : "#888",
+                cursor: "pointer",
+                fontSize: 11,
+                fontFamily: "monospace",
+              }}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {tab === "slots" && (
         <div>
+          {/* 折叠态下页签栏隐藏，用区块标题替代（展开时页签栏自带同名标签） */}
+          {!showAdvanced && (
+            <div style={{ color: "#fc8", fontSize: 11, marginBottom: 4 }}>槽位替换</div>
+          )}
           {/* 一键复刻成片：作者唯一需要按的按钮 */}
           <div
             style={{

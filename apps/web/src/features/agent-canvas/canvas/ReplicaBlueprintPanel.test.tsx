@@ -132,6 +132,8 @@ describe("ReplicaBlueprintPanel", () => {
         : beat,
     );
     render(<ReplicaBlueprintPanel node={node} />);
+    // 概念断奶：先展开 ⚙ 高级，页签才可见
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText(/锚点事件\(2\)/));
     expect(screen.getByText(/词流 2 词/)).toBeTruthy();
     // 时间戳 chip 是词流独有（锚点触发文本里也有"别再"，不断言它）
@@ -144,7 +146,8 @@ describe("ReplicaBlueprintPanel", () => {
     // slots tab (default)
     expect(screen.getByText("【商品】")).toBeTruthy();
     expect(screen.getByText(/原片洗面奶/)).toBeTruthy();
-    // anchors tab
+    // anchors tab（断奶后页签栏收在 ⚙ 高级后面，先展开）
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText(/锚点事件\(2\)/));
     expect(screen.getByText(/别再这样洗脸/)).toBeTruthy();
     // shots tab
@@ -232,6 +235,8 @@ describe("ReplicaBlueprintPanel", () => {
 describe("ReplicaBlueprintPanel direct-execute render bridge (零模型费直出)", () => {
   function openSourceTab() {
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    // 概念断奶：页签栏收在 ⚙ 高级后面，先展开
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText("源码 .adreplica"));
   }
 
@@ -693,6 +698,8 @@ describe("ReplicaBlueprintPanel source tab (.adreplica)", () => {
   function openSourceTab() {
     const node = replicaNode();
     render(<ReplicaBlueprintPanel node={node} />);
+    // 概念断奶：页签栏收在 ⚙ 高级后面，先展开
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText("源码 .adreplica"));
   }
 
@@ -1143,6 +1150,8 @@ describe("ReplicaBlueprintPanel style variants (Jev 式风格导演)", () => {
     fireEvent.click(screen.getAllByText("应用")[0]);
 
     // 配方已选为直出配方：到源码 tab 的直出提交里带着它
+    // 概念断奶：先展开 ⚙ 高级，页签才可见
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText("源码 .adreplica"));
     await waitFor(() => expect(screen.getByText("🎨 字幕配方")).toBeTruthy());
     const select = screen.getByRole("combobox") as HTMLSelectElement;
@@ -1325,6 +1334,8 @@ describe("ReplicaBlueprintPanel actionable errors (E5)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    // 概念断奶：先展开 ⚙ 高级，页签才可见
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText("源码 .adreplica"));
     fireEvent.click(screen.getByText("⚡ 零模型费直出"));
 
@@ -1353,6 +1364,8 @@ describe("ReplicaBlueprintPanel actionable errors (E5)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    // 概念断奶：先展开 ⚙ 高级，页签才可见
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText("源码 .adreplica"));
     fireEvent.click(screen.getByText("⚡ 零模型费直出"));
 
@@ -1377,6 +1390,8 @@ describe("ReplicaSourceEditor (源码高亮编辑 + 锚点双向跳转)", () => 
       }),
     );
     render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    // 概念断奶：先展开 ⚙ 高级，页签才可见
+    fireEvent.click(screen.getByText("⚙ 高级"));
     fireEvent.click(screen.getByText("源码 .adreplica"));
     fireEvent.click(screen.getByText("📄 导出当前蓝图"));
     await waitFor(() => expect(screen.getByText(/product-comparison\.adreplica/)).toBeTruthy());
