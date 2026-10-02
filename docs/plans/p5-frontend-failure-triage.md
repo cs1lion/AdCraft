@@ -14,6 +14,7 @@
 | 2026-09-29 P5 二批（豁免转正+小批量）后 | **64** | **9** | 修 6 个文件/11 条，含一处真 bug |
 | 2026-09-29 P5 中批量后 | **49** | **5** | 修 2 个文件/15 条，含 runtime 四机制恢复 |
 | 2026-09-29 P5 大批量首批后 | **38** | **3** | 修 1 个文件/11 条，含 merge 丢失 CSS 恢复 |
+| 2026-10-02 Item 系列合入 main 后 | **63**（62 持续 + 1 并行调度偶发） | **6** | Item 2/7 把 ReplicaBlueprintPanel 系 24 条新债带上 main，台账失真；本轮重新定责见 §5 |
 
 ## 1. 已修（5 个文件 / 5 条）
 
@@ -62,3 +63,28 @@
 1. 本批起，任何新增失败必须先修或先在台账登记豁免理由，再合入。
 2. 每修一个文件：更新本台账 §1/§3（减账），commit message 带 `P5` 编号。
 3. §2 的两项设计裁决落地后，同步删去对应豁免行。
+
+## 5. 2026-10-02 复盘：main 基线 63 条重新定责（Item 系列之后）
+
+> P5 台账此前的"剩 38"是 chore 分支时点；Item 1-7 提交直入 main 时带进了
+> ReplicaBlueprintPanel 系新失败且未登记台账，导致账面（38）与实测（63）失真。
+> 本轮用 vitest JSON 报告逐文件盘点并对账。
+
+### 定责总表（62 持续 + 1 偶发）
+
+| 文件 | 条数 | 归属 | 根因 | 下一步 |
+|---|---|---|---|---|
+| `canvas/ReplicaBlueprintPanel.test.tsx` | 22 | **Item 2/7 新债** | 概念断奶重设计（默认主路径"🎬 导演台 + 槽位替换"、高级入口收进 ⚙ 折叠、复刻改写改槽位语义）落地后，旧面板测试仍锁旧 UI（"源码 .adreplica" 页签 ×18、锚点事件 ×2 等，全部 `Unable to find` 类） | 专门一轮：以 weaning 测试的新信息架构为规格，把旧测试迁移到新 DOM（或按断奶语义降级/退役相应断言） |
+| `canvas/ReplicaBlueprintPanel.weaning.test.tsx` | 2 | **Item 7 自带新债** | 断奶自己的规格测试有 2 条在 main 上红（"🎬 导演台"/"⚙ 高级"找不到）——要么 c012cf64（复刻改写）回退了断奶入口，要么测试先于实现 | 先裁决：面板当前实装 vs 断奶规格谁对；单向修（实现或测试） |
+| `workbench/AgentCanvasInlineWorkbench.test.tsx` | 22 | 旧债（§3 在案） | 组件表面漂移（按钮/标签改名重组） | 逐个对齐当前 DOM（台账原计划"专门一轮"） |
+| `chat/useAgentCanvasChat.test.tsx` | 12 | 旧债（§3 在案） | hook 契约漂移：Turn hydration/retry 调用序列、proposal 冲突店、guidance revision 文案 | 逐条核对当前契约；无共享根因 |
+| `canvas/AgentCanvasNode.test.tsx` | 4 | 旧债（§3 在案） | 揭示门控 trio（merge 丢失，CSS 已恢复但接线未接）+ 状态优先级需设计裁决 | 按失败测试所锁规格重建媒体门控 |
+| `app/routeProviders.test.tsx` | 1 | **非债**（并行调度偶发） | 单独运行 15/15 全过；全量跑时偶发（memory：并行调度坑） | 重跑即可，不记账 |
+
+### 结论
+
+- 修复方向上没有发现新的产品 bug 线索：24 条新债全部是 **测试锁旧 UI** 型
+  （重设计先于测试更新），与 Item 7"概念断奶"的提交信息一致。
+- 修复排期建议：BlueprintPanel 系（24 条，同根因一起修）→ InlineWorkbench
+  （22 条）→ chat hook（12 条）→ AgentCanvasNode 揭示 trio（4 条，含一项设计
+  裁决）。每轮修完更新本台账减账。
