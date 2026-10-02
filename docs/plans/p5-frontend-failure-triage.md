@@ -183,3 +183,25 @@ refresh 主流程与两个 hydrate 回调，风险点是与 SSE 事件流的竞�
   60 文件 560 测试零回归；全量 2677 passed / 5 failed = 17 − 12。
 - 台账仅剩：AgentCanvasNode 揭示 trio（3 条，按规格重建媒体门控）+
   状态优先级（1 条，需设计裁决）+ routeProviders 偶发（不记账）。
+
+### 收尾（2026-10-02）：AgentCanvasNode 4 条清零——持续失败归零
+
+- 揭示门控 trio 按 §3 规格重建（组件侧接线，CSS 早前已由 5b2f1f2d 恢复）：
+  MediaSurface 卡片实例内 working→ready 重渲染时进入「awaiting」揭示窗口
+  （opacity 0），原生 load 完成转「revealed」（160ms 揭示动画）；首挂载即
+  ready 不带类。视频在揭示窗口内以预览图（img）呈现、load 驱动状态。
+- 状态优先级按规格裁决（§3 的"需设计裁决"项）：persisted 状态是生命周期
+  权威——draft/ready/failed 不被 runtime 遥测改写，只有 persisted working
+  （在飞）才采纳遥测细化。测试 "uses the persisted Node status even when
+  runtime telemetry says working" 即此规格，直接实现。
+- 顺带补了输出归属门控（asset 须属本节点 output 才渲染媒体）——
+  揭示 trio 依赖的同一道门，33580aaf 合并丢失物的一部分。
+
+**验证**：AgentCanvasNode 74/74；canvas 模块 955/955；全量 **2681 passed /
+1 failed**——唯一失败为 routeProviders 已知并行调度偶发（不记账，§5）。
+
+> **P5 持续失败归零**（2026-10-02）：本会话四轮（BlueprintPanel 24 →
+> InlineWorkbench 22 → chat hook 12 → AgentCanvasNode 4）把 63 条基线全部
+> 清零，"新增失败 = 0" 纪律重新生效。死代码 CanvasMediaPreview/
+> CanvasVideoPreview 的处置：保留（卡片门控重建后揭示链仍在组件内），
+> 退役一事关闭——门控已按测试所锁规格实现，无需删。

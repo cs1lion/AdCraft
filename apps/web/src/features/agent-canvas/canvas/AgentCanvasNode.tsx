@@ -6,7 +6,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { memo, useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type SyntheticEvent } from "react";
 
 import { PlayIcon } from "../../../icons.tsx";
 import type {
@@ -184,23 +184,75 @@ interface AgentCanvasNodeCardProps extends AgentCanvasNodeCallbacks {
 function MediaSurface({
   node,
   asset,
+  status,
   onOpenVideoPreview,
   onMediaDimensionsResolved,
   label,
 }: {
   node: CanvasNodeV2;
   asset?: ProjectAssetSummaryV2 | null;
+  status: CanvasNodeStatusV2;
   onOpenVideoPreview?: AgentCanvasNodeCallbacks["onOpenVideoPreview"];
   onMediaDimensionsResolved?: AgentCanvasNodeCardProps["onMediaDimensionsResolved"];
   label: string;
 }) {
-  const mediaUrl = asset
-    ? asset.media_type === "image" ? mediaAssetContentPath(asset) : mediaAssetPreviewPath(asset)
+  // 输出归属门控：asset 必须属于本节点的 output（output_asset_id 在场）才渲染媒体，
+  // 否则卡片保持占位——33580aaf 合并时丢失的卡片门控，P5 §3 规格重建。
+  const ownedAsset = asset && node.output_asset_id ? asset : null;
+  const url = ownedAsset
+    ? ownedAsset.media_type === "image" ? mediaAssetContentPath(ownedAsset) : mediaAssetPreviewPath(ownedAsset)
     : null;
-  const videoUrl = asset?.media_type === "video" ? mediaAssetContentPath(asset) : null;
+  const videoUrl = ownedAsset?.media_type === "video" ? mediaAssetContentPath(ownedAsset) : null;
   const videoRef = useRef<HTMLVideoElement>(null);
-  const videoPosterUrl = useAgentCanvasVideoPoster(asset, videoRef);
-  if (node.node_type === "video" && videoUrl && asset) {
+  const videoPosterUrl = useAgentCanvasVideoPoster(ownedAsset, videoRef);
+
+  // 生成揭示 trio（P5 §3）：卡片实例内从「生成中」重渲染到「完成」时，媒体在
+  // 原生 load 完成前保持隐藏（awaiting），load 后揭示（revealed）；首挂载即
+  // 完成、或卡片重挂载的媒体立即渲染（不带揭示类）。
+  const [generationReveal, setGenerationReveal] = useState<"awaiting" | "revealed" | null>(null);
+  const prevStatusRef = useRef<CanvasNodeStatusV2 | null>(null);
+  if (
+    prevStatusRef.current !== null
+    && prevStatusRef.current !== "ready"
+    && status === "ready"
+    && generationReveal === null
+  ) {
+    setGenerationReveal("awaiting");
+  }
+  useEffect(() => {
+    prevStatusRef.current = status;
+  }, [status]);
+  const revealClass = generationReveal
+    ? ` agent-canvas-node__media--${generationReveal === "awaiting" ? "awaiting-generation-reveal" : "generation-revealed"}`
+    : "";
+  const revealBaseClass = `agent-canvas-node__media agent-canvas-node__media--${node.node_type === "image" ? "contain" : "cover"}${revealClass}`;
+
+  const resolveMediaDimensions = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    const { naturalWidth, naturalHeight } = event.currentTarget;
+    if (naturalWidth > 0 && naturalHeight > 0) {
+      onMediaDimensionsResolved?.({ width: naturalWidth, height: naturalHeight });
+    }
+  };
+
+  // 揭示窗口内两种媒体都用 <img> 呈现（视频以预览图揭示），load 事件驱动状态。
+  if (generationReveal && url && ownedAsset) {
+    return (
+      <StableMediaPreview
+        className={revealBaseClass}
+        src={url}
+        alt={ownedAsset.display_name || `${NODE_TYPE_LABELS[node.node_type]} output`}
+        draggable={false}
+        loading="lazy"
+        decoding="async"
+        onLoad={(event) => {
+          setGenerationReveal("revealed");
+          resolveMediaDimensions(event);
+        }}
+      />
+    );
+  }
+
+  if (node.node_type === "video" && videoUrl && ownedAsset) {
     return (
       <div className="agent-canvas-node__video-stage">
         <video
@@ -208,7 +260,7 @@ function MediaSurface({
           className="agent-canvas-node__media agent-canvas-node__media--cover"
           src={videoUrl}
           poster={videoPosterUrl ?? undefined}
-          aria-label={asset.display_name || "Video output"}
+          aria-label={ownedAsset.display_name || "Video output"}
           muted
           playsInline
           preload="metadata"
@@ -227,7 +279,7 @@ function MediaSurface({
             onDoubleClick={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();
-              onOpenVideoPreview(node.node_id, asset);
+              onOpenVideoPreview(node.node_id, ownedAsset);
             }}
           >
             <PlayIcon />
@@ -237,24 +289,19 @@ function MediaSurface({
     );
   }
 
-  if (!mediaUrl) {
+  if (!url || !ownedAsset) {
     return <div className="agent-canvas-node__media-placeholder" aria-hidden="true" />;
   }
 
   return (
     <StableMediaPreview
       className={`agent-canvas-node__media agent-canvas-node__media--${node.node_type === "image" ? "contain" : "cover"}`}
-      src={mediaUrl}
-      alt={asset?.display_name || `${NODE_TYPE_LABELS[node.node_type]} output`}
+      src={url}
+      alt={ownedAsset.display_name || `${NODE_TYPE_LABELS[node.node_type]} output`}
       draggable={false}
       loading="lazy"
       decoding="async"
-      onLoad={(event) => {
-        const { naturalWidth, naturalHeight } = event.currentTarget;
-        if (naturalWidth > 0 && naturalHeight > 0) {
-          onMediaDimensionsResolved?.({ width: naturalWidth, height: naturalHeight });
-        }
-      }}
+      onLoad={resolveMediaDimensions}
     />
   );
 }
@@ -333,6 +380,7 @@ function NodeSurface({
     <MediaSurface
       node={node}
       asset={asset}
+      status={status}
       label={label}
       onOpenVideoPreview={onOpenVideoPreview}
       onMediaDimensionsResolved={onMediaDimensionsResolved}
@@ -355,7 +403,12 @@ export function AgentCanvasNodeCard({
   onRun,
   onAssetDroppedAsReference,
 }: AgentCanvasNodeCardProps) {
-  const status = runtime?.visible_status ?? node.status;
+  // 状态优先级（P5 §3）：persisted 的 Node 状态是生命周期权威——draft/ready/
+  // failed 不被 runtime 遥测改写；只有 persisted working（在飞）时才采纳
+  // 遥测的可见状态（phase/error 细化）。
+  const status = node.status === "working"
+    ? runtime?.visible_status ?? node.status
+    : node.status;
   const label = creativeRoleDisplayName(node.creative_role);
   const resolvedMediaDimensions = mediaDimensions
     ?? (validAgentCanvasMediaDimensions(asset)
