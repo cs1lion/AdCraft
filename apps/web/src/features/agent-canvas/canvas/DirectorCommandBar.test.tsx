@@ -149,3 +149,80 @@ describe("DirectorCommandBar gate rejection (D3, ADR 0012)", () => {
   });
 });
 
+describe("trigger target picking (用所选)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  function sceneWithProp(): SceneScriptRoot {
+    const base = scene();
+    base.props = [
+      { id: "prop_crate_1", type: "crate", position: [3, 4, 0], scale: 1, rotation_y: 0 },
+    ] as never;
+    return base;
+  }
+
+  it("renders the trigger panel without any prior state (the old condition was always false)", () => {
+    render(
+      <SceneScriptPlaybackProvider sceneScript={scene()}>
+        <DirectorCommandBar sceneScript={scene()} onApply={() => {}} selectedObject={null} />
+      </SceneScriptPlaybackProvider>,
+    );
+    // 回归锁定：触发区外层条件曾是 trigger || triggerTargetId（初始均为
+    // 空串，恒假）——when/then 面板在实机上从未渲染出来过。
+    expect(screen.getByTestId("scene-script-3d-director-trigger")).toBeTruthy();
+  });
+
+  it("fills the arrive destination from the selected object and gates it", async () => {
+    const directorClient = await import("./directorOperationsClient.ts");
+    const gateSpy = vi.spyOn(directorClient, "applyTriggerEvent").mockResolvedValue({
+      ok: true,
+      appliedSceneScript: sceneWithProp(),
+      operations: [],
+    });
+
+    render(
+      <SceneScriptPlaybackProvider sceneScript={sceneWithProp()}>
+        <DirectorCommandBar
+          sceneScript={sceneWithProp()}
+          onApply={() => {}}
+          selectedObject={{ kind: "prop", id: "prop_crate_1" }}
+        />
+      </SceneScriptPlaybackProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText("触发条件"), { target: { value: "arrive" } });
+    fireEvent.change(screen.getByLabelText("触发目标角色"), { target: { value: "char_a" } });
+    fireEvent.click(screen.getByTestId("scene-script-3d-director-trigger-pick"));
+
+    const positionInput = screen.getByLabelText("到达目标位置 (X,Y,Z)") as HTMLInputElement;
+    expect(positionInput.value).toBe("3,4,0");
+
+    fireEvent.click(screen.getByTestId("scene-script-3d-director-trigger-submit"));
+    await waitFor(() => expect(gateSpy).toHaveBeenCalledTimes(1));
+    const request = gateSpy.mock.calls[0][1];
+    expect(request.triggerTargetPosition).toEqual([3, 4, 0]);
+  });
+
+  it("computes the face yaw toward the selected object (mirrors backend _yaw_facing)", () => {
+    render(
+      <SceneScriptPlaybackProvider sceneScript={sceneWithProp()}>
+        <DirectorCommandBar
+          sceneScript={sceneWithProp()}
+          onApply={() => {}}
+          selectedObject={{ kind: "prop", id: "prop_crate_1" }}
+        />
+      </SceneScriptPlaybackProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText("触发条件"), { target: { value: "face" } });
+    fireEvent.change(screen.getByLabelText("触发目标角色"), { target: { value: "char_a" } });
+    fireEvent.click(screen.getByTestId("scene-script-3d-director-trigger-pick"));
+
+    const yawInput = screen.getByLabelText("转身目标角度 (°)") as HTMLInputElement;
+    // char_a 站在 [0,0,0]，目标在 [3,4,0]：atan2(3, 4) ≈ 36.87° → 37
+    expect(yawInput.value).toBe("37");
+  });
+});
+

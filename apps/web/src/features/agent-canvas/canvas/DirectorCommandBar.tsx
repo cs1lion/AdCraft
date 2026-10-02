@@ -203,6 +203,39 @@ export function DirectorCommandBar({
     }
   };
 
+  // "用所选" — fill the arrive destination / face yaw from the object the
+  // viewport currently points at instead of typing raw coordinates. The yaw
+  // formula mirrors the backend's _yaw_facing (atan2(dx, dy) in degrees,
+  // 0° faces +Y) so a UI-computed value and a gate-expanded one agree.
+  const pickTargetFromSelection = () => {
+    if (!selectedObject) return;
+    const picked = sceneObjectPositionAtFrame(sceneScript, selectedObject, playheadFrame);
+    if (!picked) {
+      setStatus({ ok: false, message: "所选对象不在场景里。" });
+      return;
+    }
+    if (trigger === "arrive") {
+      const rounded = picked.map((value) => Math.round(value * 100) / 100);
+      setTriggerTargetPositionStr(rounded.join(","));
+      setStatus({ ok: true, message: `到达目标已设为「${selectedObject.id}」的位置。` });
+      return;
+    }
+    if (trigger === "face") {
+      const watched = triggerTargetId
+        ? sceneObjectPositionAtFrame(sceneScript, { kind: "character", id: triggerTargetId }, playheadFrame)
+        : null;
+      if (!watched) {
+        setStatus({ ok: false, message: "先选触发目标角色，才能计算朝向。" });
+        return;
+      }
+      const degrees = Math.round(
+        (Math.atan2(picked[0] - watched[0], picked[1] - watched[1]) * 180) / Math.PI,
+      );
+      setTriggerTargetYawStr(String(degrees));
+      setStatus({ ok: true, message: `转身朝向「${selectedObject.id}」（${degrees}°）。` });
+    }
+  };
+
   const submit = async () => {
 
     const frame = playback.currentFrame;
@@ -499,70 +532,82 @@ export function DirectorCommandBar({
 
       ) : null}
 
-      {trigger || triggerTargetId ? (
-        <div className="scene-script-3d-editor__nudges" data-testid="scene-script-3d-director-trigger">
-          <span className="scene-script-3d-editor__nudge-label">
-            触发
-          </span>
-          <select
-            aria-label="触发条件"
-            value={trigger}
-            onChange={(e) => setTrigger(e.target.value)}
+      {/* 触发面板必须常驻：条件曾是 trigger || triggerTargetId（初始均为空串），
+          恒假——when/then UI 在实机上从未渲染出来过 */}
+      <div className="scene-script-3d-editor__nudges" data-testid="scene-script-3d-director-trigger">
+        <span className="scene-script-3d-editor__nudge-label">
+          触发
+        </span>
+        <select
+          aria-label="触发条件"
+          value={trigger}
+          onChange={(e) => setTrigger(e.target.value)}
+          disabled={disabled}
+          data-testid="scene-script-3d-director-trigger-cond"
+        >
+          <option value="">选择触发条件…</option>
+          <option value="sit">坐下 (sit)</option>
+          <option value="stand">站立 (stand)</option>
+          <option value="line_spoken">台词完成 (line_spoken)</option>
+          <option value="arrive">到达 (arrive)</option>
+          <option value="face">转身 (face)</option>
+        </select>
+        <select
+          aria-label="触发目标角色"
+          value={triggerTargetId}
+          onChange={(e) => setTriggerTargetId(e.target.value)}
+          disabled={disabled || !trigger}
+          data-testid="scene-script-3d-director-trigger-target"
+        >
+          <option value="">选择角色…</option>
+          {sceneScript.characters.map((c) => (
+            <option key={c.id} value={c.id}>{c.id}</option>
+          ))}
+        </select>
+        {trigger === "arrive" ? (
+          <input
+            type="text"
+            value={triggerTargetPositionStr}
+            onChange={(e) => setTriggerTargetPositionStr(e.target.value)}
             disabled={disabled}
-            data-testid="scene-script-3d-director-trigger-cond"
-          >
-            <option value="">选择触发条件…</option>
-            <option value="sit">坐下 (sit)</option>
-            <option value="stand">站立 (stand)</option>
-            <option value="line_spoken">台词完成 (line_spoken)</option>
-            <option value="arrive">到达 (arrive)</option>
-            <option value="face">转身 (face)</option>
-          </select>
-          <select
-            aria-label="触发目标角色"
-            value={triggerTargetId}
-            onChange={(e) => setTriggerTargetId(e.target.value)}
-            disabled={disabled || !trigger}
-            data-testid="scene-script-3d-director-trigger-target"
-          >
-            <option value="">选择角色…</option>
-            {sceneScript.characters.map((c) => (
-              <option key={c.id} value={c.id}>{c.id}</option>
-            ))}
-          </select>
-          {trigger === "arrive" ? (
-            <input
-              type="number"
-              step="0.5"
-              value={triggerTargetPositionStr}
-              onChange={(e) => setTriggerTargetPositionStr(e.target.value)}
-              disabled={disabled}
-              aria-label="到达目标位置 (X,Y,Z)"
-              data-testid="scene-script-3d-director-trigger-position"
-            />
-          ) : null}
-          {trigger === "face" ? (
-            <input
-              type="number"
-              step="15"
-              value={triggerTargetYawStr}
-              onChange={(e) => setTriggerTargetYawStr(e.target.value)}
-              disabled={disabled}
-              aria-label="转身目标角度 (°)"
-              data-testid="scene-script-3d-director-trigger-yaw"
-            />
-          ) : null}
+            placeholder="X,Y,Z（或点「用所选」）"
+            aria-label="到达目标位置 (X,Y,Z)"
+            data-testid="scene-script-3d-director-trigger-position"
+          />
+        ) : null}
+        {trigger === "face" ? (
+          <input
+            type="number"
+            step="15"
+            value={triggerTargetYawStr}
+            onChange={(e) => setTriggerTargetYawStr(e.target.value)}
+            disabled={disabled}
+            aria-label="转身目标角度 (°)"
+            data-testid="scene-script-3d-director-trigger-yaw"
+          />
+        ) : null}
+        {trigger === "arrive" || trigger === "face" ? (
           <button
             type="button"
             className="scene-script-3d-editor__save"
-            onClick={submitTrigger}
-            disabled={disabled || !trigger || !triggerTargetId}
-            data-testid="scene-script-3d-director-trigger-submit"
+            onClick={pickTargetFromSelection}
+            disabled={disabled || !selectedObject}
+            title={selectedObject ? "用「这个」的当前位置/朝向" : "先在视口选中一个对象"}
+            data-testid="scene-script-3d-director-trigger-pick"
           >
-            触发时执行
+            {selectedObject ? `用所选（${selectedObject.id}）` : "用所选"}
           </button>
-        </div>
-      ) : null}
+        ) : null}
+        <button
+          type="button"
+          className="scene-script-3d-editor__save"
+          onClick={submitTrigger}
+          disabled={disabled || !trigger || !triggerTargetId}
+          data-testid="scene-script-3d-director-trigger-submit"
+        >
+          触发时执行
+        </button>
+      </div>
 
       {status && (
 
