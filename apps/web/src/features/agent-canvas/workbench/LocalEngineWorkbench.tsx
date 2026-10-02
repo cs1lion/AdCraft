@@ -30,6 +30,7 @@ import { FourLinePromptEditor } from "./FourLinePromptEditor.tsx";
 import { NodeWorkbenchError } from "./NodeWorkbenchError.tsx";
 import { SceneImageIntake } from "../canvas/SceneImageIntake.tsx";
 import { SceneLanguageBuilder } from "../canvas/SceneLanguageBuilder.tsx";
+import { useScene3dDraftHistory } from "./scene3dDraftHistory.ts";
 import { WhiteModelOpLog } from "../canvas/WhiteModelOpLog.tsx";
 import {
   clearScene3dDraft,
@@ -542,6 +543,10 @@ function Scene3DEditSection({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // F1: 单步撤销——所有交互编辑通道（语言搭建/导演口令/唇形应用/图片生成/
+  // 视口拖拽）都经 draftHistory.commit 进草稿；节点重跑、草稿恢复、revert
+  // 等外部变更会让历史自动失效（hook 内以引用比较检测）。
+  const draftHistory = useScene3dDraftHistory(draftScript, setDraftScript);
   // Re-sync from the node when its content changes upstream (rerun/replace),
   // unless there are unsaved local edits — never clobber the author's work.
   useEffect(() => {
@@ -749,7 +754,7 @@ function Scene3DEditSection({
     >
       <SceneImageIntake
         disabled={saving}
-        onSceneScriptGenerated={(script) => setDraftScript(script)}
+        onSceneScriptGenerated={(script) => draftHistory.commit(script)}
       />
       <div className="scene-3d-workbench__mode">
         <label className="scene-3d-workbench__mode-toggle">
@@ -773,12 +778,22 @@ function Scene3DEditSection({
         >
           {fullscreen ? "⤡ 退出全屏" : "⤢ 全屏导演台"}
         </button>
+        <button
+          type="button"
+          className="scene-3d-workbench__fullscreen-toggle"
+          onClick={draftHistory.undo}
+          disabled={saving || !draftHistory.canUndo}
+          title="撤销上一次编辑（语言搭建 / 导演口令 / 面板应用 / 视口拖拽）"
+          data-testid="scene-3d-workbench-undo"
+        >
+          {draftHistory.canUndo ? `↩ 撤销（${draftHistory.depth}）` : "↩ 撤销"}
+        </button>
       </div>
       {/* 语言搭建（2026-09-29）：说一句“加一张桌子在左边”，预览实时长出来 */}
       {draftScript && (
         <SceneLanguageBuilder
           script={draftScript}
-          onChange={setDraftScript}
+          onChange={draftHistory.commit}
           disabled={saving}
         />
       )}
@@ -807,7 +822,7 @@ function Scene3DEditSection({
           onLinesPersist={persistLines}
           workflowId={node.workflow_id}
           sourceNodeId={node.node_id}
-          onSceneScriptApplied={setDraftScript}
+          onSceneScriptApplied={draftHistory.commit}
           onSegmentsApplied={(segments) => setSpeechSegments(segments)}
           onOpenTransitions={setFocusShotId}
           disabled={saving}
@@ -817,7 +832,7 @@ function Scene3DEditSection({
       <Suspense fallback={<p className="scene-3d-workbench__hint">加载 3D 编辑台…</p>}>
         <SceneScript3DEditor
           sceneScript={draftScript}
-          onChange={setDraftScript}
+          onChange={draftHistory.commit}
           onSave={() => void save()}
           onRevert={() => setDraftScript(persisted)}
           saving={saving}
