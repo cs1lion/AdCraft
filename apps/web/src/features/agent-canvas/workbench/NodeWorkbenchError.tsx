@@ -28,9 +28,9 @@ export function NodeWorkbenchError({ draft }: { draft: NodeWorkbenchDraft }) {
     );
   }
   if (!draft.error) {
-    return draft.promptSaveStatus === "saved" && draft.prompt.trim()
-      ? <p className="agent-node-workbench__prompt-saved" role="status">Prompt ready · direct-ready</p>
-      : null;
+    // 规格（AgentCanvasInlineWorkbench.test "without adding status rows"）：
+    // 自动保存成功不渲染 "Prompt ready" 状态行——那是噪音，不是反馈。
+    return null;
   }
   const action = draft.errorAction;
   return (
