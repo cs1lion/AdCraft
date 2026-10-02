@@ -151,3 +151,28 @@ ModelParameterControls.test 5 条保持绿的约束下动组件。
 - 验证：InlineWorkbench 83/83 + ModelParameterControls/CanvasModelPicker
   全绿；typecheck 0 error；lint 0；全量 2665/17 = 39 − 22 精确减账。
 - 剩余：chat hook 12、AgentCanvasNode 揭示 trio 4（含设计裁决）。
+
+## 7. chat hook 簇诊断修正（2026-10-02）：非"无共享根因"，是三处覆盖/分类缺口
+
+> 对 12 条失败逐条定位（L525/1266/2894/2970/3007/3113/3165/3476/3574/3769/
+> 3799/3946）后修正 §5 的"无共享根因"判断。hook（1703 行）里功能全部存在
+> （hydrateTurn/retry/guidance_revision_conflict/proposal 均有实现），
+> 12 条都是行为缺口而非缺失功能：
+
+1. **Turn hydration 覆盖窄（×3，L2894/2970/3007）**：`hydrateCapabilityTurns`
+   只水合 `item_type === "expert_activity"` 的条目；规格要求 structured
+   user message / unmatched Agent Turn 等历史条目也水合（turn 状态与 retry
+   lineage 跨刷新存活），且并发限 4。修法：扩展水合的条目类型 + 并发闸。
+2. **Timeline recovery 分类（×3-4，L525/1266/3574/3946）**：refresh 内
+   post-timeline 的投影失败（onActionReceipt/receipt 重放）、proposal 详情
+   水合失败、Turn retry 本地失败被误记为 timelineRecovery；规格：只有
+   timeline 本身不可达才进 recovery，其余保持本地。
+3. **契约漂移散点（×4-5，L3113/3165/3476/3769/3799）**：proposal 物化排队
+   语义（不假设同步 no-op）、applied/superseded 先拒绝再发选择请求、
+   非 turn/legacy 范围不走 Turn Retry、SSE 重放不覆盖权威 presentation
+   items、guidance revision 冲突要刷新 guidance 并保留卡片（文案
+   guidance_revision_conflict）。
+
+**下一轮做法**：按 1→2→3 分小批，每批跑绿对应测试；hook 侧改动集中在
+refresh 主流程与两个 hydrate 回调，风险点是与 SSE 事件流的竞态，改后
+必须全量跑 AgentCanvasChatPanel/ConversationRecoverySurface 等同模块测试。
