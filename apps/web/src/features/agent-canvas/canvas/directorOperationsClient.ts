@@ -368,3 +368,71 @@ export async function cancelScene3DRender(jobId: string): Promise<void> {
     throw new Error(detail || `取消渲染失败 (HTTP ${response.status})`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Language-builder AI fallback: a sentence the deterministic keyword map
+// cannot parse escalates to /language-fallback (white-model LLM -> ops
+// batch -> the same all-or-nothing gate). The applied script comes back;
+// a rejection comes back coded so the builder can say what went wrong and
+// keep the sentence for a retry.
+// ---------------------------------------------------------------------------
+
+export interface LanguageFallbackResult {
+  ok: boolean;
+  appliedSceneScript?: SceneScriptRoot;
+  operationCount?: number;
+  error?: string;
+  errorCode?: string;
+}
+
+export async function requestLanguageFallback(
+  sceneScript: SceneScriptRoot,
+  text: string,
+): Promise<LanguageFallbackResult> {
+  const response = await fetch(`${SCENE_3D_BASE}/language-fallback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scene_script: JSON.parse(JSON.stringify(sceneScript)),
+      text,
+    }),
+  });
+
+  const body = (await response.json().catch(() => null)) as {
+    success?: boolean;
+    operation_count?: number;
+    applied_scene_script?: SceneScriptRoot;
+    error?: string;
+    error_code?: string;
+    detail?: Record<string, unknown>;
+  } | null;
+
+  if (!response.ok) {
+    const detail = body?.detail ?? {};
+    return {
+      ok: false,
+      error:
+        (detail.error as string | undefined) ??
+        body?.error ??
+        `AI 兜底请求失败 (HTTP ${response.status})`,
+      errorCode:
+        (detail.error_code as string | undefined) ??
+        body?.error_code ??
+        "language_fallback_failed",
+    };
+  }
+
+  if (!body?.success || !body.applied_scene_script) {
+    return {
+      ok: false,
+      error: body?.error ?? "AI 没能更新场景",
+      errorCode: body?.error_code ?? "language_fallback_failed",
+    };
+  }
+
+  return {
+    ok: true,
+    appliedSceneScript: body.applied_scene_script,
+    operationCount: body.operation_count ?? 0,
+  };
+}

@@ -109,6 +109,17 @@ def test_unparseable_output_fails_closed() -> None:
     assert exc.value.code == "white_model_operations_unparseable"
 
 
+def test_trailing_comma_output_is_salvaged() -> None:
+    # 2026-09-29 live failure mode (one character from valid): the local
+    # salvage pass repairs it instead of failing the whole generation.
+    content = '{"operations": [{"op": "add_prop", "type": "cup", "position": [0, 0, 0]},]}'
+    generator = WhiteModelOpsGenerator(
+        _llm_settings(), client_factory=_client_returning(content)
+    )
+    script, _report = generator.generate(description="桌上放一个杯子")
+    assert [prop.type for prop in script.props] == ["cup"]
+
+
 def test_gate_rejection_carries_violations() -> None:
     # A batch naming a non-existent enum type: the tool service rejects it.
     batch = {"operations": [{"op": "add_prop", "type": "spaceship", "position": [0, 0, 0]}]}

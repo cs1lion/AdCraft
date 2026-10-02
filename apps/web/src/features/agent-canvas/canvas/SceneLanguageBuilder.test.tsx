@@ -55,3 +55,81 @@ describe("SceneLanguageBuilder", () => {
     expect(screen.getByText(/没听懂/)).toBeTruthy();
   });
 });
+
+describe("SceneLanguageBuilder AI fallback", () => {
+  const UNPARSED = "铺一张波斯地毯";
+
+  function typeUnparsed() {
+    fireEvent.change(screen.getByPlaceholderText(/加一张桌子在左边/), {
+      target: { value: UNPARSED },
+    });
+    fireEvent.click(screen.getByText("添加"));
+  }
+
+  it("offers the AI fallback on a miss and adopts the applied script", async () => {
+    const onChange = vi.fn();
+    const applied = script();
+    applied.props = [
+      { id: "prop_rug_1", type: "box", position: [0.5, 0, 0] },
+    ] as never;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        success: true,
+        operation_count: 2,
+        applied_scene_script: applied,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      render(<SceneLanguageBuilder script={script()} onChange={onChange} />);
+      typeUnparsed();
+      expect(screen.getByText(/没听懂/)).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("scene-language-ai-fallback"));
+
+      expect(await screen.findByText(/✓ AI 已按/)).toBeTruthy();
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange.mock.calls[0][0]).toBe(applied);
+      expect(fetchMock.mock.calls[0][0]).toContain("/api/v1/scene-3d/language-fallback");
+      const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.text).toBe(UNPARSED);
+      // 已处理，不再给重试按钮
+      expect(screen.queryByTestId("scene-language-ai-fallback")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the sentence and the retry button when the AI path is rejected", async () => {
+    const onChange = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        success: false,
+        error: "LLM is not configured: set LLM_API_KEY and LLM_BASE_URL.",
+        error_code: "white_model_llm_unconfigured",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      render(<SceneLanguageBuilder script={script()} onChange={onChange} />);
+      typeUnparsed();
+
+      fireEvent.click(screen.getByTestId("scene-language-ai-fallback"));
+
+      expect(await screen.findByText(/AI 没搭出来/)).toBeTruthy();
+      expect(screen.getByText(/white_model_llm_unconfigured|LLM is not configured/)).toBeTruthy();
+      expect(onChange).not.toHaveBeenCalled();
+      // 句子留着可重试
+      expect(screen.getByTestId("scene-language-ai-fallback")).toBeTruthy();
+      expect(
+        (screen.getByPlaceholderText(/加一张桌子在左边/) as HTMLInputElement).value,
+      ).toBe(UNPARSED);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

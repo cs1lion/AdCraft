@@ -1468,3 +1468,19 @@
   font-size: 9px;
   margin-top: 3px;
 }
+
+/* 「交给 AI 试试」——关键词没命中时的升级出口，保持在提示行内 */
+.scene-language-builder__ai {
+  margin-left: 6px;
+  background: transparent;
+  border: 1px solid #2a2a4a;
+  color: #8cf;
+  border-radius: 3px;
+  font-size: 9px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.scene-language-builder__ai:hover {
+  border-color: #4a4a8a;
+}

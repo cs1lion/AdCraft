@@ -1655,6 +1655,76 @@ def apply_trigger_event_command(request: TriggerEventRequest) -> TriggerEventRes
         )
 
 
+# ---------------------------------------------------------------------------
+# Language-builder AI fallback: a sentence the deterministic keyword map
+# cannot parse escalates to the white-model LLM ops path instead of a dead end.
+# ---------------------------------------------------------------------------
+
+
+class LanguageFallbackRequest(BaseModel):
+    """An unparsed sentence plus the script it was meant to edit."""
+
+    scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
+    text: str = Field(..., min_length=1, description="The sentence the keyword map could not parse")
+
+
+class LanguageFallbackResponse(BaseModel):
+    success: bool
+    operation_count: int = 0
+    applied_scene_script: dict[str, Any] | None = None
+    error: str | None = None
+    error_code: str | None = None
+    violations: list[dict[str, Any]] = []
+
+
+@router.post("/language-fallback", response_model=LanguageFallbackResponse)
+def generate_language_fallback_ops(request: LanguageFallbackRequest) -> LanguageFallbackResponse:
+    """Run an unparsed sentence through the white-model generator.
+
+    The deterministic SceneLanguageBuilder carries the high-frequency
+    vocabulary at zero cost; anything it cannot parse lands here. The
+    sentence goes to WhiteModelOpsGenerator — NL -> ops batch -> the same
+    all-or-nothing gate — and the applied script (or a coded error with
+    per-op violations) comes back. The gate is authoritative: the LLM
+    output is never trusted as a script.
+    """
+    from pydantic import ValidationError
+
+    from app.schemas.scene_script import SceneScriptRoot
+    from app.services.scene3d.white_model_generator import (
+        WhiteModelGenerationError,
+        WhiteModelOpsGenerator,
+    )
+
+    try:
+        base_script = SceneScriptRoot.model_validate(request.scene_script)
+    except ValidationError as error:
+        return LanguageFallbackResponse(
+            success=False,
+            error=f"Invalid scene script: {str(error)[:200]}",
+            error_code="scene_script_invalid",
+        )
+
+    from app.core.config import get_settings
+
+    generator = WhiteModelOpsGenerator(get_settings())
+    try:
+        script, report = generator.generate(description=request.text, base_script=base_script)
+    except WhiteModelGenerationError as error:
+        return LanguageFallbackResponse(
+            success=False,
+            error=str(error),
+            error_code=error.code,
+            violations=error.violations,
+        )
+
+    return LanguageFallbackResponse(
+        success=True,
+        operation_count=report.get("operation_count", 0),
+        applied_scene_script=script.model_dump(mode="json"),
+    )
+
+
 class ConsistencyCheckRequest(BaseModel):
     scene_script: dict[str, Any] = Field(..., description="Validated SceneScript JSON")
 

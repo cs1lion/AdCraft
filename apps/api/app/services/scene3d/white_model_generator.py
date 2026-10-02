@@ -23,6 +23,7 @@ import httpx
 
 from app.core.config import Settings
 from app.schemas.scene_script import SceneScriptRoot
+from app.services.scene3d.llm_json_salvage import salvage_json_text
 from app.services.scene3d.scene_script_tool_service import (
     SceneOperationError,
     SceneOperationResult,
@@ -245,7 +246,15 @@ def _parse_operations(content: str) -> list[dict[str, Any]]:
         try:
             payload = json.loads(candidate)
         except json.JSONDecodeError:
-            continue
+            # A trailing comma is one character away from valid — repair
+            # locally (llm_json_salvage) before failing the whole batch.
+            repaired = salvage_json_text(candidate)
+            if repaired is None:
+                continue
+            try:
+                payload = json.loads(repaired)
+            except json.JSONDecodeError:
+                continue
         if isinstance(payload, dict) and isinstance(payload.get("operations"), list):
             operations = payload["operations"]
             if operations and all(isinstance(op, dict) for op in operations):
