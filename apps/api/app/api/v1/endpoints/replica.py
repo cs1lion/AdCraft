@@ -17,10 +17,16 @@ import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
+from app.schemas.agent_canvas import CanvasNodeV2
+from app.services.agent_canvas_accepted_background import (
+    AcceptedBackgroundOperation,
+    AcceptedBackgroundResourceType,
+    AcceptedBackgroundWork,
+)
 from app.services.replica.adreplica import (
     AdReplicaParseError,
     adreplica_filename,
