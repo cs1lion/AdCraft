@@ -77,7 +77,7 @@
 |---|---|---|---|---|
 | `canvas/ReplicaBlueprintPanel.test.tsx` | 22 | **Item 2/7 新债** | 概念断奶重设计（默认主路径"🎬 导演台 + 槽位替换"、高级入口收进 ⚙ 折叠、复刻改写改槽位语义）落地后，旧面板测试仍锁旧 UI（"源码 .adreplica" 页签 ×18、锚点事件 ×2 等，全部 `Unable to find` 类） | 专门一轮：以 weaning 测试的新信息架构为规格，把旧测试迁移到新 DOM（或按断奶语义降级/退役相应断言） |
 | `canvas/ReplicaBlueprintPanel.weaning.test.tsx` | 2 | **Item 7 自带新债** | 断奶自己的规格测试有 2 条在 main 上红（"🎬 导演台"/"⚙ 高级"找不到）——要么 c012cf64（复刻改写）回退了断奶入口，要么测试先于实现 | 先裁决：面板当前实装 vs 断奶规格谁对；单向修（实现或测试） |
-| `workbench/AgentCanvasInlineWorkbench.test.tsx` | 22 | 旧债（§3 在案） | 组件表面漂移（按钮/标签改名重组） | 逐个对齐当前 DOM（台账原计划"专门一轮"） |
+| `workbench/AgentCanvasInlineWorkbench.test.tsx` | 22 | 旧债（§3 在案）；**2026-10-02 深挖升级诊断，见 §6** | 非表面漂移：test-first 的富参数工作台规格（descriptor 门控/视频音频开关/legacy 迁移），新组件建了没接线 | 接线 MediaPromptWorkbench + 对齐 22 条规格测试（一轮） |
 | `chat/useAgentCanvasChat.test.tsx` | 12 | 旧债（§3 在案） | hook 契约漂移：Turn hydration/retry 调用序列、proposal 冲突店、guidance revision 文案 | 逐条核对当前契约；无共享根因 |
 | `canvas/AgentCanvasNode.test.tsx` | 4 | 旧债（§3 在案） | 揭示门控 trio（merge 丢失，CSS 已恢复但接线未接）+ 状态优先级需设计裁决 | 按失败测试所锁规格重建媒体门控 |
 | `app/routeProviders.test.tsx` | 1 | **非债**（并行调度偶发） | 单独运行 15/15 全过；全量跑时偶发（memory：并行调度坑） | 重跑即可，不记账 |
@@ -101,3 +101,38 @@
   ⚙ 高级再进页签，断言本体未动。
 - 验证：weaning 2/2 + 面板 36/36 全绿；typecheck 0 error；全量 2643 passed
   / 39 failed = 63 − 24，零新增。
+
+## 6. InlineWorkbench 簇深挖（2026-10-02）：不是表面漂移，是先行规格未接线
+
+> 对 22 条失败逐簇归因（Generate audio ×8、Duration seconds ×4、参数布局
+> ×4、model picker ×2、Run 错误通道 ×2、Retry ×1、reference policy ×1）后的
+> 结论修正。
+
+**架构事实**：
+- AgentCanvasInlineWorkbench 是 223 行的**分发器**（text/script/image/video/
+  audio → 各专用 workbench）；video 节点渲染 MediaPromptWorkbench。
+- 测试锁的富参数 UI 属于两个**零消费方**的新组件：`ModelParameterControls`
+  （descriptor 驱动的时长/分辨率/比例控件，自带 5 条绿测试）、
+  `VideoAudioToggle`（"Generate audio"，连测试都没有）——组件建了，从未
+  import 进任何产品代码。
+- 现行 MediaPromptWorkbench 自带一套**无条件渲染**的 duration 控件
+  （aria-label "Requested video duration"，管理同一批参数键
+  duration_seconds/requested_duration_seconds/effective_duration_seconds）；
+  CanvasModelPicker 已接线（image/video/script/text 共用）。
+
+**定性**：与 BlueprintPanel 断奶同型——73212c76（3D previs + provider
+video/audio reference channel）以测试先行写了富参数工作台规格（1525 行
+测试），子组件起了头，接线没做。22 条失败里大量断言（legacy 参数迁移、
+provider 上限钳位、非整数阻塞、descriptor 门控"模型没有就别造控件"）是
+**尚未实现的规格**，不是可以对着现 DOM 改改查询就绿的标签错位。
+
+**下一轮做法（接规格补实现，不是删测试）**：
+1. MediaPromptWorkbench 接入 ModelParameterControls（替换手写 duration
+   控件，descriptor 驱动：模型没声明就不渲染）+ VideoAudioToggle（视频
+   音频生成开关）；
+2. 行为对齐四条规格线：legacy 迁移（requested/effective → duration_seconds）、
+   上限钳位保 canonical key、非整数阻塞 run、descriptor 门控；
+3. 逐簇跑绿 22 条；CanvasModelPicker/Run 错误通道两条线按现行 DOM 对齐。
+
+**连带处置**：VideoAudioToggle 无测试无消费方——接线时一并补其测试；
+ModelParameterControls.test 5 条保持绿的约束下动组件。
