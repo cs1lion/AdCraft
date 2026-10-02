@@ -139,6 +139,30 @@ def test_missing_llm_config_fails_closed() -> None:
     assert exc.value.code == "white_model_llm_unconfigured"
 
 
+def test_prompt_type_lists_match_the_schema() -> None:
+    # The prompt's type lists are built from the schema enums (single source):
+    # the prompt must teach exactly the types the apply-operations gate
+    # accepts — no more (gate rejections), no fewer (silent capability loss).
+    from typing import get_args
+
+    from app.schemas.scene_script import EnvironmentType, PropType
+    from app.services.scene3d.white_model_generator import _WHITE_MODEL_SYSTEM_PROMPT
+
+    def types_after_hash(line: str) -> set[str]:
+        return set(line.split("# ")[1].split("|"))
+
+    environment_line = next(
+        line for line in _WHITE_MODEL_SYSTEM_PROMPT.splitlines() if "add_environment" in line
+    )
+    prop_line = next(
+        line for line in _WHITE_MODEL_SYSTEM_PROMPT.splitlines() if '"add_prop"' in line
+    )
+    assert types_after_hash(environment_line) == set(get_args(EnvironmentType))
+    assert types_after_hash(prop_line) == set(get_args(PropType))
+    assert "__PROP_TYPES__" not in _WHITE_MODEL_SYSTEM_PROMPT
+    assert "__ENVIRONMENT_TYPES__" not in _WHITE_MODEL_SYSTEM_PROMPT
+
+
 def test_empty_description_fails_closed() -> None:
     generator = WhiteModelOpsGenerator(
         _llm_settings(), client_factory=_client_returning("{}")

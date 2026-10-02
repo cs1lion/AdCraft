@@ -35,7 +35,8 @@ interface VocabEntry {
   type: string;
 }
 
-const VOCAB: VocabEntry[] = [
+/** 实体关键词词表。导出仅供跨边界契约测试锁定：映射目标必须存在于 schema。 */
+export const VOCAB: VocabEntry[] = [
   { pattern: /圆桌/, kind: "prop", type: "round_table" },
   { pattern: /方桌|餐桌|桌子/, kind: "prop", type: "rect_table" },
   { pattern: /椅子|座椅/, kind: "prop", type: "chair" },
@@ -66,8 +67,9 @@ const VOCAB: VocabEntry[] = [
 /**
  * 锚点词：只用于定位"方位词跟在谁后面"，绝不创建实体。比 VOCAB 多出掉
  * "子"尾的短形（桌上/椅上/树上）。顺序即优先级，具体的排前面（板条箱先于箱子）。
+ * 导出仅供跨边界契约测试锁定映射目标。
  */
-const ANCHOR_WORDS: VocabEntry[] = [
+export const ANCHOR_WORDS: VocabEntry[] = [
   { pattern: /圆桌/, kind: "prop", type: "round_table" },
   { pattern: /方桌|餐桌|桌子|桌/, kind: "prop", type: "rect_table" },
   { pattern: /板条箱|条箱/, kind: "prop", type: "crate" },

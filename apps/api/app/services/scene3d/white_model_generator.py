@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, get_args
 
 import httpx
 
 from app.core.config import Settings
-from app.schemas.scene_script import SceneScriptRoot
+from app.schemas.scene_script import EnvironmentType, PropType, SceneScriptRoot
 from app.services.scene3d.llm_json_salvage import salvage_json_text
 from app.services.scene3d.scene_script_tool_service import (
     SceneOperationError,
@@ -50,14 +50,17 @@ DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_TOKENS = 4000
 
 # Condensed from the video_agent_3d_white_model skill contract (the skill is
-# the long form; this is what the model actually needs in-context).
+# the long form; this is what the model actually needs in-context). The two
+# type lists come from the schema itself (filled in right below): a type added
+# to PropType/EnvironmentType reaches the prompt automatically, and the prompt
+# can never teach a type the apply-operations gate would reject.
 _WHITE_MODEL_SYSTEM_PROMPT = """You are a white-model (blockout) scene builder. Given a scene
 description, output ONLY a JSON object {"operations": [...]} — a batch of 2-10 operations that
 build the scene incrementally. No prose outside the JSON.
 
 Operations (only these):
-- {"op": "add_environment", "type", "position": [x,y,z], "scale"?, "rotation_y"?}   # wall|pillar|floor|gable_roof|flat_roof|door|window|stairs|platform|tree|rock|fence|ground
-- {"op": "add_prop", "type", "position"}                                            # round_table|rect_table|chair|stool|lantern|box|crate|vase|weapon|scroll|book|cup
+- {"op": "add_environment", "type", "position": [x,y,z], "scale"?, "rotation_y"?}   # __ENVIRONMENT_TYPES__
+- {"op": "add_prop", "type", "position"}                                            # __PROP_TYPES__
 - {"op": "add_character", "position", "color"?, "action"?}                          # action: stand|talk|walk|sit|gesture
 - {"op": "add_camera", "position", "look_at", "shot_type"?}                         # wide|medium|closeup|over_shoulder|pov
 - {"op": "move_object", "kind", "id", "position"}                                   # kind: environment|prop|character|camera
@@ -72,6 +75,10 @@ Build order: floor -> walls -> door -> props -> characters -> cameras. A batch m
 objects its own earlier ops create. Keep each batch to one area (<=8 objects).
 Prefer enum types: use the nearest primitive for furniture-like things (a locker is a `box`).
 """
+
+_WHITE_MODEL_SYSTEM_PROMPT = _WHITE_MODEL_SYSTEM_PROMPT.replace(
+    "__ENVIRONMENT_TYPES__", "|".join(get_args(EnvironmentType))
+).replace("__PROP_TYPES__", "|".join(get_args(PropType)))
 
 
 class WhiteModelOpsGenerator:
