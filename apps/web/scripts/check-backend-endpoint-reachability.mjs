@@ -66,6 +66,22 @@ const CONSUMERS = [
 
 const ROUTE_DECORATOR = /@(?:[A-Za-z_][\w]*_?router|router)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(?:[rl]?)?"([^"]+)"/g;
 const PREFIX_DECL = /(?:APIRouter|APIRouter\()\s*(?:prefix\s*=\s*)?"([^"]+)"/;
+/** Mount-time prefixes: `api_router.include_router(creation.router, prefix="/creation")`.
+ * Most endpoint modules declare their prefix on the in-file APIRouter; creation.py
+ * is mounted with one instead, and missing it reported every creation route dead. */
+const ROUTER_MOUNT = /include_router\(\s*(\w+)\.router\s*(?:,\s*prefix\s*=\s*"([^"]+)")?\s*\)/g;
+
+async function collectRouterMounts(version) {
+  const routerFile = path.join(API_ROOT, "app", "api", version, "router.py");
+  if (!existsSync(routerFile)) return {};
+  const source = await readFile(routerFile, "utf8");
+  const mounts = {};
+  for (const match of source.matchAll(ROUTER_MOUNT)) {
+    const [, moduleName, prefix] = match;
+    mounts[moduleName] = prefix ?? "";
+  }
+  return mounts;
+}
 
 async function walk(dir, filter = () => true) {
   const out = [];
@@ -84,10 +100,12 @@ async function collectRoutes() {
   for (const version of ["v1", "v2", "internal"]) {
     const dir = path.join(API_ROOT, "app", "api", version, "endpoints");
     const files = await walk(dir, (f) => f.endsWith(".py"));
+    const moduleMounts = await collectRouterMounts(version);
     for (const file of files) {
       const source = await readFile(file, "utf8");
       // APIRouter(prefix="...") — first declaration wins; it is the module prefix.
       const prefix = PREFIX_DECL.exec(source)?.[1] ?? "";
+      const mountPrefix = moduleMounts[path.basename(file, ".py")] ?? "";
       for (const match of source.matchAll(ROUTE_DECORATOR)) {
         const [, method, routePath] = match;
         routes.push({
@@ -96,10 +114,10 @@ async function collectRoutes() {
           version,
           method: method.toUpperCase(),
           // Full mounted path: mount prefix + router prefix + route path.
-          fullPath: `${MOUNT_PREFIX[version]}${prefix}${routePath}`.replace(/\/{2,}/g, "/"),
+          fullPath: `${MOUNT_PREFIX[version]}${mountPrefix}${prefix}${routePath}`.replace(/\/{2,}/g, "/"),
           // Router-relative path, for consumers that call through a helper which
           // supplies the mount prefix (apps/web/src/api/client.ts).
-          routerPath: `${prefix}${routePath}`.replace(/\/{2,}/g, "/"),
+          routerPath: `${mountPrefix}${prefix}${routePath}`.replace(/\/{2,}/g, "/"),
           line: source.slice(0, match.index).split("\n").length,
         });
       }
