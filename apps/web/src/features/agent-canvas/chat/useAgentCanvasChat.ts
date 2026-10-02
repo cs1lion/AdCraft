@@ -202,9 +202,10 @@ function mergeTimelineItems(
     const current = keys.get(key);
     if (current?.item_type === "expert_activity" && item.item_type === "expert_activity") {
       const currentTerminal = current.status !== "working";
-      const nextTerminal = item.status !== "working";
-      if (currentTerminal && !nextTerminal) return;
-      if (currentTerminal === nextTerminal && current.sequence >= item.sequence) return;
+      // Timeline/persisted 端的终态条目是权威：重放的 SSE 事件（序列可能
+      // 更大）不得覆盖它——事件投影只在 persisted 未定态时接管。
+      if (currentTerminal) return;
+      if (current.sequence >= item.sequence) return;
     }
     keys.set(key, item);
   });
@@ -258,6 +259,10 @@ export function useAgentCanvasChat({
   const [notice, setNotice] = useState<string | null>(null);
   const [proposalIssues, setProposalIssues] = useState<Record<string, string>>({});
   const [failedDraft, setFailedDraft] = useState<SubmitDraft | null>(null);
+  // 已提交物化的提案：同一提案不重复发 select 请求（materialization turn
+  // 由后端排队推进，重复 select 只会制造重复节点）。
+  const [submittedProposalIds, setSubmittedProposalIds] = useState<Record<string, boolean>>({});
+  const submittedProposalIdsRef = useRef<Record<string, boolean>>({});
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const refreshQueuedRef = useRef(false);
   const refreshAbortControllerRef = useRef<AbortController | null>(null);
@@ -339,20 +344,8 @@ export function useAgentCanvasChat({
       const turn = await agentCanvasApi.agentCanvasChatTurn(workflowId, turnId);
       applyTurnProjection(turn);
       if (turn.continuation) upsertContinuation(turn.continuation);
-      const terminalErrorCode = turn.continuation?.last_error_code ?? turn.error_code;
-      const terminalErrorMessage = turn.continuation?.last_error_message ?? turn.error_message;
-      const continuationFailed = turn.continuation?.delivery_status === "failed";
-      if (
-        turn.turn_kind === "message"
-        && (continuationFailed || turn.status === "failed")
-        && terminalErrorCode
-      ) {
-        setTimelineRecovery(conversationRecoveryFromError(
-          "timeline",
-          new Error(agentCanvasChatErrorMessage(terminalErrorCode, terminalErrorMessage)),
-          { retryable: turn.retryable },
-        ));
-      }
+      // A failed turn stays visible through turnsById/the message item — it is
+      // not a Timeline outage, so it must not raise the recovery surface.
     } catch {
       // A later timeline refresh remains authoritative after a transient turn lookup failure.
     }
@@ -388,11 +381,24 @@ export function useAgentCanvasChat({
   ) => {
     if (!workflowId) return;
     const workflowGeneration = workflowGenerationRef.current;
-    const turnIds = [...new Set(items.flatMap((item) => (
-      item.item_type === "expert_activity" && !completedCapabilityTurnIdsRef.current.has(item.turn_id)
-        ? [item.turn_id]
-        : []
-    )))];
+    // 水合两类带 turn_id 的历史条目：专家活动条目 + 会话消息条目
+    // （metadata.turn_id）——retry lineage 与 turn 状态由此跨刷新存活。
+    const turnIds = [...new Set(items.flatMap((item) => {
+      if (item.item_type === "expert_activity" && !completedCapabilityTurnIdsRef.current.has(item.turn_id)) {
+        return [item.turn_id];
+      }
+      if (item.item_type === "message") {
+        const turnId = (item.metadata as { turn_id?: unknown } | null | undefined)?.turn_id;
+        if (
+          typeof turnId === "string"
+          && turnId
+          && !completedCapabilityTurnIdsRef.current.has(turnId)
+        ) {
+          return [turnId];
+        }
+      }
+      return [];
+    }))];
     if (!turnIds.length) return;
     const hydrateTurn = (turnId: string) => {
       const cached = capabilityTurnHydrationsRef.current.get(turnId);
@@ -416,12 +422,31 @@ export function useAgentCanvasChat({
       });
       return hydration;
     };
+    // 并发闸：历史 turn 水合最多 4 个在途，其余排队（每个完成后放行下一个）。
+    const MAX_IN_FLIGHT_TURN_HYDRATIONS = 4;
+    let active = 0;
+    const queue: Array<() => void> = [];
+    const pump = () => {
+      while (active < MAX_IN_FLIGHT_TURN_HYDRATIONS && queue.length) {
+        active += 1;
+        const task = queue.shift()!;
+        task();
+      }
+    };
+    const schedule = (run: () => Promise<void>) => {
+      queue.push(() => {
+        void run().finally(() => {
+          active -= 1;
+          pump();
+        });
+      });
+      pump();
+    };
     turnIds.forEach((turnId) => {
-      void hydrateTurn(turnId).then((turn) => {
+      schedule(async () => {
+        const turn = await hydrateTurn(turnId);
         if (generation !== refreshGenerationRef.current) return;
         applyTurnProjection(turn);
-      }).catch(() => {
-        // Failed turn hydration is deliberately not cached and retries on the next refresh.
       });
     });
   }, [applyTurnProjection, workflowId]);
@@ -495,9 +520,9 @@ export function useAgentCanvasChat({
         setPersistedItems((current) => current.map((existing) => {
           return matchesTimelinePointer(existing, pointer) ? hydrated : existing;
         }));
-      }).catch((hydrationError) => {
-        if (generation !== refreshGenerationRef.current) return;
-        setTimelineRecovery(conversationRecoveryFromError("timeline", hydrationError));
+      }).catch(() => {
+        // Proposal detail hydration failure stays local: the pointer remains
+        // visible and the next refresh retries — it is not a Timeline outage.
       });
     });
   }, [hydrateTimelineItem]);
@@ -576,6 +601,7 @@ export function useAgentCanvasChat({
       items.forEach((item) => {
         if (item.item_type !== "action_receipt") return;
         const receipt = item.action_receipt;
+        if (deliveredReceiptIdsRef.current.has(receipt.receipt_id)) return;
         const expectedByEvent = expectedReceiptIdsRef.current.has(receipt.receipt_id);
         const expectedByTurn = Boolean(
           receipt.action_id
@@ -585,19 +611,23 @@ export function useAgentCanvasChat({
           receipt.plan_id
           && pendingCommandPlanIdsRef.current.has(receipt.plan_id),
         );
-        if (
-          (!expectedByEvent && !expectedByTurn && !expectedByPlan)
-          || deliveredReceiptIdsRef.current.has(receipt.receipt_id)
-        ) return;
+        if (!expectedByEvent && !expectedByTurn && !expectedByPlan) return;
+        if (receipt.status === "applied" || receipt.status === "applied_with_run_error") {
+          try {
+            onActionReceipt?.(receipt);
+          } catch {
+            // Post-timeline projection failure stays local: it is not a
+            // Timeline refresh failure. Expectations are kept so the same
+            // receipt replays on the next refresh.
+            return;
+          }
+        } else if (receipt.status === "not_applied") {
+          setNotice(receipt.summary || "No canvas change was needed.");
+        }
         if (receipt.action_id) pendingActionTurnIdsRef.current.delete(receipt.action_id);
         if (receipt.plan_id) pendingCommandPlanIdsRef.current.delete(receipt.plan_id);
         expectedReceiptIdsRef.current.delete(receipt.receipt_id);
         deliveredReceiptIdsRef.current.add(receipt.receipt_id);
-        if (receipt.status === "applied" || receipt.status === "applied_with_run_error") {
-          onActionReceipt?.(receipt);
-        } else if (receipt.status === "not_applied") {
-          setNotice(receipt.summary || "No canvas change was needed.");
-        }
       });
       const persistedMessageIds = new Set(
         items
@@ -730,14 +760,21 @@ export function useAgentCanvasChat({
     actionError: unknown,
     fallbackMessage: string,
   ) => {
+    const conflictCode = actionError && typeof actionError === "object"
+      ? (actionError as { code?: unknown; message?: unknown }).code
+      : undefined;
     if (
-      isV2ApiError(actionError)
-      && actionError.code
-      && GUIDANCE_CONFLICT_ERROR_CODES.has(actionError.code)
+      typeof conflictCode === "string"
+      && GUIDANCE_CONFLICT_ERROR_CODES.has(conflictCode)
     ) {
+      // Guidance revision 冲突：issue 带上 code 前缀（规格文案），刷新
+      // guidance 但保留提案卡片。
+      const conflictMessage = (actionError as { message?: unknown }).message;
       setProposalIssues((current) => ({
         ...current,
-        [proposalId]: agentCanvasChatErrorMessage(actionError.code!, actionError.message),
+        [proposalId]: `${conflictCode}: ${
+          typeof conflictMessage === "string" ? conflictMessage : "The guidance session changed."
+        }`,
       }));
       setNotice("The guidance session changed. Review the latest guidance state before trying again.");
       await refresh();
@@ -1184,6 +1221,9 @@ export function useAgentCanvasChat({
                 ...item,
                 message_id: accepted.message_id!,
                 conversation_id: accepted.conversation_id,
+                // 接受的 turn 关联进消息元数据：failed turn 由此保留在
+                // 用户消息旁，retry lineage 跨刷新可见。
+                metadata: { ...item.metadata, turn_id: accepted.turn_id ?? item.metadata?.turn_id },
               }
             : item
         )));
@@ -1225,12 +1265,22 @@ export function useAgentCanvasChat({
   }, [activeVideoSkillRunId, trackAcceptedTurn, workflowId]);
 
   const selectProposal = useCallback(async (
-    proposalId: string,
+    proposal: { proposal_id: string; availability: string },
     actionDescriptor: ProposalActionDescriptorV2,
     optionId: string,
     acceptedReferences: ProposedDraftReferenceV2[],
   ) => {
-    if (!workflowId || actingProposalId || actionDescriptor.action !== "select_option") return;
+    const proposalId = proposal.proposal_id;
+    if (
+      !workflowId
+      || actingProposalId
+      || actionDescriptor.action !== "select_option"
+      // 已应用/已被替代的提案不再发选择请求
+      || proposal.availability === "applied"
+      || proposal.availability === "superseded"
+      // 物化已排队：同一提案不重复发起（后台按 materialization turn 推进）
+      || submittedProposalIdsRef.current[proposalId]
+    ) return;
     const workflowGeneration = workflowGenerationRef.current;
     setActingProposalId(proposalId);
     setProposalIssues((current) => {
@@ -1254,6 +1304,8 @@ export function useAgentCanvasChat({
       );
       pendingActionTurnIdsRef.current.add(accepted.turn_id);
       trackAcceptedTurn(accepted);
+      submittedProposalIdsRef.current = { ...submittedProposalIdsRef.current, [proposalId]: true };
+      setSubmittedProposalIds(submittedProposalIdsRef.current);
       proposalPointerHydrationsRef.current.delete(proposalId);
       void refresh();
     } catch (actionError) {
@@ -1598,17 +1650,18 @@ export function useAgentCanvasChat({
         void refresh();
         return false;
       }
-      setTimelineRecovery(conversationRecoveryFromError(
-        "timeline",
-        retryError,
-        { retryable: true },
-      ));
+      // Turn 重试失败保持本地：这是可重试的失败，不是 Timeline 故障——
+      // 不进 recovery，降级为可操作的 notice。
+      setNotice("The failed response could not be retried. Try again when ready.");
       return false;
     }
   }, [guidanceSession?.revision, onWorkflowRefresh, refresh, sending, trackAcceptedTurn, workflowId, workflowRevision]);
 
   const retryCapabilityActivity = useCallback((activity: ChatCapabilityActivityV2) => {
     if (activity.status !== "failed") return Promise.resolve(false);
+    // 只有 actionable_failure 把重试范围划到 turn 才走 Turn Retry——
+    // legacy retryable 或 prompt_preparation 等其他范围不经过这条通道。
+    if (activity.actionable_failure?.retry_scope !== "turn") return Promise.resolve(false);
     return retryTurn(activity.turn_id, activity.retryable);
   }, [retryTurn]);
 
@@ -1665,6 +1718,7 @@ export function useAgentCanvasChat({
       loading,
       sending,
       agentWorking: sending || advancingGuidance || Boolean(postReadyBarrier) || pendingAgentTurnIds.length > 0,
+      submittedProposalIds,
       postReadyCheckpoint,
       agentWaitingForModel,
       actingProposalId,
