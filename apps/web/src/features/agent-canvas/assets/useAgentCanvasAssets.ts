@@ -42,6 +42,8 @@ export interface UseAgentCanvasAssetsResult {
     files: Iterable<File>,
     options?: AgentAssetUploadOptions,
   ) => Promise<ProjectAssetSummaryV2[]>;
+  /** On navigation/disable/unmount, finish any dispatched file and return its
+   * receipt, but skip remaining files. No server-side cancellation is attempted. */
   uploadFilesWithReceipts: (
     files: Iterable<File>,
     options?: AgentAssetUploadOptions,
@@ -157,10 +159,24 @@ export function useAgentCanvasAssets({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const queryKey = `${scope}:${workflowId ?? ""}:${category ?? ""}`;
   const requestIdRef = useRef(0);
-  const activeQueryRef = useRef(queryKey);
+  const querySession = useMemo(() => ({ queryKey, enabled }), [queryKey, enabled]);
+  const activeQueryRef = useRef(querySession);
+  activeQueryRef.current = querySession;
+  const mountedRef = useRef(true);
   const loadedQueryRef = useRef<string | null>(null);
+  const previousQueryRef = useRef(queryKey);
+  const uploadIdRef = useRef(0);
+  const isActive = useCallback(() => (
+    mountedRef.current && enabled && activeQueryRef.current === querySession
+  ), [enabled, querySession]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
+    if (!isActive()) return;
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
@@ -179,23 +195,27 @@ export function useAgentCanvasAssets({
           return normalized ? [normalized] : [];
         });
       }
-      if (requestId === requestIdRef.current) {
+      if (isActive() && requestId === requestIdRef.current) {
         setAllItems(nextItems);
         loadedQueryRef.current = queryKey;
       }
     } catch (loadError) {
-      if (requestId === requestIdRef.current) {
+      if (isActive() && requestId === requestIdRef.current) {
         setAllItems([]);
         setError(errorMessage(loadError, "Unable to load assets."));
       }
     } finally {
-      if (requestId === requestIdRef.current) setLoading(false);
+      if (isActive() && requestId === requestIdRef.current) setLoading(false);
     }
-  }, [category, queryKey, scope, workflowId]);
+  }, [category, isActive, queryKey, scope, workflowId]);
 
   useEffect(() => {
-    if (activeQueryRef.current !== queryKey) {
-      activeQueryRef.current = queryKey;
+    uploadIdRef.current += 1;
+    setUploading(false);
+    setUploadError(null);
+    setError(null);
+    if (previousQueryRef.current !== queryKey) {
+      previousQueryRef.current = queryKey;
       loadedQueryRef.current = null;
       setAllItems([]);
     }
@@ -216,6 +236,7 @@ export function useAgentCanvasAssets({
     options: AgentAssetUploadOptions = {},
     idempotencyKeys?: readonly string[],
   ): Promise<ProjectAssetUploadResponseV2[]> => {
+    if (!isActive()) return [];
     if (scope !== "project") {
       throw new Error("Uploads are available only in Project Assets.");
     }
@@ -226,11 +247,16 @@ export function useAgentCanvasAssets({
       throw new Error("Each upload requires one stable idempotency key.");
     }
 
+    const uploadId = ++uploadIdRef.current;
+    const canUpdateUpload = () => isActive() && uploadId === uploadIdRef.current;
     setUploading(true);
     setUploadError(null);
     try {
       const uploaded: ProjectAssetUploadResponseV2[] = [];
       for (const [index, file] of selectedFiles.entries()) {
+        // Navigation cancels only files not yet started. An in-flight request
+        // may already be committed, so retain its receipt for the original caller.
+        if (!isActive()) break;
         const metadata = {
           media_type: mediaTypeForFile(file),
           title: titleForFile(file),
@@ -247,16 +273,16 @@ export function useAgentCanvasAssets({
         );
         uploaded.push(response);
       }
-      await load();
+      if (isActive()) await load();
       return uploaded;
     } catch (uploadFailure) {
       const message = errorMessage(uploadFailure, "Unable to upload media.");
-      setUploadError(message);
+      if (canUpdateUpload()) setUploadError(message);
       throw uploadFailure;
     } finally {
-      setUploading(false);
+      if (canUpdateUpload()) setUploading(false);
     }
-  }, [load, scope, workflowId]);
+  }, [isActive, load, scope, workflowId]);
 
   const uploadFiles = useCallback(async (
     files: Iterable<File>,

@@ -8,7 +8,7 @@
  * client-side "pretend").
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Scene3DRenderControls } from "./Scene3DRenderControls.tsx";
@@ -81,6 +81,17 @@ afterEach(() => {
 });
 
 describe("Scene3DRenderControls (E6)", () => {
+  it("plays the published animatic URL rather than an inaccessible host path", async () => {
+    stubRenderFlow({ statuses: [{ job_id: "job_1", status: "completed", progress: 1, result: {
+      video_path: "C:\\private\\previs.mp4", video_url: "/media/scene3d/job_1/previs.mp4",
+      animatic_video_url: "/media/scene3d/job_1/animatic.mp4", warnings: [],
+    } }] });
+    render(<Scene3DRenderControls sceneScript={script()} />);
+    fireEvent.click(screen.getByText("🎬 预览渲染"));
+    await screen.findByTestId("scene-3d-render-result");
+    expect(screen.getByTestId("scene-3d-render-result").querySelector("video")?.getAttribute("src"))
+      .toBe("/media/scene3d/job_1/animatic.mp4");
+  });
   it("submits the scene script and polls to a completed render", async () => {
     const fetchMock = stubRenderFlow();
 
@@ -178,4 +189,56 @@ describe("Scene3DRenderControls (E6)", () => {
     // 没有进入轮询
     expect(screen.queryByTestId("scene-3d-render-progress")).toBeNull();
   });
+});
+
+it("does not poll the previous job during a delayed second submission", async () => {
+  const client = await import("./directorOperationsClient.ts");
+  let complete!: (id: string) => void;
+  vi.spyOn(client, "submitScene3DRender").mockResolvedValueOnce("old").mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  const poll = vi.spyOn(client, "fetchScene3DRenderJob").mockImplementation(async (id) => ({ job_id: id, status: id === "old" ? "completed" : "running", progress: 0.2 }));
+  render(<Scene3DRenderControls sceneScript={script()} />);
+  fireEvent.click(screen.getByText("🎬 预览渲染"));
+  await screen.findByText("✓ 渲染完成");
+  fireEvent.click(screen.getByText("🎬 预览渲染"));
+  await waitFor(() => expect(screen.getByText("⏳ 渲染中…")).toBeTruthy());
+  expect(screen.getByRole("status").textContent).toContain("正在提交任务");
+  expect((screen.getByRole("button", { name: "⏹ 取消渲染" }) as HTMLButtonElement).disabled).toBe(true);
+  complete("new");
+  await waitFor(() => expect(poll).toHaveBeenCalledWith("new"));
+  expect(poll.mock.calls.filter(([id]) => id === "old")).toHaveLength(1);
+});
+
+it("resumes polling when cancellation fails", async () => {
+  const client = await import("./directorOperationsClient.ts");
+  vi.spyOn(client, "submitScene3DRender").mockResolvedValue("job");
+  const poll = vi.spyOn(client, "fetchScene3DRenderJob").mockResolvedValue({ job_id: "job", status: "running", progress: 0.2 });
+  vi.spyOn(client, "cancelScene3DRender").mockRejectedValue(new Error("network"));
+  render(<Scene3DRenderControls sceneScript={script()} />);
+  fireEvent.click(screen.getByText("🎬 预览渲染"));
+  await screen.findByText("⏹ 取消渲染");
+  await waitFor(() => expect(poll).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByText("⏹ 取消渲染"));
+  await waitFor(() => expect(poll.mock.calls.length).toBeGreaterThan(1));
+  expect(screen.getByText(/取消失败/)).toBeTruthy();
+});
+
+it("stops polling after the bounded 150 attempts", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = await import("./directorOperationsClient.ts");
+    vi.spyOn(client, "submitScene3DRender").mockResolvedValue("job");
+    const poll = vi.spyOn(client, "fetchScene3DRenderJob").mockResolvedValue({job_id:"job",status:"running",progress:0.1});
+    render(<Scene3DRenderControls sceneScript={script()}/>);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 预览渲染")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(302000); });
+    expect(poll).toHaveBeenCalledTimes(150);
+    expect(screen.queryByText("⏳ 渲染中…")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+    expect(poll).toHaveBeenCalledTimes(150);
+    expect(screen.getByRole("alert").textContent).toContain("任务可能仍在后台进行");
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "继续查询原任务" })); });
+    expect(poll).toHaveBeenCalledTimes(151);
+    expect(poll).toHaveBeenLastCalledWith("job");
+    expect(client.submitScene3DRender).toHaveBeenCalledTimes(1);
+  } finally { cleanup(); vi.useRealTimers(); }
 });

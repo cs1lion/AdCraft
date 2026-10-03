@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { SceneScriptRoot } from "../../../types/scene-script";
 import { CAMERA_MOTION_PRESETS } from "./cameraMotionPresets.ts";
@@ -226,3 +226,22 @@ describe("trigger target picking (用所选)", () => {
   });
 });
 
+
+it("ignores a gate response after a newer edit", async () => {
+  const client = await import("./directorOperationsClient.ts");
+  let complete!: (gate: Awaited<ReturnType<typeof client.applyDirectorMotion>>) => void;
+  vi.spyOn(client, "applyDirectorMotion").mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  const applied = vi.fn();
+  const base = scene();
+  const { rerender } = render(<SceneScriptPlaybackProvider sceneScript={base}><DirectorCommandBar sceneScript={base} onApply={applied} selectedObject={null}/></SceneScriptPlaybackProvider>);
+  fireEvent.change(screen.getByLabelText("导演指令对象"), { target: { value: "cam1" } });
+  fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "push_in" } });
+  fireEvent.click(screen.getByTestId("scene-script-3d-director-submit"));
+  expect(applied).toHaveBeenCalledTimes(1);
+  const newer = { ...base, scene: { ...base.scene, name: "newer edit" } };
+  rerender(<SceneScriptPlaybackProvider sceneScript={newer}><DirectorCommandBar sceneScript={newer} onApply={applied} selectedObject={null}/></SceneScriptPlaybackProvider>);
+  await act(async () => { complete({ ok: true, appliedSceneScript: base }); });
+  expect(applied).toHaveBeenCalledTimes(1);
+  cleanup();
+  vi.restoreAllMocks();
+});

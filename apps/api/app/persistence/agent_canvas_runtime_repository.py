@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import hashlib
+from contextlib import contextmanager
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import cast
 from uuid import uuid4
 
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Connection, RowMapping
+from sqlalchemy.sql.selectable import Exists
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.persistence.database import V2Database
@@ -65,6 +68,89 @@ class AgentCanvasRuntimeRepository:
     @property
     def database(self) -> V2Database:
         return self._database
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[Connection]:
+        """Serialize read/check/write admission against cancellation in SQLite."""
+        with self._database.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _runnable_execution(execution_id: str) -> Exists:
+        return select(AgentCanvasExecutionRow.execution_id).where(
+            AgentCanvasExecutionRow.execution_id == execution_id,
+            AgentCanvasExecutionRow.cancel_requested.is_(False),
+            AgentCanvasExecutionRow.status.in_(_ACTIVE_EXECUTION_STATES),
+        ).exists()
+
+    @staticmethod
+    def _runnable_member(execution_id: str, node_id: str) -> Exists:
+        return select(AgentCanvasExecutionMemberRow.member_id).where(
+            AgentCanvasExecutionMemberRow.execution_id == execution_id,
+            AgentCanvasExecutionMemberRow.node_id == node_id,
+            AgentCanvasExecutionMemberRow.state.not_in(_TERMINAL_MEMBER_STATES),
+        ).exists()
+
+    def get_admission(
+        self, *, workflow_id: str, idempotency_key: str, request_digest: str,
+    ) -> CanvasExecutionStartResultV2 | None:
+        """Replay immutable admission before inspecting mutable authoring state."""
+        with self._database.engine.connect() as connection:
+            return self._load_admission(
+                connection,
+                workflow_id=workflow_id,
+                idempotency_key=idempotency_key,
+                request_digest=request_digest,
+            )
+
+    def admit_dispatch(
+        self, lease: NodeExecutionLeaseV2, *, now: datetime,
+        event_payload: dict[str, object] | None = None,
+    ) -> bool:
+        """Atomically admit dispatch and its member/node projection against cancel.
+
+        Cancellation ordered after admission cannot revoke an already dispatched
+        remote request. No network operation or blocking work holds this DB lock.
+        """
+        with self._write_transaction() as connection:
+            current = connection.execute(
+                select(AgentCanvasNodeLeaseRow.lease_id).where(
+                    AgentCanvasNodeLeaseRow.execution_id == lease.execution_id,
+                    AgentCanvasNodeLeaseRow.node_id == lease.node_id,
+                    AgentCanvasNodeLeaseRow.owner_id == lease.owner_id,
+                    AgentCanvasNodeLeaseRow.generation == lease.generation,
+                    AgentCanvasNodeLeaseRow.state == "claimed",
+                    AgentCanvasNodeLeaseRow.expires_at > now.isoformat(),
+                    self._runnable_execution(lease.execution_id),
+                    self._runnable_member(lease.execution_id, lease.node_id),
+                )
+            ).scalar_one_or_none()
+            if current is None:
+                return False
+            connection.execute(
+                update(AgentCanvasExecutionMemberRow).where(
+                    AgentCanvasExecutionMemberRow.execution_id == lease.execution_id,
+                    AgentCanvasExecutionMemberRow.node_id == lease.node_id,
+                ).values(state="running", phase="running", updated_at=now.isoformat())
+            )
+            connection.execute(
+                update(AgentCanvasNodeRow).where(
+                    AgentCanvasNodeRow.workflow_id == lease.workflow_id,
+                    AgentCanvasNodeRow.node_id == lease.node_id,
+                ).values(status="working", error_json=None, updated_at=now.isoformat())
+            )
+            self._events.append_in_transaction(connection, V2EventInsert(
+                workflow_id=lease.workflow_id, execution_id=lease.execution_id,
+                node_id=lease.node_id, event_type="node_generation_started",
+                created_at=now.isoformat(), payload=event_payload or {},
+            ))
+            return True
 
     def event_cursor(self, workflow_id: str) -> int:
         return self._events.max_seq(workflow_id)
@@ -285,12 +371,18 @@ class AgentCanvasRuntimeRepository:
             with self._database.engine.connect() as connection:
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
-                    replay = self._load_admission(connection, command)
+                    replay = self._load_admission(
+                        connection, workflow_id=command.workflow_id,
+                        idempotency_key=command.idempotency_key,
+                        request_digest=command.request_digest,
+                    )
                     if replay is not None:
                         connection.commit()
                         return replay
                     self._validate_start_intent(connection, command)
                     active = self._active_execution_in_transaction(connection, command.workflow_id)
+                    if active is not None and active.cancel_requested:
+                        raise _error("execution_cancelled", "Execution cancellation is in progress.")
                     created = active is None
                     if active is None:
                         execution_id = f"exec_{uuid4().hex}"
@@ -652,7 +744,12 @@ class AgentCanvasRuntimeRepository:
     ) -> bool:
         timestamp = now.isoformat()
         try:
-            with self._database.engine.begin() as connection:
+            with self._write_transaction() as connection:
+                execution = self._execution_in_transaction(connection, execution_id)
+                if state != "cancelled" and (
+                    execution.cancel_requested or execution.status == "cancelled"
+                ):
+                    return False
                 current = (
                     connection.execute(
                         select(AgentCanvasExecutionMemberRow).where(
@@ -665,6 +762,8 @@ class AgentCanvasRuntimeRepository:
                 )
                 if current is None:
                     raise _error("execution_member_not_found", "Execution member was not found.")
+                if str(current["state"]) == "cancelled" and state != "cancelled":
+                    return False
                 if (
                     expected_state is not None
                     and str(current["state"]) != expected_state
@@ -794,8 +893,12 @@ class AgentCanvasRuntimeRepository:
     ) -> CanvasExecutionRecordV2:
         timestamp = now.isoformat()
         try:
-            with self._database.engine.begin() as connection:
+            with self._write_transaction() as connection:
                 execution = self._execution_in_transaction(connection, execution_id)
+                if execution.status == "cancelled" or (
+                    execution.cancel_requested and status != "cancelled"
+                ):
+                    return execution
                 connection.execute(
                     update(AgentCanvasExecutionRow)
                     .where(AgentCanvasExecutionRow.execution_id == execution_id)
@@ -907,15 +1010,21 @@ class AgentCanvasRuntimeRepository:
         return reconciled
 
     def request_cancel(self, execution_id: str, *, now: datetime) -> CanvasExecutionRecordV2:
-        execution = self.get_execution(execution_id)
-        if execution.status not in _ACTIVE_EXECUTION_STATES:
-            raise _error("execution_already_terminal", "Execution is already terminal.")
         try:
-            with self._database.engine.begin() as connection:
+            with self._write_transaction() as connection:
+                execution = self._execution_in_transaction(connection, execution_id)
+                if execution.status not in _ACTIVE_EXECUTION_STATES:
+                    raise _error("execution_already_terminal", "Execution is already terminal.")
                 connection.execute(
                     update(AgentCanvasExecutionRow)
                     .where(AgentCanvasExecutionRow.execution_id == execution_id)
                     .values(cancel_requested=True, updated_at=now.isoformat())
+                )
+                connection.execute(
+                    update(AgentCanvasNodeLeaseRow).where(
+                        AgentCanvasNodeLeaseRow.execution_id == execution_id,
+                        AgentCanvasNodeLeaseRow.state == "claimed",
+                    ).values(state="released", heartbeat_at=now.isoformat())
                 )
         except SQLAlchemyError as error:
             raise _error("execution_cancel_failed", "Execution cancellation failed.") from error
@@ -937,6 +1046,14 @@ class AgentCanvasRuntimeRepository:
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
                     execution = self._execution_in_transaction(connection, execution_id)
+                    if execution.cancel_requested or execution.status not in _ACTIVE_EXECUTION_STATES:
+                        connection.rollback()
+                        return None
+                    if not connection.execute(select(
+                        self._runnable_member(execution_id, node_id)
+                    )).scalar_one():
+                        connection.rollback()
+                        return None
                     row = (
                         connection.execute(
                             select(AgentCanvasNodeLeaseRow).where(
@@ -1032,6 +1149,8 @@ class AgentCanvasRuntimeRepository:
                         AgentCanvasNodeLeaseRow.generation == lease.generation,
                         AgentCanvasNodeLeaseRow.state == "claimed",
                         AgentCanvasNodeLeaseRow.expires_at > now.isoformat(),
+                        self._runnable_execution(lease.execution_id),
+                        self._runnable_member(lease.execution_id, lease.node_id),
                     )
                     .values(
                         heartbeat_at=now.isoformat(),
@@ -1065,6 +1184,8 @@ class AgentCanvasRuntimeRepository:
                         AgentCanvasNodeLeaseRow.generation == lease.generation,
                         AgentCanvasNodeLeaseRow.state == "claimed",
                         AgentCanvasNodeLeaseRow.expires_at > now.isoformat(),
+                        self._runnable_execution(lease.execution_id),
+                        self._runnable_member(lease.execution_id, lease.node_id),
                     )
                 ).scalar_one_or_none()
         except SQLAlchemyError as error:
@@ -1444,12 +1565,12 @@ class AgentCanvasRuntimeRepository:
     @staticmethod
     def _load_admission(
         connection: Connection,
-        command: CanvasExecutionStartCommandV2,
+        *, workflow_id: str, idempotency_key: str, request_digest: str,
     ) -> CanvasExecutionStartResultV2 | None:
         row = (
             connection.execute(
                 select(AgentCanvasExecutionAdmissionRow).where(
-                    AgentCanvasExecutionAdmissionRow.idempotency_key == command.idempotency_key
+                    AgentCanvasExecutionAdmissionRow.idempotency_key == idempotency_key
                 )
             )
             .mappings()
@@ -1458,8 +1579,8 @@ class AgentCanvasRuntimeRepository:
         if row is None:
             return None
         if (
-            str(row["workflow_id"]) != command.workflow_id
-            or str(row["request_digest"]) != command.request_digest
+            str(row["workflow_id"]) != workflow_id
+            or str(row["request_digest"]) != request_digest
         ):
             raise _error(
                 "idempotency_conflict",

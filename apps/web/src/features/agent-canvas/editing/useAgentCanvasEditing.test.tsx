@@ -15,6 +15,7 @@ vi.mock("../../../api/v2Client.ts", () => ({
   v2Api: {
     exportAgentCanvasEditingNode: vi.fn(),
     cancelAgentCanvasEditingExport: vi.fn(),
+    downloadAgentCanvasAsset: vi.fn(),
   },
 }));
 
@@ -442,9 +443,137 @@ describe("useAgentCanvasEditing", () => {
     }
   });
 
+  it("does not start an obsolete browser download after switching nodes or unmounting", async () => {
+    const oldRequest = deferred<never>();
+    const newRequest = deferred<never>();
+    const download = vi.mocked(agentCanvasApi.downloadAgentCanvasAsset);
+    download.mockClear().mockReturnValueOnce(oldRequest.promise).mockReturnValueOnce(newRequest.promise);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const { result, rerender, unmount } = renderHook(
+      ({ node }) => useAgentCanvasEditing(workflow, node, vi.fn()),
+      { initialProps: { node: editingNode() } },
+    );
+    act(() => {
+      void result.current.downloadExport("asset-old");
+      void result.current.downloadExport("asset-old");
+    });
+    expect(download).toHaveBeenCalledTimes(1);
+    rerender({ node: editingNode([], "editing-new") });
+    act(() => { void result.current.downloadExport("asset-new"); });
+    await act(async () => { oldRequest.resolve({ blob: new Blob(), mimeType: "video/mp4" } as never); });
+    expect(click).not.toHaveBeenCalled();
+    expect(result.current.downloading).toBe(true);
+    unmount();
+    await act(async () => { newRequest.resolve({ blob: new Blob(), mimeType: "video/mp4" } as never); });
+    expect(click).not.toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  it("single-flights export calls before React rerenders and keeps retry keys stable", async () => {
+    const pending = deferred<never>();
+    const api = vi.mocked(agentCanvasApi.exportAgentCanvasEditingNode);
+    api.mockClear().mockReturnValueOnce(pending.promise);
+    const { result } = renderHook(() => useAgentCanvasEditing(workflow, editingNode(), vi.fn()));
+    act(() => {
+      void result.current.exportComposition();
+      void result.current.exportComposition();
+    });
+    expect(api).toHaveBeenCalledTimes(1);
+    const key = api.mock.calls[0]?.[3];
+    await act(async () => { pending.reject(new Error("retry me")); });
+    expect(result.current.error).toBe("retry me");
+    api.mockResolvedValueOnce(undefined as never);
+    await act(async () => { await result.current.exportComposition(); });
+    expect(api.mock.calls[1]?.[3]).toBe(key);
+  });
+
+  it("ignores old export failures without unlocking the new project operation", async () => {
+    const oldRequest = deferred<never>();
+    const newRequest = deferred<never>();
+    const api = vi.mocked(agentCanvasApi.exportAgentCanvasEditingNode);
+    api.mockClear().mockReturnValueOnce(oldRequest.promise).mockReturnValueOnce(newRequest.promise);
+    const { result, rerender } = renderHook(
+      ({ currentWorkflow }) => useAgentCanvasEditing(currentWorkflow, editingNode(), vi.fn()),
+      { initialProps: { currentWorkflow: workflow } },
+    );
+    act(() => { void result.current.exportComposition(); });
+    rerender({ currentWorkflow: { ...workflow, project_id: "project-2" } });
+    expect(result.current.exporting).toBe(false);
+    act(() => { void result.current.exportComposition(); });
+    await act(async () => { oldRequest.reject(new Error("old project failed")); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.exporting).toBe(true);
+    act(() => { void result.current.exportComposition(); });
+    expect(api).toHaveBeenCalledTimes(2);
+    expect(api.mock.calls[0]?.[3]).not.toBe(api.mock.calls[1]?.[3]);
+    await act(async () => { newRequest.resolve(undefined as never); });
+    expect(result.current.exporting).toBe(false);
+  });
+
+  it("changes the export key when the manifest revision changes", async () => {
+    const api = vi.mocked(agentCanvasApi.exportAgentCanvasEditingNode);
+    api.mockClear().mockResolvedValue(undefined as never);
+    const { result, rerender } = renderHook(
+      ({ node }) => useAgentCanvasEditing(workflow, node, vi.fn()),
+      { initialProps: { node: editingNode() } },
+    );
+    await act(async () => { await result.current.exportComposition(); });
+    rerender({ node: editingNode([], "editing-1", { manifestRevision: 5, nodeRevision: 3 }) });
+    await act(async () => { await result.current.exportComposition(); });
+    expect(api.mock.calls[0]?.[3]).not.toBe(api.mock.calls[1]?.[3]);
+    expect(api.mock.calls[1]?.[2].expected_manifest_revision).toBe(5);
+  });
+
+  it("single-flights cancel and refuses export while a queued export is active", async () => {
+    const request = deferred<never>();
+    const cancel = vi.mocked(agentCanvasApi.cancelAgentCanvasEditingExport);
+    const api = vi.mocked(agentCanvasApi.exportAgentCanvasEditingNode);
+    cancel.mockClear().mockReturnValueOnce(request.promise);
+    api.mockClear();
+    const node = editingNode();
+    node.structured_content = {
+      ...node.structured_content,
+      active_export: {
+        export_id: "export-1", status: "queued", manifest_revision: 4,
+        fingerprint: "fingerprint", skipped_inputs: [], error: null,
+      },
+    };
+    const { result } = renderHook(() => useAgentCanvasEditing(workflow, node, vi.fn()));
+    act(() => {
+      void result.current.exportComposition();
+      void result.current.cancelExport();
+      void result.current.cancelExport();
+    });
+    expect(api).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    await act(async () => { request.reject(new Error("cancel failed")); });
+    expect(result.current.error).toBe("cancel failed");
+    await act(async () => { await result.current.exportComposition(); });
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it("ignores an export result after leaving and returning to the same node", async () => {
+    const oldRequest = deferred<never>();
+    const newRequest = deferred<never>();
+    vi.mocked(agentCanvasApi.exportAgentCanvasEditingNode)
+      .mockReturnValueOnce(oldRequest.promise).mockReturnValueOnce(newRequest.promise);
+    const { result, rerender } = renderHook(
+      ({ node }) => useAgentCanvasEditing(workflow, node, vi.fn()),
+      { initialProps: { node: editingNode() } },
+    );
+    act(() => { void result.current.exportComposition(); });
+    rerender({ node: editingNode([], "editing-other") });
+    rerender({ node: editingNode() });
+    act(() => { void result.current.exportComposition(); });
+    await act(async () => { oldRequest.reject(new Error("obsolete")); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.exporting).toBe(true);
+    await act(async () => { newRequest.resolve(undefined as never); });
+  });
+
   it("reuses the semantic idempotency key for repeated export acceptance", async () => {
     const exportComposition = vi.mocked(agentCanvasApi.exportAgentCanvasEditingNode);
-    exportComposition.mockResolvedValue({
+    exportComposition.mockClear().mockResolvedValue({
       workflow_id: "workflow-1",
       node_id: "editing-1",
       export_id: "export-1",

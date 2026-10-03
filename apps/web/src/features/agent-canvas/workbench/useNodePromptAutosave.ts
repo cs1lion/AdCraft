@@ -19,6 +19,7 @@ interface PromptAutosaveSession {
   persistedValue: string | null;
   enabled: boolean;
   localEdited: boolean;
+  awaitingEcho: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   flushPromise: Promise<boolean> | null;
 }
@@ -30,6 +31,7 @@ function createSession(nodeId: string, value: string, enabled: boolean): PromptA
     persistedValue: persistedPrompt(value),
     enabled,
     localEdited: false,
+    awaitingEcho: false,
     timer: null,
     flushPromise: null,
   };
@@ -92,6 +94,7 @@ export function useNodePromptAutosave({
           const patch: CanvasNodePatchRequestV2 = { generation_prompt: valueBeingSaved };
           await patchNode(session.nodeId, patch, { coalesce: true });
           session.persistedValue = valueBeingSaved;
+          session.awaitingEcho = true;
           session.localEdited = false;
           if (mountedRef.current && activeSessionRef.current === session) setLastSavedValue(valueBeingSaved);
           if (persistedPrompt(session.latestValue) !== valueBeingSaved) {
@@ -177,9 +180,10 @@ export function useNodePromptAutosave({
 
   useEffect(() => {
     mountedRef.current = true;
+    const sessions = sessionsRef.current;
     return () => {
       mountedRef.current = false;
-      for (const session of sessionsRef.current.values()) {
+      for (const session of sessions.values()) {
         if (session.timer) {
           clearTimeout(session.timer);
           session.timer = null;
@@ -190,9 +194,20 @@ export function useNodePromptAutosave({
     };
   }, []);
 
+  const acceptAuthoritative = useCallback((serverValue: string | null) => {
+    const session = activeSessionRef.current;
+    if (!session || session.localEdited) return;
+    session.persistedValue = serverValue;
+    session.latestValue = serverValue ?? "";
+    session.awaitingEcho = false;
+    setLastSavedValue(serverValue);
+  }, []);
+
   return {
     status,
     lastSavedValue,
+    awaitingEcho: activeSessionRef.current?.awaitingEcho ?? false,
+    acceptAuthoritative,
     hasPending: status === "dirty" || status === "saving",
     hasLocalChanges: activeSessionRef.current?.localEdited ?? false,
     schedule,

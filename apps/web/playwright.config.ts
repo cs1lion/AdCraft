@@ -10,6 +10,7 @@ export default defineConfig({
   outputDir: "/tmp/adcraft-playwright-results",
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:5197",
+    channel: process.env.PLAYWRIGHT_CHANNEL as "chrome" | "msedge" | undefined,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",

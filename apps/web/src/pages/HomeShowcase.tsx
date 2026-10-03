@@ -196,7 +196,7 @@ function HeroMainTitleLine({ line, direction }: { line: string; direction: HeroQ
   return (
     <span
       ref={lineRef}
-      className="home-product-hero__title-line home-product-hero__title-line--queue"
+      className="hero__line hero__line--queue"
       data-home-hero-queue-origin={direction === "from-left" ? "line-start" : "line-end"}
       data-home-hero-queue-ready={isQueueReady ? "true" : "false"}
       aria-hidden="true"
@@ -213,14 +213,14 @@ function HeroMainTitleLine({ line, direction }: { line: string; direction: HeroQ
             ref={(element) => {
               characterRefs.current[queueCharacter.slotIndex] = element;
             }}
-            className="home-product-hero__title-character"
+            className="hero__char"
             data-home-hero-character-order={queueCharacter.motionOrder}
             style={heroCharacterStyle(
               queueCharacter.motionOrder,
               startOffsets[queueCharacter.slotIndex],
             )}
           >
-            <span className="home-product-hero__title-character__glyph">{character}</span>
+            <span className="hero__glyph">{character}</span>
           </span>
         );
       })}
@@ -231,7 +231,7 @@ function HeroMainTitleLine({ line, direction }: { line: string; direction: HeroQ
 function HeroTitle() {
   return (
     <h1
-      className="home-product-hero__title"
+      className="hero__title"
       id="home-product-title"
       aria-label="One Sentence Becomes an Ad film."
       data-home-typography-region="heroMain"
@@ -239,7 +239,7 @@ function HeroTitle() {
       <HeroMainTitleLine line={heroTitleLines[0]} direction="from-left" />
       <HeroMainTitleLine line={heroTitleLines[1]} direction="from-right" />
       <span
-        className="home-product-hero__title-line home-product-hero__accent"
+        className="hero__line hero__accent"
         data-accent-text={heroTitleLines[2]}
         data-home-hero-accent-reveal="diagonal"
         data-home-typography-region="heroAccent"
@@ -256,7 +256,7 @@ function CreateProjectButtonContent() {
   return (
     <>
       <svg
-        className="home-product-hero__create-icon"
+        className="hero__icon"
         aria-hidden="true"
         viewBox="0 0 256 256"
       >
@@ -310,7 +310,7 @@ function InteractiveRecentCards({
   return (
     <div className="recent-strip" data-reveal-item style={motionStyle("--home-reveal-delay", "100ms")}>
       <button
-        className="recent-card featured"
+        className="recent featured"
         data-reveal-item
         style={motionStyle("--home-reveal-delay", "170ms")}
         onClick={featuredOnClick}
@@ -323,7 +323,7 @@ function InteractiveRecentCards({
       {sortedProjects.map((project, index) => (
         <button
           key={project.project_id}
-          className="recent-card"
+          className="recent"
           data-reveal-item
           style={motionStyle("--home-reveal-delay", `${240 + index * 70}ms`)}
           onClick={() => openProject(project.project_id, project.workflow_id)}
@@ -339,7 +339,7 @@ function InteractiveRecentCards({
 function StaticRecentCards() {
   return (
     <div className="recent-strip" data-reveal-item style={motionStyle("--home-reveal-delay", "100ms")}>
-      <article className="recent-card featured" data-reveal-item style={motionStyle("--home-reveal-delay", "170ms")}>
+      <article className="recent featured" data-reveal-item style={motionStyle("--home-reveal-delay", "170ms")}>
         <div className="featured-glass">
           <h3 data-home-typography-region="cardTitle">New fragrance product reel</h3>
           <p data-home-typography-region="cardMeta">Continue editing the current workflow canvas.</p>
@@ -348,7 +348,7 @@ function StaticRecentCards() {
       {demoProjects.slice(0, 3).map((project, index) => (
         <article
           key={project.name}
-          className="recent-card"
+          className="recent"
           data-reveal-item
           style={motionStyle("--home-reveal-delay", `${240 + index * 70}ms`)}
         >
@@ -419,23 +419,23 @@ export function HomeShowcase({
   }, [hasIntroVideo, isInteractive, productVideoUrl]);
 
   return (
-    <div className={`home-page home-page--${mode}`}>
+    <div className={`home home--${mode}`}>
       <section
-        className={`home-product-hero ${isInteractive ? "is-motion-enabled" : ""} ${heroMotionReady ? "is-motion-ready" : ""}`}
+        className={`hero ${isInteractive ? "is-motion-enabled" : ""} ${heroMotionReady ? "is-motion-ready" : ""}`}
         aria-labelledby="home-product-title"
       >
-        <div className="home-product-hero__content">
+        <div className="hero__content">
           <HeroTitle />
-          <p className="home-product-hero__description" data-home-typography-region="heroBody">
+          <p className="hero__body" data-home-typography-region="heroBody">
             AdCraft — The first agentic video production platform for marketing and advertising. Infinite canvas · shot-by-shot replication · fully automated, from idea to final cut.
           </p>
-          <div className="home-product-hero__create-stage">
+          <div className="hero__stage">
             {isInteractive && interactions ? (
-              <button className="home-product-hero__create" type="button" onClick={interactions.createProject} data-home-typography-region="heroAction">
+              <button className="hero__create" type="button" onClick={interactions.createProject} data-home-typography-region="heroAction">
                 <CreateProjectButtonContent />
               </button>
             ) : (
-              <span className="home-product-hero__create home-product-hero__create--static" data-home-typography-region="heroAction">
+              <span className="hero__create hero__create--static" data-home-typography-region="heroAction">
                 <CreateProjectButtonContent />
               </span>
             )}
@@ -444,7 +444,7 @@ export function HomeShowcase({
 
         <div
           ref={productFilmRef}
-          className="home-product-film"
+          className="hero__film"
           aria-label="AdCraft product introduction media"
           data-media-slot="product-introduction"
           data-video-loaded={productFilmLoaded ? "true" : "false"}
@@ -469,7 +469,7 @@ export function HomeShowcase({
       <div className="content-wrap">
         <section
           ref={recentReveal?.sectionRef}
-          className="home-reveal-section home-reveal-section--recent"
+          className="home-reveal home-reveal--recent"
           data-reveal-state={recentState}
           aria-label="Recent Projects"
         >
@@ -490,7 +490,7 @@ export function HomeShowcase({
 
         <section
           ref={discoverReveal?.sectionRef}
-          className="home-reveal-section home-reveal-section--discover"
+          className="home-reveal home-reveal--discover"
           data-reveal-state={discoverState}
           aria-label="Discover"
         >

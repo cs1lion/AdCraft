@@ -52,8 +52,17 @@ describe("route-scoped styles", () => {
       /background:\s*linear-gradient[\s\S]*color:\s*white;/,
     );
     expect(declarationBlock(baseStyles, ".send-btn")).toMatch(
-      /min-width:\s*112px;[\s\S]*padding:\s*0 18px;[\s\S]*background:\s*linear-gradient[\s\S]*color:\s*white;[\s\S]*font-weight:\s*600;/,
+      /min-width:\s*112px;[\s\S]*padding:\s*0 18px;[\s\S]*font-weight:\s*600;/,
     );
+    // The initial theme wins over the shared primitive's appearance.
+    expect(source("main.tsx")).toMatch(/base\.css[\s\S]*theme\.css/);
+    const primaryControls = declarationBlock(
+      source("styles/theme.css"),
+      ":root :is(.send-btn, .avatar-btn, .filter-btn.is-active, .rail-item.is-active)",
+    );
+    expect(primaryControls).toContain("border-color: var(--brand)");
+    expect(primaryControls).toContain("background: var(--brand)");
+    expect(primaryControls).toContain("color: var(--text-inverse)");
     expect(declarationBlock(baseStyles, ".send-btn.icon-only")).toMatch(
       /width:\s*42px;[\s\S]*min-width:\s*42px;[\s\S]*padding:\s*0;/,
     );

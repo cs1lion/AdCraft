@@ -831,7 +831,8 @@ _TRUSTED_MANIFESTS = (
                 "generate_audio",
             ],
             "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
-            "supported_resolutions": ["480p", "720p", "1080p"],
+            # Flash validates size before queuing: its only accepted size is 720P.
+            "supported_resolutions": ["720p"],
             "duration_range_seconds": [4, 12],
             "default_parameters": {
                 "duration_seconds": 5,

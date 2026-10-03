@@ -79,6 +79,7 @@ export interface AgentCanvasNodeCallbacks {
   onRetry?: (nodeId: string) => void;
   onExport?: (nodeId: string) => void;
   onOpenEditing?: (nodeId: string) => void;
+  onOpenAssets?: () => void;
   onOpenVideoPreview?: (nodeId: string, asset: ProjectAssetSummaryV2) => void;
   renderWorkbench?: (node: CanvasNodeV2, runtime: NodeRuntimeV2 | null) => ReactNode;
   onOpenConnectedNodeMenu?: (
@@ -311,12 +312,13 @@ function NodeSurface({
   status,
   onOpenVideoPreview,
   onOpenEditing,
+  onOpenAssets,
   onMediaDimensionsResolved,
   onScriptContentHeightResolved,
   label,
-}: Pick<AgentCanvasNodeCardProps, "node" | "asset" | "onOpenVideoPreview" | "onOpenEditing" | "onMediaDimensionsResolved" | "onScriptContentHeightResolved"> & { status: CanvasNodeStatusV2; label: string }) {
+}: Pick<AgentCanvasNodeCardProps, "node" | "asset" | "onOpenVideoPreview" | "onOpenEditing" | "onOpenAssets" | "onMediaDimensionsResolved" | "onScriptContentHeightResolved"> & { status: CanvasNodeStatusV2; label: string }) {
   if (node.node_type === "replica") {
-    return <ReplicaBlueprintPanel node={node} height={320} />;
+    return <ReplicaBlueprintPanel node={node} height={320} onOpenAssets={onOpenAssets} />;
   }
   const sceneScript = extractSceneScriptFromNode(node);
   if (sceneScript) {
@@ -395,6 +397,7 @@ export function AgentCanvasNodeCard({
   selected = false,
   onOpenVideoPreview,
   onOpenEditing,
+  onOpenAssets,
   onMediaDimensionsResolved,
   onScriptContentHeightResolved,
   mediaDimensions,
@@ -476,6 +479,7 @@ export function AgentCanvasNodeCard({
           label={label}
           onOpenVideoPreview={onOpenVideoPreview}
           onOpenEditing={onOpenEditing}
+          onOpenAssets={onOpenAssets}
           onMediaDimensionsResolved={onMediaDimensionsResolved}
           onScriptContentHeightResolved={onScriptContentHeightResolved}
         />
@@ -588,6 +592,7 @@ function AgentCanvasNodeRendererComponent({
         selected={selected}
         onOpenVideoPreview={data.onOpenVideoPreview}
         onOpenEditing={data.onOpenEditing}
+        onOpenAssets={data.onOpenAssets}
         onMediaDimensionsResolved={validAgentCanvasMediaDimensions(data.asset)
           ? undefined
           : ({ width, height }) => setIntrinsicDimensions({

@@ -12,6 +12,8 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.creation.canvas_render_bridge import (
     BridgeShotV1,
     build_canvas_film_workflow,
@@ -34,6 +36,7 @@ def test_projected_workflow_shape_satisfies_the_v2_render_stack() -> None:
 
     storyboard = next(n for n in workflow.nodes if n.node_id == "storyboard")
     assert [item.shot_index for item in storyboard.items] == [1, 2]
+    assert [item.duration_seconds for item in storyboard.items] == [5.0, 6.0]
     slot = storyboard.items[0].slots[0]
     assert slot.slot_type == "shot_video_segment"
     assert slot.status == "completed"  # 渲染结算只认 completed
@@ -84,3 +87,24 @@ def test_asset_projection_is_additive(tmp_path) -> None:
 
     # 幂等：第二次不再补写
     assert ensure_canvas_asset_projections(settings, ["asset_a"]) == 0
+
+
+@pytest.mark.integration
+def test_system_default_hash_changes_when_shot_duration_changes():
+    """Same selected asset must still rebuild the system default when timing changes."""
+    from app.services.v2_final_composition_timeline import V2FinalCompositionTimelineService
+
+    service = object.__new__(V2FinalCompositionTimelineService)
+    record = SimpleNamespace(asset_id="asset", version_id="version", metadata={})
+    slot = SimpleNamespace(slot_id="slot")
+    item = SimpleNamespace(duration_seconds=2.1)
+    service._selected_shot_video_records = lambda _: [(item, slot, record)]
+    service._selected_bgm_record = lambda _: None
+    before = service._source_selection_hash(None)
+    item.duration_seconds = 7.3
+    after = service._source_selection_hash(None)
+    assert before != after
+    default = SimpleNamespace(metadata={"edit_mode": "system_default", "source_selection_hash": before, "resolution_source": "first_source_shot"})
+    assert service._system_default_needs_reconcile(default, after)
+    default.metadata["edit_mode"] = "user_edited"
+    assert not service._system_default_needs_reconcile(default, after)

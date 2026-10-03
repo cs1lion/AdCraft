@@ -4,6 +4,13 @@ import { V2ApiError } from "../../../api/v2Client.ts";
 import { canvasAuthoringErrorMessage } from "./canvasErrorMessage.ts";
 
 describe("canvasAuthoringErrorMessage", () => {
+  it("explains rate limiting without misdiagnosing credentials or automatically retrying", () => {
+    const message = canvasAuthoringErrorMessage({ code: "provider_rate_limited", message: "media_api_failed: status=429", retryable: true });
+    expect(message).toContain("rate limiting");
+    expect(message).toContain("manually retrying this node");
+    expect(message).toContain("completed media is preserved");
+    expect(message).not.toContain("credential");
+  });
   it("explains a retryable World Setting projection failure", () => {
     expect(canvasAuthoringErrorMessage(new V2ApiError({
       status: 409,

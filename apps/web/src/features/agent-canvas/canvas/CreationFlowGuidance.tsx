@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
 import type {
   CreationFlowAssessmentResponse,
@@ -36,28 +36,66 @@ export const CreationFlowGuidance: React.FC<CreationFlowGuidanceProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
 
-  const fetchAssessment = useCallback(async () => {
-    try {
-      const result = await agentCanvasApi.getCreationFlowAssessment(workflowId);
-      setAssessment(result);
-      setError(null);
-      onAssessment?.(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load creation flow");
-    } finally {
-      setLoading(false);
-    }
-  }, [workflowId, onAssessment]);
+  const onAssessmentRef = useRef(onAssessment);
+  const generationRef = useRef(0);
+  const requestRef = useRef(0);
+  const retryRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    fetchAssessment();
+    onAssessmentRef.current = onAssessment;
+  }, [onAssessment]);
 
-    if (pollInterval > 0) {
-      const timer = setInterval(fetchAssessment, pollInterval);
-      return () => clearInterval(timer);
-    }
-  }, [fetchAssessment, pollInterval]);
+  // Keep the retry handler stable; callback changes must not restart polling.
+  const fetchAssessment = useCallback(() => retryRef.current?.(), []);
+
+  useEffect(() => {
+    const generation = ++generationRef.current;
+    let cancelled = false;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setAssessment(null);
+    setError(null);
+    setExpandedStage(null);
+    setLoading(true);
+
+    const fetchCurrentAssessment = async () => {
+      if (cancelled || inFlight) return;
+      clearTimeout(timer);
+      inFlight = true;
+      const request = ++requestRef.current;
+      const isCurrent = () => !cancelled
+        && generationRef.current === generation
+        && requestRef.current === request;
+      setLoading(true);
+      try {
+        const result = await agentCanvasApi.getCreationFlowAssessment(workflowId);
+        if (!isCurrent()) return;
+        setAssessment(result);
+        setError(null);
+        onAssessmentRef.current?.(result);
+      } catch {
+        if (!isCurrent()) return;
+        setError("Unable to refresh creation flow. Please try again.");
+      } finally {
+        if (isCurrent()) {
+          inFlight = false;
+          setLoading(false);
+          // Schedule only after settling, so slow requests never overlap.
+          if (pollInterval > 0) {
+            timer = setTimeout(() => { void fetchCurrentAssessment(); }, pollInterval);
+          }
+        }
+      }
+    };
+
+    retryRef.current = () => { void fetchCurrentAssessment(); };
+    void fetchCurrentAssessment();
+    return () => {
+      cancelled = true;
+      retryRef.current = null;
+      clearTimeout(timer);
+    };
+  }, [workflowId, pollInterval]);
 
   if (loading && !assessment) {
     return (
@@ -95,6 +133,22 @@ export const CreationFlowGuidance: React.FC<CreationFlowGuidanceProps> = ({
 
   return (
     <div className="creation-flow-guidance">
+      {error && (
+        <div className="creation-flow-error" role="status">
+          <span>
+            {loading
+              ? "Showing the last update. Retrying…"
+              : "Showing the last update. Creation flow may be out of date."}
+          </span>
+          <button
+            onClick={fetchAssessment}
+            className="creation-flow-retry-btn"
+            disabled={loading}
+          >
+            {loading ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="creation-flow-header">
         <div className="creation-flow-title">
@@ -152,10 +206,17 @@ export const CreationFlowGuidance: React.FC<CreationFlowGuidanceProps> = ({
             {blockers.slice(0, 3).map((blocker, idx) => (
               <li key={idx} className="creation-flow-blocker-item">{blocker}</li>
             ))}
-            {blockers.length > 3 && (
-              <li className="creation-flow-blocker-more">+{blockers.length - 3} more...</li>
-            )}
           </ul>
+          {blockers.length > 3 && (
+            <details className="creation-flow-blocker-more" key={`blockers-${workflowId}`}>
+              <summary>Show {blockers.length - 3} more blockers</summary>
+              <ul className="creation-flow-blocker-list">
+                {blockers.slice(3).map((blocker, idx) => (
+                  <li key={idx} className="creation-flow-blocker-item">{blocker}</li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       )}
 
@@ -168,10 +229,14 @@ export const CreationFlowGuidance: React.FC<CreationFlowGuidanceProps> = ({
             </div>
           ))}
           {warnings.length > 3 && (
-            // Never drop silently: the cap is visible and counted.
-            <div className="creation-flow-warning-more">
-              还有 {warnings.length - 3} 条提示
-            </div>
+            <details className="creation-flow-warning-more" key={`warnings-${workflowId}`}>
+              <summary>Show {warnings.length - 3} more warnings</summary>
+              {warnings.slice(3).map((warning, idx) => (
+                <div key={idx} className="creation-flow-warning-item">
+                  <span>💡</span> {warning}
+                </div>
+              ))}
+            </details>
           )}
         </div>
       )}

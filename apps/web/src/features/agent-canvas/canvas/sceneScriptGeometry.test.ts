@@ -29,6 +29,7 @@ import {
   unimplementedKinds,
   type SceneScriptKind,
 } from "./sceneScriptGeometry";
+import { Mesh } from "./LeanSceneCanvas";
 
 const ALL_KINDS: SceneScriptKind[] = [...PROP_TYPES, ...ENVIRONMENT_TYPES];
 
@@ -46,14 +47,18 @@ function collectColours(node: unknown, found: string[] = []): string[] {
   return found;
 }
 
-/** Count ``<mesh>`` elements in a returned tree. */
+/**
+ * Count mesh nodes in a returned tree. The scene intrinsics are real React
+ * components (not R3F's lowercase string tags), so the element type is the
+ * `Mesh` component itself.
+ */
 function countMeshes(node: unknown): number {
   if (Array.isArray(node)) {
     return node.reduce<number>((total, child) => total + countMeshes(child), 0);
   }
   if (!node || typeof node !== "object") return 0;
   const element = node as { type?: unknown; props?: Record<string, unknown> };
-  const self = element.type === "mesh" ? 1 : 0;
+  const self = element.type === Mesh ? 1 : 0;
   return self + countMeshes(element.props?.children);
 }
 

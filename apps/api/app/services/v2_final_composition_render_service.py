@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.services.v2_composition_render_mode import effective_composition_render_mode
 from app.schemas.workflow_v2 import (
     V2FinalCompositionFingerprint,
     WorkflowV2TimelineRenderRequest,
@@ -94,7 +96,9 @@ class V2FinalCompositionRenderService:
                 status_code=409,
             )
         simple_plan: V2SimpleCompositionPlan | None = None
-        render_mode = self._settings.final_composition_render_mode.strip().lower()
+        render_mode = effective_composition_render_mode(
+            self._settings.final_composition_render_mode, timeline,
+        )
         if render_mode == "simple_sequence":
             settlement = self._simple_plan_service.inspect(workflow)
             if not settlement.settled:
@@ -382,8 +386,12 @@ class V2FinalCompositionRenderService:
                 if running.get("render_mode") == "simple_sequence"
                 else None
             )
-            service = V2FinalCompositionTimelineService(
+            render_settings = replace(
                 self._settings,
+                final_composition_render_mode=running.get("render_mode", self._settings.final_composition_render_mode),
+            )
+            service = V2FinalCompositionTimelineService(
+                render_settings,
                 renderer_factory=self._renderer_factory(workflow_id, render_id),
             )
             result = service.render_timeline(

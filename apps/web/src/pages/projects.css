@@ -365,8 +365,8 @@
   z-index: 2;
   border-radius: inherit;
   background: linear-gradient(180deg, rgba(10, 11, 15, 0), rgba(10, 11, 15, 0.22) 42%, rgba(10, 11, 15, 0.78) 100%);
-  backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.18) 24%, rgba(0, 0, 0, 0.78) 64%, black 100%);
   mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.18) 24%, rgba(0, 0, 0, 0.78) 64%, black 100%);
   pointer-events: none;
@@ -850,8 +850,8 @@
   background: rgba(255, 255, 255, 0.12);
   color: currentColor;
   font-size: 32px;
-  // 300 超出 Manrope 可变轴（400–800，base.css 声明），浏览器只能合成加粗，
-  // 是无效档位——用轴内最轻档 400（P5 台账 typographySystem 豁免项转正）
+  /* 300 超出 Manrope 可变轴（400–800，base.css 声明），浏览器只能合成加粗，
+     是无效档位——用轴内最轻档 400（P5 台账 typographySystem 豁免项转正） */
   font-weight: 400;
   transition: background 220ms ease, border-color 220ms ease;
 }

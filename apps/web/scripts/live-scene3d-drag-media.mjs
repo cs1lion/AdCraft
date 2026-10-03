@@ -1,0 +1,32 @@
+import { chromium } from '@playwright/test';
+import { writeFile,readFile } from 'node:fs/promises';
+const wf='adwf_v2_01c0f83902e0e0b8',id='node_45e6847ebe02438087564008537efca4';
+const output=new URL('../e2e_output/live-acceptance/',import.meta.url);
+const evidence={checks:[],errors:[],layoutRequests:[]};
+const browser=await chromium.launch({channel:'chrome',headless:true,args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+try{
+ const page=await browser.newPage({viewport:{width:1600,height:1050}});page.on('pageerror',e=>evidence.errors.push(e.message));
+ page.on('response',async res=>{if(res.url().includes('/layout')&&res.request().method()==='PATCH')evidence.layoutRequests.push({status:res.status(),request:res.request().postDataJSON(),response:await res.json()});});
+ await page.goto('http://127.0.0.1:5189/workflow/proj_01c0f83902e0e0b8',{waitUntil:'domcontentloaded'});
+ await page.waitForTimeout(1500);
+ const fit=page.getByRole('button',{name:/fit view/i});if(await fit.count())await fit.click();
+ const node=page.locator(`.react-flow__node[data-id="${id}"]`);await node.waitFor({timeout:20000});
+ const w=await(await fetch(`http://127.0.0.1:8000/api/v2/workflows/${wf}`)).json();evidence.original=w.nodes.find(n=>n.node_id===id).position;
+ const before=await node.boundingBox();evidence.boxBefore=before;
+ evidence.nodeMarkup=await node.evaluate(el=>({style:el.getAttribute('style'),class:el.className,html:el.outerHTML.slice(0,1800)}));
+ const handle=node;
+ const hbox=await handle.boundingBox();evidence.header=hbox;
+ if(!hbox)throw new Error('Missing draggable header');
+ const x=hbox.x+hbox.width*.55,y=hbox.y+Math.min(8,hbox.height/2);
+ await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-100,y-33,{steps:20});await page.mouse.up();await page.waitForTimeout(6000);
+ const next=await(await fetch(`http://127.0.0.1:8000/api/v2/workflows/${wf}`)).json();evidence.after=next.nodes.find(n=>n.node_id===id).position;evidence.boxAfter=await node.boundingBox();
+ evidence.checks.push({kind:'mouse-drag-persisted',pass:evidence.after.x!==evidence.original.x||evidence.after.y!==evidence.original.y});
+ const previous=JSON.parse(await readFile(new URL('scene3d-acceptance.json',output),'utf8'));
+ const path=previous.checks.find(c=>c.kind==='blender-render').job.result.video_path;
+ evidence.mediaPath=path;evidence.mediaUrl='http://127.0.0.1:5189/media/'+path;
+ const res=await fetch(evidence.mediaUrl);evidence.mediaHttp=res.status;
+ await page.evaluate(url=>{const v=document.createElement('video');v.id='acceptance-3d-video';v.src=url;v.controls=true;document.body.append(v);},evidence.mediaUrl);
+ await page.waitForTimeout(2500);
+ evidence.media=await page.locator('#acceptance-3d-video').evaluate(v=>({src:v.currentSrc,readyState:v.readyState,duration:Number.isFinite(v.duration)?v.duration:null,error:v.error?{code:v.error.code,message:v.error.message}:null}));
+ await writeFile(new URL('scene3d-drag-media.json',output),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
+}catch(e){evidence.failure=e.message;await writeFile(new URL('scene3d-drag-media.json',output),JSON.stringify(evidence,null,2));console.error(e);process.exitCode=1;}finally{await browser.close();}

@@ -543,6 +543,7 @@ export function GlobalTimelinePanel({
   const [timeline, setTimeline] = useState<TimelineV1 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   // ADR 0008 §4: one timeline, two faces. "editor" (default) is the existing
   // media surface; "director" annotates each clip with its shot intent (the
@@ -580,6 +581,50 @@ export function GlobalTimelinePanel({
   const [inspectorDraft, setInspectorDraft] = useState<ClipInspectorDraft | null>(null);
   const [inspectorSaving, setInspectorSaving] = useState(false);
   const [inspectorError, setInspectorError] = useState<string | null>(null);
+  const [inspectorStale, setInspectorStale] = useState(false);
+  const inspectorBaselineRef = useRef<{
+    workflowId: string; clipId: string; draft: ClipInspectorDraft; source: string;
+  } | null>(null);
+  const inspectorDirtyRef = useRef(false);
+  // Render-time identity guards also invalidate A → B → A late completions.
+  const scopeRef = useRef({ workflowId, selectedClipId, workflowEpoch: 0, selectionEpoch: 0 });
+  if (scopeRef.current.workflowId !== workflowId) {
+    scopeRef.current.workflowId = workflowId;
+    scopeRef.current.workflowEpoch += 1;
+    scopeRef.current.selectionEpoch += 1;
+  }
+  if (scopeRef.current.selectedClipId !== selectedClipId) {
+    scopeRef.current.selectedClipId = selectedClipId;
+    scopeRef.current.selectionEpoch += 1;
+  }
+  const renderWorkflowEpoch = scopeRef.current.workflowEpoch;
+  const operationsRef = useRef(new Map<string, symbol>());
+  const refreshSequenceRef = useRef(0);
+  const mountedRef = useRef(true);
+  const beginOperation = (key: string, selectionScoped = false) => {
+    const scope = { ...scopeRef.current };
+    const operationKey = scope.workflowEpoch + ":" + key
+      + (selectionScoped ? ":" + scope.selectionEpoch : "");
+    if (operationsRef.current.has(operationKey)) return null;
+    const token = Symbol(key);
+    operationsRef.current.set(operationKey, token);
+    const current = () => mountedRef.current && scopeRef.current.workflowEpoch === scope.workflowEpoch
+      && (!selectionScoped || scopeRef.current.selectionEpoch === scope.selectionEpoch)
+      && operationsRef.current.get(operationKey) === token;
+    return { current, finish: () => {
+      if (operationsRef.current.get(operationKey) === token) operationsRef.current.delete(operationKey);
+    } };
+  };
+  useEffect(() => {
+    mountedRef.current = true;
+    const operations = operationsRef.current;
+    return () => {
+      // StrictMode replays effects without a workflow change: leave render epochs intact.
+      mountedRef.current = false;
+      refreshSequenceRef.current += 1;
+      operations.clear();
+    };
+  }, []);
   const [creatingNodeForClipId, setCreatingNodeForClipId] = useState<string | null>(
     null,
   );
@@ -623,17 +668,29 @@ export function GlobalTimelinePanel({
 
   useEffect(() => {
     let cancelled = false;
+    const epoch = scopeRef.current.workflowEpoch;
     setLoading(true);
     setError(null);
+    setTimeline(null);
+    setSelectedClipId(null);
+    setDragInteraction(null);
+    setInspectorSaving(false);
+    setSavingTrackId(null); setOperationError(null); setDropError(null); setExternalDrop(null);
+    setCreatingNodeForClipId(null); setNodeLinkError(null);
+    setDuckingSaving(false); setDuckingOpen(false); setDuckingError(null);
+    setSubtitleBurnInSaving(false); setAddingSubtitleTrackId(null);
+    setBeatAnalyses({}); setBeatLoadingClipId(null); setBeatErrorMessage(null);
+    setDegradation(null); setDismissedDegradationSeq(null);
+    setIsPlaying(false); setCurrentTime(0);
     getTimeline(workflowId)
       .then((data) => {
-        if (!cancelled) {
+        if (!cancelled && scopeRef.current.workflowEpoch === epoch) {
           setTimeline(data);
           setLoading(false);
         }
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (!cancelled && scopeRef.current.workflowEpoch === epoch) {
           setError(err instanceof Error ? err.message : "Failed to load timeline");
           setLoading(false);
         }
@@ -667,11 +724,12 @@ export function GlobalTimelinePanel({
   useEffect(() => {
     if (collapsed) return;
     let cancelled = false;
+    const epoch = scopeRef.current.workflowEpoch;
     const controller = new AbortController();
     const refresh = async () => {
       try {
         const events = await listLatestAudioDegradations(workflowId, controller.signal);
-        if (!cancelled && events.length > 0) {
+        if (!cancelled && scopeRef.current.workflowEpoch === epoch && events.length > 0) {
           setDegradation(events.reduce((latest, event) =>
             event.seq > latest.seq ? event : latest,
           ));
@@ -700,7 +758,9 @@ export function GlobalTimelinePanel({
         track.clips.map((clip) => clip.start_time + clip.duration),
       ),
     );
-    return Math.max(timeline.duration_seconds, maxClipEnd, 10);
+    // The program clock must follow the authored timeline, not a minimum
+    // ruler width; otherwise short exports keep playing after their last frame.
+    return Math.max(timeline.duration_seconds, maxClipEnd, 1 / timeline.fps);
   }, [timeline]);
   totalDurationRef.current = totalDuration;
 
@@ -833,9 +893,18 @@ export function GlobalTimelinePanel({
   };
 
   const resyncTimeline = async () => {
+    const epoch = renderWorkflowEpoch;
+    const sequence = ++refreshSequenceRef.current;
+    // An old mutation's closure must not start a fetch for the old workflow.
+    if (!mountedRef.current || scopeRef.current.workflowEpoch !== epoch
+      || operationsRef.current.has(epoch + ":drag")) return;
     try {
-      setTimeline(await getTimeline(workflowId));
+      const refreshed = await getTimeline(workflowId);
+      if (scopeRef.current.workflowEpoch === epoch && refreshSequenceRef.current === sequence) setTimeline(refreshed);
     } catch (resyncError) {
+      if (scopeRef.current.workflowEpoch === epoch && refreshSequenceRef.current === sequence) {
+        setOperationError(resyncError instanceof Error ? resyncError.message : "Failed to refresh timeline.");
+      }
       console.error("Failed to resync timeline:", resyncError);
     }
   };
@@ -887,6 +956,8 @@ export function GlobalTimelinePanel({
       );
       return;
     }
+    const operation = beginOperation("drop");
+    if (!operation) return;
     const contentElement = event.currentTarget;
     const startTime = computeDropStartTime(event.clientX, contentElement, {
       pixelsPerSecond: PIXELS_PER_SECOND,
@@ -902,15 +973,17 @@ export function GlobalTimelinePanel({
         source_node_id: payload.source_node_id ?? payload.camera_node_id ?? null,
         label: payload.label ?? null,
       });
+      if (!operation.current()) return;
       setDropError(null);
       await resyncTimeline();
     } catch (createError) {
+      if (!operation.current()) return;
       setDropError(
         createError instanceof Error
           ? `拖入失败：${createError.message}`
           : "拖入失败，请重试。",
       );
-    }
+    } finally { operation.finish(); }
   };
 
   // --- Live refresh driven by runtime SSE events (node_output_published) ---
@@ -947,7 +1020,7 @@ export function GlobalTimelinePanel({
     // resyncTimeline is a fresh closure every render; the nonce comparison
     // above already guards against redundant fetches.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [externalRefreshNonce]);
+  }, [externalRefreshNonce, workflowId]);
   useEffect(() => {
     if (dragInteraction === null && pendingExternalRefreshRef.current) {
       pendingExternalRefreshRef.current = false;
@@ -962,7 +1035,8 @@ export function GlobalTimelinePanel({
     track: TimelineTrackV1,
     patch: Partial<Pick<TimelineTrackV1, "muted" | "volume">>,
   ) => {
-    if (savingTrackId) return;
+    const operation = beginOperation("track");
+    if (!operation) return;
     setSavingTrackId(track.track_id);
     setTimeline((prev) => {
       if (!prev) return prev;
@@ -978,10 +1052,13 @@ export function GlobalTimelinePanel({
     try {
       await updateTrack(workflowId, track.track_id, patch);
     } catch (err) {
+      if (!operation.current()) return;
+      setOperationError(err instanceof Error ? err.message : "Failed to save track controls.");
       console.error("Failed to persist track control change:", err);
       await resyncTimeline();
     } finally {
-      setSavingTrackId(null);
+      if (operation.current()) setSavingTrackId(null);
+      operation.finish();
     }
   };
 
@@ -993,9 +1070,10 @@ export function GlobalTimelinePanel({
     track: TimelineTrackV1,
     mode: ClipDragMode,
   ) => {
-    if (track.locked) return;
+    if (track.locked || operationsRef.current.has(renderWorkflowEpoch + ":drag")) return;
     e.stopPropagation();
     e.preventDefault();
+    refreshSequenceRef.current += 1;
     dragMovedRef.current = false;
     setDragInteraction({
       clipId: clip.clip_id,
@@ -1210,12 +1288,39 @@ export function GlobalTimelinePanel({
       Math.abs(draggedClip.duration - interaction.origDuration) > 1e-6;
     if (!trackChanged && !startChanged && !durationChanged) return;
 
+    const operation = beginOperation("drag");
+    if (!operation) return;
+    refreshSequenceRef.current += 1;
+    // Merge the server's canonical clip back so locally-omitted or
+    // re-normalized fields (e.g. source window after a trim) don't stay
+    // stale until the next full refresh. The canonical clip's own track_id
+    // is authoritative: the server may have normalized placement, so the
+    // target track is always re-derived from the response, not the local
+    // optimistic one.
+    const applyCanonicalClip = (canonical: TimelineClipV1) => {
+      if (!operation.current()) return;
+      setTimeline((prev) => {
+        if (!prev) return prev;
+        const tracks = prev.tracks.map((candidate) => ({
+          ...candidate,
+          clips: candidate.clips.filter((clip) => clip.clip_id !== canonical.clip_id),
+        }));
+        tracks.forEach((candidate) => {
+          if (candidate.track_id === canonical.track_id) {
+            candidate.clips = [...candidate.clips, canonical];
+          }
+        });
+        return { ...prev, tracks };
+      });
+    };
     try {
       if (trackChanged) {
-        await moveClip(workflowId, interaction.clipId, {
-          track_id: draggedClip.track_id,
-          start_time: draggedClip.start_time,
-        });
+        applyCanonicalClip(
+          await moveClip(workflowId, interaction.clipId, {
+            track_id: draggedClip.track_id,
+            start_time: draggedClip.start_time,
+          }),
+        );
       } else {
         // Edge trims must move the source window with the clip edge so the
         // renderer keeps showing the same media: trim-in slides source_start
@@ -1235,17 +1340,23 @@ export function GlobalTimelinePanel({
             : interaction.mode === "resize-right"
               ? { source_duration: draggedClip.duration }
               : {};
-        await updateClip(workflowId, interaction.clipId, {
-          start_time: draggedClip.start_time,
-          duration: draggedClip.duration,
-          ...trimPatch,
-        });
+        applyCanonicalClip(
+          await updateClip(workflowId, interaction.clipId, {
+            start_time: draggedClip.start_time,
+            duration: draggedClip.duration,
+            ...trimPatch,
+          }),
+        );
       }
     } catch (err) {
       console.error("Failed to persist clip drag:", err);
-      // Resync local state with the server after a rejected write
+      // Resync local state with the server after a rejected write; surface
+      // the failure instead of only logging it.
+      if (!operation.current()) return;
+      setOperationError("Couldn't save the clip change — the change was rolled back.");
+      operation.finish();
       await resyncTimeline();
-    }
+    } finally { operation.finish(); }
   };
 
   const handleClipClick = (clip: TimelineClipV1) => {
@@ -1267,18 +1378,9 @@ export function GlobalTimelinePanel({
     return null;
   }, [selectedClipId, timeline]);
 
-  // Hydrate the inspector draft from the current selection.
-  useEffect(() => {
-    setInspectorError(null);
-    setNodeLinkError(null);
-    setBeatErrorMessage(null);
-    if (!selectedClip) {
-      setInspectorDraft(null);
-      return;
-    }
-    const { clip } = selectedClip;
+  const draftFromClip = (clip: TimelineClipV1): ClipInspectorDraft => {
     const style = clip.subtitle_style;
-    setInspectorDraft({
+    return {
       clipId: clip.clip_id,
       start_time: String(clip.start_time),
       duration: String(clip.duration),
@@ -1305,18 +1407,73 @@ export function GlobalTimelinePanel({
         ? clip.volume_keyframes.map((point) => ({ ...point }))
         : null,
       bound_character_id: clip.bound_character_id ?? null,
-    });
-  }, [selectedClip]);
+    };
+  };
+
+  const reloadInspector = () => {
+    if (!selectedClip) return;
+    const draft = draftFromClip(selectedClip.clip);
+    inspectorBaselineRef.current = {
+      workflowId, clipId: draft.clipId, draft,
+      source: JSON.stringify(selectedClip.clip),
+    };
+    inspectorDirtyRef.current = false;
+    setInspectorDraft(draft);
+    setInspectorStale(false);
+    setInspectorError(null);
+  };
+
+  // Object identity changes on every GET and optimistic drag. Only hydrate a
+  // clean draft; refreshed media or timing must never erase unsaved edits.
+  useEffect(() => {
+    const baseline = inspectorBaselineRef.current;
+    if (!selectedClip || timeline?.workflow_id !== workflowId) {
+      inspectorBaselineRef.current = null;
+      inspectorDirtyRef.current = false;
+      setInspectorDraft(null);
+      setInspectorStale(false);
+      setInspectorError(null);
+      setInspectorSaving(false);
+      if (!loading && timeline && selectedClipId) setSelectedClipId(null);
+      return;
+    }
+    const sameSelection = baseline?.workflowId === workflowId
+      && baseline.clipId === selectedClip.clip.clip_id;
+    if (sameSelection && inspectorDirtyRef.current) {
+      setInspectorStale(baseline.source !== JSON.stringify(selectedClip.clip));
+      return;
+    }
+    reloadInspector();
+    if (!sameSelection) {
+      setInspectorSaving(false);
+      setNodeLinkError(null);
+      setCreatingNodeForClipId(null);
+      setBeatLoadingClipId(null);
+      setBeatErrorMessage(null);
+    }
+    // Hydration is driven by server/selection changes, not draft edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClip, workflowId]);
 
   // --- Clip inspector persistence ---
 
   const patchInspector = (patch: Partial<ClipInspectorDraft>) => {
-    setInspectorDraft((current) => (current ? { ...current, ...patch } : current));
+    setInspectorDraft((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      inspectorDirtyRef.current = JSON.stringify(next)
+        !== JSON.stringify(inspectorBaselineRef.current?.draft);
+      return next;
+    });
   };
 
   const saveInspector = async () => {
-    if (!inspectorDraft || !selectedClip) return;
+    if (!inspectorDraft || !selectedClip || inspectorStale || inspectorSaving) return;
     const draft = inspectorDraft;
+    const { workflowEpoch, selectionEpoch } = scopeRef.current;
+    const sameWorkflow = () => mountedRef.current && scopeRef.current.workflowEpoch === workflowEpoch;
+    const sameSelection = () => sameWorkflow()
+      && scopeRef.current.selectionEpoch === selectionEpoch;
 
     const startTime = Number(draft.start_time);
     const duration = Number(draft.duration);
@@ -1473,6 +1630,17 @@ export function GlobalTimelinePanel({
           : undefined,
         subtitle_style: isSubtitleClip ? subtitleStyle : undefined,
       });
+      if (!sameWorkflow()) return;
+      if (sameSelection()) {
+        const savedDraft = draftFromClip(updated);
+        inspectorBaselineRef.current = {
+          workflowId, clipId: updated.clip_id, draft: savedDraft,
+          source: JSON.stringify(updated),
+        };
+        inspectorDirtyRef.current = false;
+        setInspectorDraft(savedDraft);
+        setInspectorStale(false);
+      }
       setTimeline((prev) => {
         if (!prev) return prev;
         return {
@@ -1487,49 +1655,64 @@ export function GlobalTimelinePanel({
       });
     } catch (err) {
       console.error("Failed to persist clip inspector edits:", err);
-      setInspectorError(
-        err instanceof Error ? err.message : "Failed to save clip edits.",
-      );
-      await resyncTimeline();
+      if (sameSelection()) {
+        inspectorDirtyRef.current = true;
+        setInspectorError(
+          err instanceof Error ? err.message : "Failed to save clip edits.",
+        );
+      }
+      // The inspector is not optimistic: rejection needs no rollback GET.
+      // Keep both the user's draft and the server's error for retry.
     } finally {
-      setInspectorSaving(false);
+      if (sameSelection()) setInspectorSaving(false);
     }
   };
 
   const detectSelectedClipBeats = async () => {
     if (!selectedClip) return;
+    const operation = beginOperation("beats", true);
+    if (!operation) return;
     const { clip } = selectedClip;
     setBeatLoadingClipId(clip.clip_id);
     setBeatErrorMessage(null);
     try {
       const analysis = await getClipBeats(workflowId, clip.clip_id);
+      if (!operation.current()) return;
       setBeatAnalyses((previous) => ({
         ...previous,
         [clip.clip_id]: analysis,
       }));
     } catch (err) {
+      if (!operation.current()) return;
       setBeatErrorMessage(
         err instanceof Error ? err.message : "Beat detection failed.",
       );
     } finally {
-      setBeatLoadingClipId(null);
+      if (operation.current()) setBeatLoadingClipId(null);
+      operation.finish();
     }
   };
 
   const removeSelectedClip = async () => {
     if (!selectedClip) return;
     const { clip } = selectedClip;
+    const { workflowEpoch, selectionEpoch } = scopeRef.current;
+    const sameSelection = () => mountedRef.current && scopeRef.current.workflowEpoch === workflowEpoch
+      && scopeRef.current.selectionEpoch === selectionEpoch;
     setInspectorSaving(true);
     setInspectorError(null);
     try {
       await deleteClip(workflowId, clip.clip_id);
-      setSelectedClipId(null);
+      if (scopeRef.current.workflowEpoch !== workflowEpoch) return;
+      if (sameSelection()) setSelectedClipId(null);
       await resyncTimeline();
     } catch (err) {
       console.error("Failed to delete clip:", err);
-      setInspectorError(err instanceof Error ? err.message : "Failed to delete clip.");
+      if (sameSelection()) {
+        setInspectorError(err instanceof Error ? err.message : "Failed to delete clip.");
+      }
     } finally {
-      setInspectorSaving(false);
+      if (sameSelection()) setInspectorSaving(false);
     }
   };
 
@@ -1538,19 +1721,25 @@ export function GlobalTimelinePanel({
   // in place via the (timeline_id, source_node_id) upsert.
   const promoteClipToVideoNode = async (clip: TimelineClipV1) => {
     if (!onCreateVideoNode) return;
+    const operation = beginOperation("promotion", true);
+    if (!operation) return;
     setCreatingNodeForClipId(clip.clip_id);
     setNodeLinkError(null);
     try {
       const nodeId = await onCreateVideoNode(clip);
+      if (!operation.current()) return;
       await updateClip(workflowId, clip.clip_id, { source_node_id: nodeId });
+      if (!operation.current()) return;
       await resyncTimeline();
     } catch (err) {
+      if (!operation.current()) return;
       console.error("Failed to create video node for clip:", err);
       setNodeLinkError(
         err instanceof Error ? err.message : "Failed to create the video node.",
       );
     } finally {
-      setCreatingNodeForClipId(null);
+      if (operation.current()) setCreatingNodeForClipId(null);
+      operation.finish();
     }
   };
 
@@ -1562,6 +1751,8 @@ export function GlobalTimelinePanel({
 
   const saveDucking = async (resetToAuto = false) => {
     if (!timeline) return;
+    const operation = beginOperation("ducking");
+    if (!operation) return;
     setDuckingSaving(true);
     setDuckingError(null);
     try {
@@ -1597,18 +1788,23 @@ export function GlobalTimelinePanel({
         };
       }
       const updated = await updateTimeline(workflowId, { ducking: payload });
+      if (!operation.current()) return;
       setTimeline((prev) => (prev ? { ...prev, ducking: updated.ducking ?? null } : prev));
       setDuckingOpen(false);
     } catch (err) {
+      if (!operation.current()) return;
       console.error("Failed to persist ducking settings:", err);
       setDuckingError(err instanceof Error ? err.message : "Failed to save ducking settings.");
     } finally {
-      setDuckingSaving(false);
+      if (operation.current()) setDuckingSaving(false);
+      operation.finish();
     }
   };
 
   const toggleSubtitleBurnIn = async () => {
     if (!timeline || subtitleBurnInSaving) return;
+    const operation = beginOperation("burn-in");
+    if (!operation) return;
     const next = !timeline.subtitle_burn_in;
     setSubtitleBurnInSaving(true);
     // Optimistic flip; resync restores the server value on failure.
@@ -1619,19 +1815,25 @@ export function GlobalTimelinePanel({
       const updated = await updateTimeline(workflowId, {
         subtitle_burn_in: next,
       });
+      if (!operation.current()) return;
       setTimeline((prev) =>
         prev ? { ...prev, subtitle_burn_in: updated.subtitle_burn_in } : prev,
       );
     } catch (err) {
+      if (!operation.current()) return;
+      setOperationError(err instanceof Error ? err.message : "Failed to save subtitle burn-in.");
       console.error("Failed to persist subtitle burn-in flag:", err);
       await resyncTimeline();
     } finally {
-      setSubtitleBurnInSaving(false);
+      if (operation.current()) setSubtitleBurnInSaving(false);
+      operation.finish();
     }
   };
 
   const addSubtitleClip = async (track: TimelineTrackV1) => {
     if (track.locked || addingSubtitleTrackId === track.track_id) return;
+    const operation = beginOperation("subtitle-add");
+    if (!operation) return;
     const startTime = track.clips.reduce(
       (maxEnd, clip) => Math.max(maxEnd, clip.start_time + clip.duration),
       0,
@@ -1644,12 +1846,16 @@ export function GlobalTimelinePanel({
         duration: 2,
         subtitle_text: "New subtitle",
       });
+      if (!operation.current()) return;
       await resyncTimeline();
     } catch (err) {
+      if (!operation.current()) return;
+      setOperationError(err instanceof Error ? err.message : "Failed to add subtitle.");
       console.error("Failed to add subtitle clip:", err);
       await resyncTimeline();
     } finally {
-      setAddingSubtitleTrackId(null);
+      if (operation.current()) setAddingSubtitleTrackId(null);
+      operation.finish();
     }
   };
 
@@ -1712,6 +1918,12 @@ export function GlobalTimelinePanel({
         height: 280,
       }}
     >
+      {operationError && (
+        <div role="alert" data-testid="timeline-operation-error">
+          {operationError}
+          <button type="button" aria-label="Dismiss timeline error" onClick={() => setOperationError(null)}>Dismiss</button>
+        </div>
+      )}
       {/* Header */}
       <div
         style={{
@@ -2865,6 +3077,8 @@ export function GlobalTimelinePanel({
           draft={inspectorDraft}
           saving={inspectorSaving}
           errorMessage={inspectorError}
+          stale={inspectorStale}
+          onReload={reloadInspector}
           phase={phase}
           orphan={clipIsOrphan(selectedClip.clip, workflowNodeIds)}
           videoNodePromotable={
@@ -2934,6 +3148,8 @@ interface SelectedClipInspectorProps {
   draft: ClipInspectorDraft;
   saving: boolean;
   errorMessage: string | null;
+  stale: boolean;
+  onReload: () => void;
   /** ADR 0008 phase: director face adds the shot-intent summary. */
   phase: "editor" | "director";
   /** Clip's source node was deleted from the canvas. */
@@ -2959,6 +3175,8 @@ function SelectedClipInspector({
   draft,
   saving,
   errorMessage,
+  stale,
+  onReload,
   phase,
   orphan,
   onChange,
@@ -3020,6 +3238,13 @@ function SelectedClipInspector({
         gap: 4,
       }}
     >
+      {stale && (
+        <div role="status" data-testid="timeline-inspector-stale">
+          This clip changed on the timeline. Unsaved edits are preserved. Reload
+          the latest clip before applying edits.
+          <button onClick={onReload} disabled={saving}>Reload clip (discard unsaved edits)</button>
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "#ccc" }}>
           {TRACK_ICONS[track.type]} {track.name} clip
@@ -3342,7 +3567,7 @@ function SelectedClipInspector({
         <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }}>
           <button
             onClick={onSave}
-            disabled={disabled}
+            disabled={disabled || stale}
             data-testid="timeline-inspector-save"
             style={{
               border: "1px solid #1a5fb4",

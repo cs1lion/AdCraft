@@ -168,6 +168,51 @@ class TimelineRepository:
         self._session.flush()
         return self._hydrate_timeline(row)
 
+    def _begin_scoped_write(self, workflow_id: str | None) -> None:
+        """Keep ownership lookup and mutation in the same write transaction.
+
+        SQLite's legacy driver does not BEGIN for SELECT and ignores FOR UPDATE.
+        Reserve its writer before checking scope; other databases lock joined rows.
+        Never commit here: the caller owns commit/rollback.
+        """
+        if workflow_id is None:
+            return
+        connection = self._session.connection()
+        if connection.dialect.name == "sqlite":
+            driver = connection.connection.driver_connection
+            if not driver.in_transaction:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+    def _track_for_write(
+        self, track_id: str, workflow_id: str | None = None,
+    ) -> TimelineTrackRow:
+        query = select(TimelineTrackRow).where(TimelineTrackRow.track_id == track_id)
+        if workflow_id is not None:
+            query = query.join(TimelineRow).where(TimelineRow.workflow_id == workflow_id)
+        row = self._session.execute(query.with_for_update()).scalar_one_or_none()
+        if row is None:
+            raise V2PersistenceError(
+                "timeline_track_not_found", "Track was not found on this workflow.",
+                stage="timeline_write",
+            )
+        return row
+
+    def _clip_for_write(
+        self, clip_id: str, workflow_id: str | None = None,
+    ) -> TimelineClipRow:
+        query = select(TimelineClipRow).where(TimelineClipRow.clip_id == clip_id)
+        if workflow_id is not None:
+            query = query.join(TimelineTrackRow).join(TimelineRow).where(
+                TimelineRow.workflow_id == workflow_id,
+            )
+        row = self._session.execute(query.with_for_update()).scalar_one_or_none()
+        if row is None:
+            raise V2PersistenceError(
+                "timeline_clip_not_found", "Clip was not found on this workflow.",
+                stage="timeline_write",
+            )
+        return row
+
     # --- Tracks ---
 
     def get_tracks(self, timeline_id: str) -> list[TimelineTrackV1]:
@@ -187,10 +232,10 @@ class TimelineRepository:
         volume: float | None = None,
         locked: bool | None = None,
         display_order: int | None = None,
+        workflow_id: str | None = None,
     ) -> TimelineTrackV1:
-        row = self._session.execute(
-            select(TimelineTrackRow).where(TimelineTrackRow.track_id == track_id)
-        ).scalar_one()
+        self._begin_scoped_write(workflow_id)
+        row = self._track_for_write(track_id, workflow_id)
 
         if name is not None:
             row.name = name
@@ -226,7 +271,11 @@ class TimelineRepository:
         color: str | None = None,
         subtitle_text: str | None = None,
         subtitle_style: TimelineSubtitleStyleV1 | None = None,
+        workflow_id: str | None = None,
     ) -> TimelineClipV1:
+        self._begin_scoped_write(workflow_id)
+        if workflow_id is not None:
+            self._track_for_write(track_id, workflow_id)
         now = _utc_now_iso()
         row = TimelineClipRow(
             clip_id=_new_id("clip"),
@@ -457,6 +506,8 @@ class TimelineRepository:
         start_time: float | None = None,
         duration: float | None = None,
         source_start: float | None = None,
+        asset_id: str | None | object = _UNSET,
+        asset_version_id: str | None | object = _UNSET,
         source_node_id: str | None | object = _UNSET,
         source_duration: float | None | object = _UNSET,
         fade_in: float | None | object = _UNSET,
@@ -471,10 +522,10 @@ class TimelineRepository:
         color: str | None | object = _UNSET,
         subtitle_text: str | None | object = _UNSET,
         subtitle_style: TimelineSubtitleStyleV1 | None | object = _UNSET,
+        workflow_id: str | None = None,
     ) -> TimelineClipV1:
-        row = self._session.execute(
-            select(TimelineClipRow).where(TimelineClipRow.clip_id == clip_id)
-        ).scalar_one()
+        self._begin_scoped_write(workflow_id)
+        row = self._clip_for_write(clip_id, workflow_id)
 
         if start_time is not None:
             row.start_time = start_time
@@ -484,6 +535,10 @@ class TimelineRepository:
             row.source_start = source_start
         # Nullable fields use the _UNSET sentinel: omitted leaves the stored
         # value untouched, while an explicit None clears the column.
+        if asset_id is not _UNSET:
+            row.asset_id = asset_id
+        if asset_version_id is not _UNSET:
+            row.asset_version_id = asset_version_id
         if source_node_id is not _UNSET:
             row.source_node_id = source_node_id
         if source_duration is not _UNSET:
@@ -526,10 +581,10 @@ class TimelineRepository:
         *,
         new_track_id: str | None = None,
         new_start_time: float,
+        workflow_id: str | None = None,
     ) -> TimelineClipV1:
-        row = self._session.execute(
-            select(TimelineClipRow).where(TimelineClipRow.clip_id == clip_id)
-        ).scalar_one()
+        self._begin_scoped_write(workflow_id)
+        row = self._clip_for_write(clip_id, workflow_id)
 
         if new_track_id is not None and new_track_id != row.track_id:
             target_track = self._session.execute(
@@ -554,10 +609,9 @@ class TimelineRepository:
         self._session.flush()
         return self._hydrate_clip(row)
 
-    def delete_clip(self, clip_id: str) -> None:
-        row = self._session.execute(
-            select(TimelineClipRow).where(TimelineClipRow.clip_id == clip_id)
-        ).scalar_one()
+    def delete_clip(self, clip_id: str, *, workflow_id: str | None = None) -> None:
+        self._begin_scoped_write(workflow_id)
+        row = self._clip_for_write(clip_id, workflow_id)
         self._session.delete(row)
         self._session.flush()
 

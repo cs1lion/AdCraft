@@ -97,7 +97,7 @@ describe("HomePage motion", () => {
       name: "One Sentence Becomes an Ad film.",
     });
     const lines = Array.from(
-      title.querySelectorAll<HTMLElement>(".home-product-hero__title-line"),
+      title.querySelectorAll<HTMLElement>(".hero__line"),
     );
 
     expect(lines.slice(0, 2).map((line) => line.textContent?.replace(/\u00a0/g, " "))).toEqual([
@@ -108,7 +108,7 @@ describe("HomePage motion", () => {
     expect(lines[2]?.getAttribute("data-accent-text")).toBe("Ad film.");
     expect(lines[2]?.getAttribute("data-home-hero-accent-reveal")).toBe("diagonal");
     expect(lines[2]?.querySelector("svg")).toBeNull();
-    expect(title.querySelectorAll(".home-product-hero__character")).toHaveLength(0);
+    expect(title.querySelectorAll(".hero__character")).toHaveLength(0);
   });
 
   it("starts the hero motion only after fonts and two paint frames are ready", async () => {
@@ -171,7 +171,7 @@ describe("HomePage motion", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(recentSection?.querySelectorAll(".recent-card[data-reveal-item]")).toHaveLength(4);
+    expect(recentSection?.querySelectorAll(".recent[data-reveal-item]")).toHaveLength(4);
     // 首页共 4 个观察者：产品影片懒加载 + recent 揭示 + discover 揭示 +
     // DiscoverOrbit 视口跟踪（此前 3 的断言停在 Orbit 观察者加入之前）
     expect(IntersectionObserverMock.instances).toHaveLength(4);
@@ -268,19 +268,19 @@ describe("HomePage motion", () => {
 
   it("queues title lines from opposite edges without collision effects", () => {
     expect(styles).toMatch(
-      /\.home-product-hero__title-line\s*\{[^}]*filter:\s*none;[^}]*white-space:\s*nowrap;/s,
+      /\.hero__line\s*\{[^}]*filter:\s*none;[^}]*white-space:\s*nowrap;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero__description\s*\{[^}]*opacity:\s*1;/s,
+      /\.hero__body\s*\{[^}]*opacity:\s*1;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-film\s*\{[^}]*opacity:\s*1;/s,
+      /\.hero__film\s*\{[^}]*opacity:\s*1;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero__title-character__glyph\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*none;/s,
+      /\.hero__glyph\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*none;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero\.is-motion-ready\s+\.home-product-hero__title-line\[data-home-hero-queue-ready="true"\]\s+\.home-product-hero__title-character__glyph\s*\{[^}]*home-hero-character-queue-enter[^}]*calc\(var\(--home-hero-line-delay\) \+ var\(--home-hero-character-index\) \* var\(--home-hero-character-stagger\)\)/s,
+      /\.hero\.is-motion-ready\s+\.hero__line\[data-home-hero-queue-ready="true"\]\s+\.hero__glyph\s*\{[^}]*home-hero-character-queue-enter[^}]*calc\(var\(--home-hero-line-delay\) \+ var\(--home-hero-character-index\) \* var\(--home-hero-character-stagger\)\)/s,
     );
     expect(styles).toMatch(
       /@keyframes home-hero-character-queue-enter\s*\{[\s\S]*?translateX\(var\(--home-hero-character-start-offset\)\)[\s\S]*?transform:\s*none;/,
@@ -292,30 +292,30 @@ describe("HomePage motion", () => {
     expect(styles).not.toContain("home-hero-character-bump-target");
     expect(styles).not.toContain("home-hero-character-collision-offset");
     expect(styles).toMatch(
-      /\.home-product-hero\s*\{[^}]*--home-hero-character-stagger:\s*250ms;[^}]*--home-hero-accent-start-delay:\s*3020ms;/s,
+      /\.hero\s*\{[^}]*--home-hero-character-stagger:\s*250ms;[^}]*--home-hero-accent-start-delay:\s*3020ms;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero\.is-motion-enabled \.home-product-hero__description\s*\{[^}]*opacity:\s*0;[^}]*filter:\s*blur\(10px\);/s,
+      /\.hero\.is-motion-enabled \.hero__body\s*\{[^}]*opacity:\s*0;[^}]*filter:\s*blur\(10px\);/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero\.is-motion-ready \.home-product-hero__description\s*\{[^}]*home-hero-body-fade[^}]*var\(--home-hero-accent-start-delay\)/s,
+      /\.hero\.is-motion-ready \.hero__body\s*\{[^}]*home-hero-body-fade[^}]*var\(--home-hero-accent-start-delay\)/s,
     );
     expect(styles).toMatch(
       /@keyframes home-hero-body-fade\s*\{[\s\S]*?opacity:\s*0;[\s\S]*?filter:\s*blur\(10px\);[\s\S]*?opacity:\s*1;[\s\S]*?filter:\s*blur\(0\);/,
     );
     expect(styles).not.toMatch(
-      /\.home-product-hero\.is-motion-ready\s+\.home-product-hero__(create-stage|film)\s*\{/,
+      /\.hero\.is-motion-ready\s+\.hero__(stage|film)\s*\{/,
     );
     expect(styles).not.toContain("home-hero-support-in");
     expect(styles).not.toContain("home-hero-media-in");
     expect(styles).toMatch(
-      /\.home-reveal-section\[data-reveal-state="pending"\][\s\S]*?opacity:\s*0;/,
+      /\.home-reveal\[data-reveal-state="pending"\][\s\S]*?opacity:\s*0;/,
     );
     expect(styles).toMatch(
-      /\.home-reveal-section\[data-reveal-state="visible"\][\s\S]*?opacity:\s*1;/,
+      /\.home-reveal\[data-reveal-state="visible"\][\s\S]*?opacity:\s*1;/,
     );
     expect(styles).toMatch(
-      /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.home-product-hero__title-character[\s\S]*?animation:\s*none !important;[\s\S]*?opacity:\s*1 !important;[\s\S]*?transform:\s*none !important;/,
+      /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.hero__char[\s\S]*?animation:\s*none !important;[\s\S]*?opacity:\s*1 !important;[\s\S]*?transform:\s*none !important;/,
     );
   });
 

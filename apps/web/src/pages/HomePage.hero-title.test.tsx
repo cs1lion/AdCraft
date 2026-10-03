@@ -7,7 +7,7 @@ import { HomePage } from "./HomePage";
 const startNewProject = vi.fn();
 const styles = readFileSync(resolve(process.cwd(), "src/pages/home.css"), "utf8");
 const darkAccentPseudoStyles = styles.match(
-  /:root \.home-product-hero__accent::after\s*\{[^}]*\}/,
+  /:root \.hero__accent::after\s*\{[^}]*\}/,
 )?.[0] ?? "";
 
 vi.mock("../app/useHealth", () => ({
@@ -39,7 +39,7 @@ describe("HomePage hero title", () => {
       name: "One Sentence Becomes an Ad film.",
     });
     const lines = Array.from(
-      title.querySelectorAll(".home-product-hero__title-line"),
+      title.querySelectorAll(".hero__line"),
     );
 
     expect(lines).toHaveLength(3);
@@ -50,22 +50,22 @@ describe("HomePage hero title", () => {
     expect(lines[0]?.getAttribute("data-home-hero-queue-origin")).toBe("line-start");
     expect(lines[1]?.getAttribute("data-home-hero-queue-origin")).toBe("line-end");
     expect(
-      Array.from(lines[0]?.querySelectorAll<HTMLElement>(".home-product-hero__title-character") ?? [])
+      Array.from(lines[0]?.querySelectorAll<HTMLElement>(".hero__char") ?? [])
         .map((character) => character.dataset.homeHeroCharacterOrder),
     ).toEqual(["10", "9", "8", "7", "6", "5", "4", "3", "2", "1", "0"]);
     expect(
-      Array.from(lines[1]?.querySelectorAll<HTMLElement>(".home-product-hero__title-character") ?? [])
+      Array.from(lines[1]?.querySelectorAll<HTMLElement>(".hero__char") ?? [])
         .map((character) => character.dataset.homeHeroCharacterOrder),
     ).toEqual(["0", "1", "2", "3", "4", "5", "6", "7", "8"]);
-    expect(lines[0]?.querySelectorAll(".home-product-hero__title-character--collision")).toHaveLength(0);
-    expect(lines[1]?.querySelectorAll(".home-product-hero__title-character--collision")).toHaveLength(0);
-    expect(lines[0]?.querySelectorAll(".home-product-hero__title-character--bump-target")).toHaveLength(0);
-    expect(lines[1]?.querySelectorAll(".home-product-hero__title-character--bump-target")).toHaveLength(0);
-    expect(lines[2]?.classList.contains("home-product-hero__accent")).toBe(true);
+    expect(lines[0]?.querySelectorAll(".hero__char--collision")).toHaveLength(0);
+    expect(lines[1]?.querySelectorAll(".hero__char--collision")).toHaveLength(0);
+    expect(lines[0]?.querySelectorAll(".hero__char--bump-target")).toHaveLength(0);
+    expect(lines[1]?.querySelectorAll(".hero__char--bump-target")).toHaveLength(0);
+    expect(lines[2]?.classList.contains("hero__accent")).toBe(true);
     expect(lines[2]?.getAttribute("data-accent-text")).toBe("Ad film.");
     expect(lines[2]?.getAttribute("data-home-hero-accent-reveal")).toBe("diagonal");
     expect(lines[2]?.getAttribute("data-home-typography-region")).toBe("heroAccent");
-    expect(lines[2]?.querySelectorAll(".home-product-hero__character")).toHaveLength(0);
+    expect(lines[2]?.querySelectorAll(".hero__character")).toHaveLength(0);
     expect(lines[2]?.textContent).toBe("Ad film.");
     expect(lines[2]?.querySelector("svg")).toBeNull();
   });
@@ -73,7 +73,7 @@ describe("HomePage hero title", () => {
   it("plays the bundled product film when no environment override is configured", () => {
     const view = render(<HomePage navigate={vi.fn()} />);
 
-    const media = view.container.querySelector<HTMLElement>(".home-product-film");
+    const media = view.container.querySelector<HTMLElement>(".hero__film");
     expect(media.querySelector("video")?.getAttribute("src")).toBe(
       "/assets/home-product-film.mp4",
     );
@@ -81,31 +81,31 @@ describe("HomePage hero title", () => {
 
   it("uses the exported typography system while retaining the accent treatment", () => {
     expect(styles).toMatch(
-      /\.home-page\s*\{[^}]*--home-font-display:\s*"Trebuchet MS"[^;]*;[^}]*--home-font-accent:\s*"Water Brush"[^;]*;[^}]*--home-font-ui:\s*Arial[^;]*;[^}]*font-family:\s*var\(--home-font-ui\);/s,
+      /\.home\s*\{[^}]*--home-font-display:\s*"Trebuchet MS"[^;]*;[^}]*--home-font-accent:\s*"Water Brush"[^;]*;[^}]*--home-font-ui:\s*Arial[^;]*;[^}]*font-family:\s*var\(--home-font-ui\);/s,
     );
     expect(styles).toMatch(
       /\[data-home-typography-region="heroMain"\]\s*\{[^}]*font-family:\s*"Trebuchet MS"[^}]*font-size:\s*60px;[^}]*font-weight:\s*400;[^}]*font-style:\s*italic;[^}]*line-height:\s*1\.1;[^}]*letter-spacing:\s*0\.016em;/s,
     );
     expect(styles).toMatch(
-      /@media \(max-width: 620px\)\s*\{\s*\.home-page \.home-product-hero__title\[data-home-typography-region="heroMain"\]\s*\{[^}]*font-size:\s*40px;/s,
+      /@media \(max-width: 620px\)\s*\{\s*\.home \.hero__title\[data-home-typography-region="heroMain"\]\s*\{[^}]*font-size:\s*40px;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero__title-line\s*\{[^}]*display:\s*block;/s,
+      /\.hero__line\s*\{[^}]*display:\s*block;/s,
     );
     expect(styles).toMatch(
       /\[data-home-typography-region="heroAccent"\]\s*\{[^}]*font-family:\s*"Water Brush"[^}]*font-size:\s*80px;[^}]*font-weight:\s*400;[^}]*font-style:\s*normal;[^}]*line-height:\s*1\.25;[^}]*letter-spacing:\s*0\.100em;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero__accent::after\s*\{[^}]*content:\s*attr\(data-accent-text\);[^}]*background-size:\s*240% 100%;[^}]*-webkit-background-clip:\s*text;[^}]*background-clip:\s*text;[^}]*-webkit-text-fill-color:\s*transparent;[^}]*pointer-events:\s*none;/s,
+      /\.hero__accent::after\s*\{[^}]*content:\s*attr\(data-accent-text\);[^}]*background-size:\s*240% 100%;[^}]*-webkit-background-clip:\s*text;[^}]*background-clip:\s*text;[^}]*-webkit-text-fill-color:\s*transparent;[^}]*pointer-events:\s*none;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero__accent\s*\{[^}]*opacity:\s*1;[^}]*filter:\s*none;[^}]*will-change:\s*auto;/s,
+      /\.hero__accent\s*\{[^}]*opacity:\s*1;[^}]*filter:\s*none;[^}]*will-change:\s*auto;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero\.is-motion-enabled \.home-product-hero__accent::after\s*\{[^}]*clip-path:\s*polygon\(0 0, -8% 0, -24% 100%, 0 100%\);/s,
+      /\.hero\.is-motion-enabled \.hero__accent::after\s*\{[^}]*clip-path:\s*polygon\(0 0, -8% 0, -24% 100%, 0 100%\);/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero\.is-motion-ready \.home-product-hero__accent::after\s*\{[^}]*home-hero-accent-diagonal-reveal[^}]*var\(--home-hero-accent-start-delay\)/s,
+      /\.hero\.is-motion-ready \.hero__accent::after\s*\{[^}]*home-hero-accent-diagonal-reveal[^}]*var\(--home-hero-accent-start-delay\)/s,
     );
     expect(styles).toMatch(
       /@keyframes home-hero-accent-diagonal-reveal\s*\{[\s\S]*?polygon\(0 0, -8% 0, -24% 100%, 0 100%\)[\s\S]*?polygon\(0 0, 118% 0, 102% 100%, 0 100%\)/,
@@ -113,16 +113,16 @@ describe("HomePage hero title", () => {
     expect(styles).not.toContain("home-hero-accent-writing");
     expect(styles).not.toContain("home-hero-accent-write");
     expect(styles).toMatch(
-      /:root \.home-product-hero__accent\s*\{[^}]*color:\s*transparent;/s,
+      /:root \.hero__accent\s*\{[^}]*color:\s*transparent;/s,
     );
     expect(styles).toMatch(
-      /:root \.home-product-hero__accent::after\s*\{[^}]*#d7ae59[^}]*#ffe7a6[^}]*#bc8d36/s,
+      /:root \.hero__accent::after\s*\{[^}]*#d7ae59[^}]*#ffe7a6[^}]*#bc8d36/s,
     );
-    expect(styles).not.toContain("home-product-hero__accent-glyph");
+    expect(styles).not.toContain("hero__accent-glyph");
     expect(styles).not.toContain("home-hero-character-wave");
     expect(styles).not.toContain("home-hero-gold-sweep");
-    expect(styles).not.toMatch(/\.home-product-hero__accent::after\s*\{[^}]*text-shadow:/s);
-    expect(styles).not.toMatch(/\.home-product-hero__accent::after\s*\{[^}]*filter:/s);
+    expect(styles).not.toMatch(/\.hero__accent::after\s*\{[^}]*text-shadow:/s);
+    expect(styles).not.toMatch(/\.hero__accent::after\s*\{[^}]*filter:/s);
     expect(styles).not.toContain("Clash Display");
   });
 
@@ -130,19 +130,19 @@ describe("HomePage hero title", () => {
     render(<HomePage navigate={vi.fn()} />);
 
     expect(styles).toMatch(
-      /\.home-product-hero\s*\{[^}]*--home-product-hero-height:\s*607px;[^}]*--home-product-media-height:\s*458px;[^}]*width:\s*min\(1230px, calc\(100vw - 180px\)\);/s,
+      /\.hero\s*\{[^}]*--home-product-hero-height:\s*607px;[^}]*--home-product-media-height:\s*458px;[^}]*width:\s*min\(1230px, calc\(100vw - 180px\)\);/s,
     );
     expect(styles).toMatch(
-      /\.home-page > \.content-wrap\s*\{[^}]*width:\s*min\(1230px, calc\(100vw - 180px\)\);/s,
+      /\.home > \.content-wrap\s*\{[^}]*width:\s*min\(1230px, calc\(100vw - 180px\)\);/s,
     );
     expect(styles).toMatch(
-      /\.home-product-film\s*\{[^}]*margin-bottom:\s*22px;/s,
+      /\.hero__film\s*\{[^}]*margin-bottom:\s*22px;/s,
     );
     expect(styles).toMatch(
-      /\.home-product-hero__create\s*\{[^}]*min-height:\s*44px;[^}]*gap:\s*8px;[^}]*padding:\s*0 18px 0 15px;/s,
+      /\.hero__create\s*\{[^}]*min-height:\s*44px;[^}]*gap:\s*8px;[^}]*padding:\s*0 18px 0 15px;/s,
     );
     const [createButton] = screen.getAllByRole("button", { name: "Create Your Project" });
-    const createIcon = createButton.querySelector("svg.home-product-hero__create-icon");
+    const createIcon = createButton.querySelector("svg.hero__icon");
     expect(createIcon?.getAttribute("viewBox")).toBe("0 0 256 256");
     expect(createIcon?.querySelector("path")?.getAttribute("d")).toBe(
       "M220,128a4,4,0,0,1-4,4H132v84a4,4,0,0,1-8,0V132H40a4,4,0,0,1,0-8h84V40a4,4,0,0,1,8,0v84h84A4,4,0,0,1,220,128Z",
@@ -162,13 +162,13 @@ describe("HomePage hero title", () => {
 
   it("keeps the dark home CTA transparent until interaction", () => {
     expect(styles).toMatch(
-      /:root \.home-product-hero__create\s*\{[^}]*border-color:\s*rgba\(255, 255, 255, 0\.075\);[^}]*background:\s*transparent;[^}]*box-shadow:\s*0 8px 22px rgba\(0, 13, 24, 0\.12\);[^}]*-webkit-backdrop-filter:\s*none;[^}]*backdrop-filter:\s*none;[^}]*will-change:\s*auto;[^}]*color:\s*rgba\(255, 255, 255, 0\.96\);/s,
+      /:root \.hero__create\s*\{[^}]*border-color:\s*rgba\(255, 255, 255, 0\.075\);[^}]*background:\s*transparent;[^}]*box-shadow:\s*0 8px 22px rgba\(0, 13, 24, 0\.12\);[^}]*-webkit-backdrop-filter:\s*none;[^}]*backdrop-filter:\s*none;[^}]*will-change:\s*auto;[^}]*color:\s*rgba\(255, 255, 255, 0\.96\);/s,
     );
     expect(styles).toMatch(
-      /:root \.home-product-hero__create:(?:hover|active)[^{]*\{[^}]*background:\s*color-mix\(in srgb, var\(--brand\) 30%, transparent\);[^}]*border-color:\s*color-mix\(in srgb, var\(--brand\) 72%, white\);/s,
+      /:root \.hero__create:(?:hover|active)[^{]*\{[^}]*background:\s*color-mix\(in srgb, var\(--brand\) 30%, transparent\);[^}]*border-color:\s*color-mix\(in srgb, var\(--brand\) 72%, white\);/s,
     );
     expect(styles).toMatch(
-      /:root \.home-product-hero__create:active\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--brand\) 30%, transparent\);[^}]*border-color:\s*color-mix\(in srgb, var\(--brand\) 72%, white\);/s,
+      /:root \.hero__create:active\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--brand\) 30%, transparent\);[^}]*border-color:\s*color-mix\(in srgb, var\(--brand\) 72%, white\);/s,
     );
   });
 });

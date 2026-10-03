@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CloseIcon,
@@ -61,8 +61,23 @@ export function AgentCanvasEditingPanel({
   onAddExportToCanvas,
 }: AgentCanvasEditingPanelProps) {
   const editing = useAgentCanvasEditing(workflow, node, patchNode, onRevisionConflict);
-  const [addingToCanvas, setAddingToCanvas] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const identity = JSON.stringify([workflow.project_id, workflow.workflow_id, node.node_id]);
+  const scopeRef = useRef({ identity });
+  if (scopeRef.current.identity !== identity) scopeRef.current = { identity };
+  const scope = scopeRef.current;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const addRef = useRef<object | null>(null);
+  const downloadRef = useRef<object | null>(null);
+  const [addScope, setAddScope] = useState<object | null>(null);
+  const [downloadScope, setDownloadScope] = useState<object | null>(null);
+  const [scopedActionError, setScopedActionError] = useState<{ scope: object; message: string } | null>(null);
+  const addingToCanvas = addScope === scope;
+  const downloading = editing.downloading || downloadScope === scope;
+  const actionError = scopedActionError?.scope === scope ? scopedActionError.message : null;
   const [playheadSeconds, setPlayheadSeconds] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -80,6 +95,9 @@ export function AgentCanvasEditingPanel({
     [editing.content?.manifest.timeline_duration_seconds, editing.inputs.videos],
   );
   const backendReadyVideos = editing.inputs.videos.filter(isBackendReadyEditingVideo).length;
+  const unavailableEnabledVideos = editing.inputs.videos.filter(
+    (input) => input.entry.enabled && !isBackendReadyEditingVideo(input),
+  ).length;
   const timelineDuration = playableSequence.duration;
   const hasPlayableDraft = playableSequence.videos.length > 0;
   const selectedReferenceId = selectedReferenceState
@@ -88,16 +106,32 @@ export function AgentCanvasEditingPanel({
     ? selectedReferenceState
     : editing.inputs.videos[0]?.referenceId ?? editing.inputs.bgm?.referenceId ?? null;
 
-  const handleAddToCanvas = async () => {
-    if (!canReuseExport || !onAddExportToCanvas || addingToCanvas) return;
-    setAddingToCanvas(true);
-    setActionError(null);
+  const runExportAction = async (kind: "add" | "download") => {
+    if (!canReuseExport || !mountedRef.current || scopeRef.current !== scope) return;
+    const actionRef = kind === "add" ? addRef : downloadRef;
+    const setActionScope = kind === "add" ? setAddScope : setDownloadScope;
+    if (actionRef.current === scope) return;
+    const action = kind === "add"
+      ? onAddExportToCanvas && (() => onAddExportToCanvas(canReuseExport.export_id))
+      : canReuseExport.output_asset_id && (() => onDownloadExport
+        ? onDownloadExport(canReuseExport.output_asset_id!)
+        : editing.downloadExport(canReuseExport.output_asset_id));
+    if (!action) return;
+    actionRef.current = scope;
+    setActionScope(scope);
+    setScopedActionError(null);
     try {
-      await onAddExportToCanvas(canReuseExport.export_id);
+      await action();
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Unable to add the exported video to canvas.");
+      if (mountedRef.current && scopeRef.current === scope) {
+        setScopedActionError({
+          scope,
+          message: error instanceof Error ? error.message : `Unable to ${kind === "add" ? "add the exported video to canvas" : "download the exported video"}.`,
+        });
+      }
     } finally {
-      setAddingToCanvas(false);
+      if (actionRef.current === scope) actionRef.current = null;
+      if (mountedRef.current && scopeRef.current === scope) setActionScope(null);
     }
   };
 
@@ -129,17 +163,12 @@ export function AgentCanvasEditingPanel({
                 type="button"
                 aria-label="Download exported video"
                 className="agent-editing-panel__toolbar-button"
-                disabled={editing.downloading}
-                onClick={() => {
-                  const assetId = canReuseExport.output_asset_id;
-                  if (!assetId) return;
-                  if (onDownloadExport) void onDownloadExport(assetId);
-                  else void editing.downloadExport(assetId);
-                }}
+                disabled={downloading}
+                onClick={() => void runExportAction("download")}
                 title="Download exported video"
               >
                 <DownloadIcon />
-                <span>{editing.downloading ? "Downloading" : "Download"}</span>
+                <span>{downloading ? "Downloading" : "Download"}</span>
               </button>
               {onAddExportToCanvas ? (
                 <button
@@ -147,7 +176,7 @@ export function AgentCanvasEditingPanel({
                   aria-label="Add exported video to canvas"
                   className="agent-editing-panel__toolbar-button"
                   disabled={addingToCanvas}
-                  onClick={() => void handleAddToCanvas()}
+                  onClick={() => void runExportAction("add")}
                   title="Add exported video to canvas"
                 >
                   <PlusIcon />
@@ -268,6 +297,11 @@ export function AgentCanvasEditingPanel({
               onSetBgmVolume={editing.setBgmVolume}
             />
 
+            {unavailableEnabledVideos > 0 ? (
+              <p role="status">
+                Export uses Ready inputs only. {unavailableEnabledVideos} enabled video {unavailableEnabledVideos === 1 ? "input is" : "inputs are"} unavailable and will be omitted.
+              </p>
+            ) : null}
             {omittedNodeIds.length ? (
               <section className="agent-editing-panel__omitted" aria-labelledby="agent-editing-omitted-heading">
                 <div>
@@ -283,7 +317,7 @@ export function AgentCanvasEditingPanel({
               </section>
             ) : null}
             {editing.error ? <button type="button" className="agent-editing-panel__error" onClick={editing.clearError}>{editing.error}</button> : null}
-            {actionError ? <button type="button" className="agent-editing-panel__error" onClick={() => setActionError(null)}>{actionError}</button> : null}
+            {actionError ? <button type="button" className="agent-editing-panel__error" onClick={() => setScopedActionError(null)}>{actionError}</button> : null}
           </div>
         </div>
       )}

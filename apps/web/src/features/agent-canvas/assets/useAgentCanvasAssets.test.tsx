@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ProjectAssetSummaryV2 } from "../../../types-v2.ts";
+import type { ProjectAssetSummaryV2, ProjectAssetUploadResponseV2 } from "../../../types-v2.ts";
 import { useAgentCanvasAssets } from "./useAgentCanvasAssets.ts";
 
 const fixture = vi.hoisted(() => ({
@@ -56,6 +56,13 @@ function libraryAsset(scope: "my" | "recommended", entityId: string) {
       public_url: `/library/${entityId}.png`,
     },
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 describe("useAgentCanvasAssets", () => {
@@ -250,6 +257,97 @@ describe("useAgentCanvasAssets", () => {
       pending_handoff_id: "handoff-product-1",
       asset: { asset_id: "uploaded-product", version_id: "version-product-1" },
     });
+  });
+
+  it("keeps B intact after A's upload completes and cancels only unstarted batch files", async () => {
+    const pending = deferred<ProjectAssetUploadResponseV2>();
+    fixture.uploadAgentCanvasAsset.mockReturnValue(pending.promise);
+    fixture.listAgentCanvasProjectAssets.mockImplementation(async (workflowId: string) => ({
+      workflow_id: workflowId, assets: [projectAsset(`${workflowId}-asset`, "image")],
+    }));
+    const { result, rerender } = renderHook(({ workflowId }) => useAgentCanvasAssets({
+      workflowId, scope: "project",
+    }), { initialProps: { workflowId: "A" } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const oldRetry = result.current.retry;
+    const oldUpload = result.current.uploadFilesWithReceipts;
+    const file = new File(["image"], "image.png", { type: "image/png" });
+    let batch!: Promise<ProjectAssetUploadResponseV2[]>;
+    act(() => { batch = oldUpload([file, file], {}, ["first", "second"]); });
+    expect(result.current.uploading).toBe(true);
+    rerender({ workflowId: "B" });
+    await waitFor(() => expect(result.current.items[0]?.assetId).toBe("B-asset"));
+    expect(result.current.uploading).toBe(false);
+    const receipt = { workflow_id: "A", asset: projectAsset("uploaded-A", "image"), pending_handoff_id: "A-handoff" };
+    let receipts: ProjectAssetUploadResponseV2[] = [];
+    await act(async () => { pending.resolve(receipt); receipts = await batch; });
+    expect(receipts).toEqual([receipt]);
+    expect(fixture.uploadAgentCanvasAsset).toHaveBeenCalledTimes(1);
+    expect(fixture.uploadAgentCanvasAsset).toHaveBeenCalledWith("A", expect.any(FormData), "first");
+    expect(result.current.items[0]?.assetId).toBe("B-asset");
+    expect(result.current.uploadError).toBeNull();
+    await act(async () => { await oldRetry(); expect(await oldUpload([file])).toEqual([]); });
+    expect(fixture.listAgentCanvasProjectAssets.mock.calls.map(([id]) => id)).toEqual(["A", "B"]);
+  });
+
+  it.each(["disabled", "scope", "unmounted"] as const)("ignores upload completion after becoming %s", async (change) => {
+    const pending = deferred<ProjectAssetUploadResponseV2>();
+    fixture.uploadAgentCanvasAsset.mockReturnValue(pending.promise);
+    const { result, rerender, unmount } = renderHook(({ enabled, scope }) => useAgentCanvasAssets({
+      workflowId: "A", enabled, scope,
+    }), { initialProps: { enabled: true, scope: "project" as "project" | "my" } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let batch!: Promise<ProjectAssetUploadResponseV2[]>;
+    act(() => { batch = result.current.uploadFilesWithReceipts([new File(["image"], "image.png", { type: "image/png" })]); });
+    if (change === "unmounted") unmount();
+    else rerender({ enabled: change !== "disabled", scope: change === "scope" ? "my" : "project" });
+    await act(async () => { pending.resolve({ workflow_id: "A", asset: projectAsset("uploaded-A", "image") }); await batch; });
+    expect(fixture.listAgentCanvasProjectAssets).toHaveBeenCalledTimes(1);
+    if (change !== "unmounted") {
+      expect(result.current.uploading).toBe(false);
+      expect(result.current.uploadError).toBeNull();
+      expect(result.current.items).toEqual([]);
+    }
+  });
+
+  it("discards deferred list responses and errors from inactive queries", async () => {
+    const a = deferred<{ workflow_id: string; assets: ProjectAssetSummaryV2[] }>();
+    const b = deferred<{ workflow_id: string; assets: ProjectAssetSummaryV2[] }>();
+    fixture.listAgentCanvasProjectAssets.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const { result, rerender } = renderHook(({ workflowId, enabled }) => useAgentCanvasAssets({
+      workflowId, enabled, scope: "project",
+    }), { initialProps: { workflowId: "A", enabled: true } });
+    rerender({ workflowId: "B", enabled: true });
+    await act(async () => { a.reject(new Error("A list failed")); await Promise.resolve(); });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.error).toBeNull();
+    rerender({ workflowId: "B", enabled: false });
+    await act(async () => { b.resolve({ workflow_id: "B", assets: [projectAsset("B", "image")] }); });
+    expect(result.current.items).toEqual([]);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("does not let stale errors or finally clear B's current upload", async () => {
+    const a = deferred<ProjectAssetUploadResponseV2>();
+    const b = deferred<ProjectAssetUploadResponseV2>();
+    fixture.uploadAgentCanvasAsset.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const { result, rerender } = renderHook(({ workflowId }) => useAgentCanvasAssets({ workflowId, scope: "project" }), {
+      initialProps: { workflowId: "A" },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const file = new File(["image"], "image.png", { type: "image/png" });
+    let old!: Promise<unknown>;
+    act(() => { old = result.current.uploadFiles([file]).catch((error: unknown) => error); });
+    rerender({ workflowId: "B" });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let current!: Promise<unknown>;
+    act(() => { current = result.current.uploadFiles([file]); });
+    await act(async () => { a.reject(new Error("A failed")); await old; });
+    expect(result.current.uploading).toBe(true);
+    expect(result.current.uploadError).toBeNull();
+    await act(async () => { b.resolve({ workflow_id: "B", asset: projectAsset("uploaded-B", "image") }); await current; });
+    expect(result.current.uploading).toBe(false);
   });
 
   it("exposes a bounded error and retries the current scope", async () => {

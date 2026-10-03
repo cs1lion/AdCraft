@@ -449,6 +449,19 @@ describe("LocalEngineWorkbench — image intake entry", () => {
 
 
 describe("LocalEngineWorkbench — full-screen director workbench", () => {
+  it("keeps fullscreen open when an active tool consumes Escape", async () => {
+    render(<LocalEngineWorkbench node={makeNode()} draft={draft} patchNode={vi.fn()} />);
+    fireEvent.click(screen.getByText("⤢ 全屏导演台"));
+    const cancelTool = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault(); };
+    window.addEventListener("keydown", cancelTool);
+    try {
+      fireEvent.keyDown(window, { key: "Escape", cancelable: true });
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByTestId("scene-3d-workbench-fullscreen")).toBeTruthy();
+    } finally { window.removeEventListener("keydown", cancelTool); }
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("scene-3d-workbench-fullscreen")).toBeNull());
+  });
   it("toggles into the full-screen portal and back", async () => {
     render(<LocalEngineWorkbench node={makeNode()} draft={draft} patchNode={vi.fn()} />);
     expect(screen.queryByTestId("scene-3d-workbench-fullscreen")).toBeNull();
@@ -461,13 +474,13 @@ describe("LocalEngineWorkbench — full-screen director workbench", () => {
     expect(screen.queryByTestId("scene-3d-workbench-fullscreen")).toBeNull();
   });
 
-  it("Escape collapses the full-screen workbench", () => {
+  it("Escape collapses the full-screen workbench", async () => {
     render(<LocalEngineWorkbench node={makeNode()} draft={draft} patchNode={vi.fn()} />);
     fireEvent.click(screen.getByText("⤢ 全屏导演台"));
     expect(screen.getByTestId("scene-3d-workbench-fullscreen")).toBeTruthy();
 
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByTestId("scene-3d-workbench-fullscreen")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("scene-3d-workbench-fullscreen")).toBeNull());
   });
 });
 
@@ -848,4 +861,32 @@ describe("LocalEngineWorkbench — multi-round memory wiring (E4, V0.2 §14.5)",
     expect(editorProps.nodeId).toBe("scene-node");
     expect(editorProps.initialEngagedIds).toBeUndefined();
   });
+});
+
+it("clears dirty after backend returns the saved scene with sorted object keys", async () => {
+  localStorage.clear();
+  const node = makeNode();
+  const { rerender } = await renderWorkbench(node);
+  await editorMounted();
+  fireEvent.click(screen.getByText("make-dirty"));
+  expect(editorProps.dirty).toBe(true);
+  const saved = JSON.parse(JSON.stringify(editorProps.sceneScript, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+      : value));
+  rerender(<LocalEngineWorkbench node={{ ...node, structured_content: { scene_script: saved } }} draft={draft} patchNode={vi.fn()} />);
+  await waitFor(() => expect(editorProps.dirty).toBe(false));
+  expect(editorProps.sceneScript?.scene.name).toBe("edited");
+});
+
+it.each([false, true])("accepts upstream scene only when draft is clean (dirty=%s)", async (dirty) => {
+  localStorage.clear();
+  const node = makeNode();
+  const { rerender } = await renderWorkbench(node);
+  await editorMounted();
+  if (dirty) fireEvent.click(screen.getByText("make-dirty"));
+  const next = { ...sceneScript(), scene: { ...sceneScript().scene, name: "regenerated" } };
+  rerender(<LocalEngineWorkbench node={{ ...node, structured_content: { scene_script: next } }} draft={draft} patchNode={vi.fn()} />);
+  await waitFor(() => expect(editorProps.sceneScript?.scene.name).toBe(dirty ? "edited" : "regenerated"));
+  expect(editorProps.dirty).toBe(dirty);
 });

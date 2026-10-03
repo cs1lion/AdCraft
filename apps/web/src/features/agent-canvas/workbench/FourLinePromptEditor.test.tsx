@@ -6,7 +6,7 @@ import { FourLinePromptEditor } from "./FourLinePromptEditor.tsx";
 afterEach(() => cleanup());
 
 describe("FourLinePromptEditor", () => {
-  it("moves by one complete four-line page for a wheel gesture", () => {
+  it("respects small pixel wheel gestures instead of jumping a whole page", () => {
     const { getByLabelText } = render(
       <FourLinePromptEditor
         ariaLabel="Generation prompt"
@@ -21,7 +21,7 @@ describe("FourLinePromptEditor", () => {
 
     fireEvent.wheel(editor, { deltaY: 24 });
 
-    expect(editor.scrollTop).toBe(88);
+    expect(editor.scrollTop).toBe(24);
   });
 
   it("hands downward scrolling to the workbench after reaching the prompt end", () => {

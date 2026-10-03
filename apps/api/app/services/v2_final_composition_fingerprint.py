@@ -14,6 +14,7 @@ from app.schemas.workflow_v2 import (
 )
 from app.schemas.workflow_v2_composition import V2SimpleCompositionPlan
 from app.services.v2_asset_store import V2AssetStoreService
+from app.services.v2_final_composition_filters import audio_role, validated_ducking_config
 from app.services.v2_media_toolchain_capabilities import (
     PROFILE_ID,
     V2MediaToolchainCapabilityService,
@@ -27,6 +28,7 @@ _TOP_LEVEL_FIELDS = (
     "render_mode",
     "visual_sources",
     "audio_sources",
+    "subtitle_sources",
     "audio_mode",
     "audio_mix",
     "output",
@@ -66,6 +68,19 @@ _AUDIO_SOURCE_FIELDS = (
     "muted",
     "fade_in_seconds",
     "fade_out_seconds",
+    "role",
+    "is_bgm",
+    "enabled",
+)
+_SUBTITLE_SOURCE_FIELDS = (
+    "timeline_order",
+    "track_order",
+    "start_time_seconds",
+    "duration_seconds",
+    "text",
+    "subtitle_style",
+    "visible_start_seconds",
+    "visible_end_seconds",
     "enabled",
 )
 
@@ -115,7 +130,7 @@ class V2FinalCompositionFingerprintService:
             **{
                 field: inputs.get(field)
                 for field in _TOP_LEVEL_FIELDS
-                if field not in {"visual_sources", "audio_sources"}
+                if field not in {"visual_sources", "audio_sources", "subtitle_sources"}
             },
             "visual_sources": [
                 self._allowlisted_source(source, _VISUAL_SOURCE_FIELDS)
@@ -125,6 +140,11 @@ class V2FinalCompositionFingerprintService:
             "audio_sources": [
                 self._allowlisted_source(source, _AUDIO_SOURCE_FIELDS)
                 for source in inputs.get("audio_sources", [])
+                if isinstance(source, dict) and source.get("enabled", True)
+            ],
+            "subtitle_sources": [
+                self._allowlisted_source(source, _SUBTITLE_SOURCE_FIELDS)
+                for source in inputs.get("subtitle_sources", [])
                 if isinstance(source, dict) and source.get("enabled", True)
             ],
         }
@@ -156,6 +176,7 @@ class V2FinalCompositionFingerprintService:
             )
         visual_sources: list[dict[str, Any]]
         audio_sources: list[dict[str, Any]]
+        subtitle_sources: list[dict[str, Any]] = []
         if render_mode == "simple_sequence":
             if simple_plan is None:
                 raise V2FinalCompositionFingerprintError(
@@ -193,9 +214,11 @@ class V2FinalCompositionFingerprintService:
                 else []
             )
         else:
-            track_order = {track.track_id: track.order for track in timeline.tracks}
+            track_order = {
+                track.track_id: track.order for track in timeline.tracks if track.enabled
+            }
             ordered_clips = sorted(
-                timeline.clips,
+                (clip for clip in timeline.clips if clip.track_id in track_order and clip.enabled),
                 key=lambda clip: (
                     track_order[clip.track_id],
                     clip.start_time,
@@ -205,7 +228,26 @@ class V2FinalCompositionFingerprintService:
             visual_sources = []
             audio_sources = []
             for timeline_order, clip in enumerate(ordered_clips):
-                if not clip.enabled or clip.clip_type == "subtitle":
+                if not clip.enabled:
+                    continue
+                if clip.clip_type == "subtitle":
+                    subtitle_sources.append(
+                        {
+                            "timeline_order": timeline_order,
+                            "track_order": track_order[clip.track_id],
+                            "start_time_seconds": clip.start_time,
+                            "duration_seconds": clip.duration,
+                            "text": clip.text,
+                            "subtitle_style": clip.subtitle_style.model_dump(mode="json"),
+                            "visible_start_seconds": clip.metadata.get(
+                                "visible_start_seconds", clip.start_time
+                            ),
+                            "visible_end_seconds": clip.metadata.get(
+                                "visible_end_seconds", clip.start_time + clip.duration
+                            ),
+                            "enabled": True,
+                        }
+                    )
                     continue
                 if not clip.source_asset_id or not clip.source_version_id:
                     continue
@@ -242,6 +284,7 @@ class V2FinalCompositionFingerprintService:
                             "muted": clip.audio.muted,
                             "fade_in_seconds": clip.audio.fade_in_seconds,
                             "fade_out_seconds": clip.audio.fade_out_seconds,
+                            "role": audio_role(clip),
                         }
                     )
         toolchain = self._toolchain_identity()
@@ -259,14 +302,24 @@ class V2FinalCompositionFingerprintService:
             "video_bitrate": render_settings.video_bitrate,
             "audio_bitrate": render_settings.audio_bitrate,
         }
+        if render_mode != "simple_sequence":
+            output["duration_seconds"] = timeline.duration_seconds
         return self.build(
             workflow_id=workflow_id,
             slot_id=slot_id,
             render_mode=render_mode,
             visual_sources=visual_sources,
             audio_sources=audio_sources,
+            subtitle_sources=subtitle_sources,
             audio_mode=audio_mode,
-            audio_mix=_audio_mix_payload(visual_sources, audio_sources),
+            audio_mix={
+                **_audio_mix_payload(visual_sources, audio_sources),
+                **(
+                    {"ducking": _effective_ducking(timeline.metadata)}
+                    if render_mode != "simple_sequence"
+                    else {}
+                ),
+            },
             output=output,
             renderer={
                 "contract_version": "final-composition-renderer-v1",
@@ -325,6 +378,17 @@ def _normalize_json_value(value: Any) -> Any:
     raise V2FinalCompositionFingerprintError(
         f"Final composition fingerprint contains unsupported value: {type(value).__name__}"
     )
+
+
+def _effective_ducking(metadata: dict[str, Any]) -> dict[str, Any]:
+    config = metadata.get("ducking")
+    if not isinstance(config, dict):
+        return {"enabled": False}
+    try:
+        effective = validated_ducking_config(config)
+    except ValueError as exc:
+        raise V2FinalCompositionFingerprintError(str(exc)) from exc
+    return {"enabled": True, **effective} if effective is not None else {"enabled": False}
 
 
 def _audio_mix_payload(

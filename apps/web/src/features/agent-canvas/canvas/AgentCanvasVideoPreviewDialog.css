@@ -14,8 +14,8 @@
   border: 0;
   background: rgba(7, 8, 13, 0.82);
   color: #fff;
-  backdrop-filter: blur(18px) saturate(0.88);
   -webkit-backdrop-filter: blur(18px) saturate(0.88);
+  backdrop-filter: blur(18px) saturate(0.88);
 }
 
 .agent-canvas-video-preview__stage {
@@ -55,8 +55,8 @@
   color: #fff;
   cursor: pointer;
   transition: background 150ms ease, transform 150ms ease;
-  backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
 }
 
 .agent-canvas-video-preview__close svg {

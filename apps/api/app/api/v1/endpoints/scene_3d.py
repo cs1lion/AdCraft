@@ -21,7 +21,7 @@ import tempfile
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel, Field
 
 from app.schemas.scene_script import SceneScriptRoot
@@ -56,7 +56,10 @@ from app.services.scene3d.aspect_ratios import (
     list_aspect_ratios,
 )
 from app.services.scene3d.reference_upload import (
+    MAX_FILE_SIZE_MB,
+    MAX_REFERENCE_FRAMES,
     UploadError,
+    validate_upload,
     get_reference_video_path,
     list_reference_videos,
     save_reference_video,
@@ -672,6 +675,28 @@ async def get_render_job_status(job_id: str) -> JobStatusResponse:
             "warnings": job.result.warnings,
         }
 
+    if job.status == "completed" and job.result and result_dict is not None:
+        from app.core.config import get_settings
+        from app.services.scene3d.render_publication import publish_render_video
+
+        for path_key, url_key, filename in (
+            ("video_path", "video_url", "previs.mp4"),
+            ("animatic_video_path", "animatic_video_url", "animatic.mp4"),
+        ):
+            try:
+                result_dict[url_key] = publish_render_video(
+                    media_root=get_settings().media_data_dir,
+                    job_id=job.job_id,
+                    output_dir=job.result.output_dir,
+                    video_path=result_dict[path_key],
+                    filename=filename,
+                )
+            except (OSError, ValueError) as exc:
+                result_dict[url_key] = None
+                result_dict["warnings"] = [
+                    *result_dict["warnings"], f"render_video_publication_failed: {exc}",
+                ]
+
     return JobStatusResponse(
         job_id=job.job_id,
         status=job.status,
@@ -734,19 +759,38 @@ class ReferenceListResponse(BaseModel):
     videos: list[ReferenceVideoInfo]
 
 
+async def _read_reference_upload(file: UploadFile) -> bytes:
+    """Read at most 100 MiB plus one byte; reject before temp files or models."""
+    limit = MAX_FILE_SIZE_MB * 1024 * 1024
+    if file.size is not None and file.size > limit:
+        raise HTTPException(status_code=413, detail="Reference video exceeds 100 MiB")
+    # Validate format before reading; actual non-empty size is checked below.
+    validate_upload(file.filename or "reference.mp4", 1, file.content_type)
+    data = bytearray()
+    while True:
+        chunk = await file.read(min(1024 * 1024, limit + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > limit:
+            raise HTTPException(status_code=413, detail="Reference video exceeds 100 MiB")
+    validate_upload(file.filename or "reference.mp4", len(data), file.content_type)
+    return bytes(data)
+
+
 @router.post("/upload-reference", response_model=ReferenceUploadResponse)
 async def upload_reference_video(
     file: UploadFile = File(...),
     extract_keyframes: bool = True,
-    num_keyframes: int = 5,
+    num_keyframes: int = Query(5, ge=1, le=MAX_REFERENCE_FRAMES),
 ) -> ReferenceUploadResponse:
     """Upload a reference video for video model conditioning.
 
-    Validates format (MP4/WebM/MOV), size (<=100MB), duration (<=60s),
-    and extracts metadata. Optionally extracts evenly-spaced keyframes.
+    Validates format (MP4/WebM/MOV/M4V), size (<=100 MiB), duration (<=60s),
+    and extracts metadata. Optionally extracts 1..12 evenly-spaced keyframes.
     """
     try:
-        file_bytes = await file.read()
+        file_bytes = await _read_reference_upload(file)
         result = save_reference_video(
             file_bytes=file_bytes,
             file_name=file.filename or "reference.mp4",
@@ -777,6 +821,8 @@ async def upload_reference_video(
             status_code=400,
             detail={"error": str(e), "error_type": e.error_type},
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -979,7 +1025,7 @@ class AnalyzeReferenceResponse(BaseModel):
 async def analyze_reference_video_endpoint(
     file: UploadFile = File(...),
     user_description: str | None = None,
-    num_frames: int = 6,
+    num_frames: int = Query(6, ge=1, le=MAX_REFERENCE_FRAMES),
 ) -> AnalyzeReferenceResponse:
     """Analyze an uploaded reference video and generate a SceneScript.
 
@@ -991,9 +1037,9 @@ async def analyze_reference_video_endpoint(
       user video -> extract frames -> multimodal LLM analysis -> SceneScript -> Blender render
 
     Args:
-        file: Uploaded video file (MP4/WebM/MOV, <=100MB, <=10s).
+        file: Uploaded video file (MP4/WebM/MOV/M4V, <=100 MiB, <=60s).
         user_description: Optional user-provided description to guide analysis.
-        num_frames: Number of evenly-spaced frames to analyze (default 6).
+        num_frames: Number of evenly-spaced frames to analyze (1..12, default 6).
 
     Returns:
         AnalyzeReferenceResponse with SceneScript, analysis summary, and frame details.
@@ -1006,14 +1052,10 @@ async def analyze_reference_video_endpoint(
     )
 
     try:
-        file_bytes = await file.read()
-        if not file_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        file_bytes = await _read_reference_upload(file)
 
-        # Save to temp file for analysis
+        # Save only a bounded, format-validated payload to temp file for analysis.
         suffix = Path(file.filename or "reference.mp4").suffix.lower()
-        if suffix not in {".mp4", ".webm", ".mov", ".m4v"}:
-            suffix = ".mp4"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
@@ -1082,7 +1124,7 @@ async def analyze_reference_video_endpoint(
             user_description=result.user_description,
         )
 
-    except AnalysisError as e:
+    except (AnalysisError, UploadError) as e:
         raise HTTPException(
             status_code=400,
             detail={"error": str(e), "error_type": e.error_type},

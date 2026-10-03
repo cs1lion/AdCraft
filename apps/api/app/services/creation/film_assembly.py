@@ -2,19 +2,16 @@
 
 两条一键流的收尾：镜头全部就绪后，把它们按序铺到画布自己的
 final-composition 时间线（`TimelineRepository`，即时间线编辑器用的同一
-存储）。幂等——同一源节点的 clip 已存在则跳过。
+存储）。调用方幂等刷新同一源节点的 clip，保留 clip 身份。
 
-关于最终渲染（诚实边界）：v2 final-composition 渲染栈
-（`V2FinalCompositionRenderService`）綁定 authoring 存储
-（`workflows`/`workflow_revisions` 表），而真实工作流全部住在
-`agent_canvas_workflows`——2026-09-29 实机确认该表为空、渲染栈对所有
-canvas 工作流不可达（出厂 ✔ 仅有 fake 单测撑腰）。本模块只负责"铺满
-时间线"；渲染尝试走标准栈，够不着时返回带码的明确失败，不假装成功。
+本模块规划镜号顺序与镜头时长；调用方将同一份计划写入 canvas 时间线并
+投影到 authoring 存储，最终复用标准 v2 final-composition 渲染栈。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 
 
 @dataclass(frozen=True)
@@ -26,6 +23,7 @@ class TimelineClipPlacementV1:
     start_time: float
     duration: float
     title: str
+    source_shot_index: int = 0
 
 
 @dataclass
@@ -43,13 +41,14 @@ def _segment_duration(node) -> float:
     segment = content.get("segment") if isinstance(content, dict) else None
     source = segment if isinstance(segment, dict) else content
     try:
-        return max(0.5, float(source.get("duration_seconds") or 5))
+        duration = float(source.get("duration_seconds") or 5)
+        return max(0.5, duration) if isfinite(duration) else 5.0
     except (TypeError, ValueError):
         return 5.0
 
 
 def plan_assembly(video_track_id: str, nodes) -> AssemblyPlanV1:
-    """按镜头序号铺排；调用方负责幂等过滤（已有 clip 的节点跳过）。"""
+    """按镜头序号铺排；调用方幂等更新已有 clip 与最终渲染投影。"""
 
     ordered = sorted(
         (n for n in nodes if n.node_type == "video" and n.output_asset_id),
@@ -68,6 +67,7 @@ def plan_assembly(video_track_id: str, nodes) -> AssemblyPlanV1:
                 start_time=round(cursor, 3),
                 duration=duration,
                 title=node.title or node.node_id,
+                source_shot_index=_shot_order(node.title or ""),
             )
         )
         cursor += duration

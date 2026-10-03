@@ -40,14 +40,17 @@ describe("theme styles", () => {
     const styles = source("styles/theme.css");
     const dark = declarationBlock(styles, ":root");
 
+    const sharedEntry = source("styles/base.css") + "\n" + styles;
     for (const token of requiredTokens) {
-      expect(dark).toContain(token);
+      expect(dark).toMatch(new RegExp(`${token}:\\s*[^;]+;`));
+      expect(sharedEntry.match(new RegExp(`${token}:`, "g")), token).toHaveLength(1);
     }
 
     expect(dark).toContain("#08090D");
     expect(dark).toContain("#9DAFE6");
     expect(styles).not.toContain("data-theme");
-    expect(source("styles/base.css")).toContain("color-scheme: dark");
+    expect(dark).toContain("color-scheme: dark");
+    expect(source("main.tsx")).toMatch(/base\.css[\s\S]*theme\.css/);
   });
 
   test("uses the approved blue brand palette and preserves semantic colors", () => {
@@ -64,14 +67,15 @@ describe("theme styles", () => {
     expect(theme).toContain("--focus-ring: #CAD4F5");
     expect(theme).toContain("--mauve: var(--brand)");
     expect(theme).toContain("--iris: var(--brand)");
-    expect(base).toContain("--mauve: #9DAFE6");
-    expect(base).toContain("--iris: #9DAFE6");
+    // Legacy aliases resolve through the fixed theme's winning brand token;
+    // base retains layout/font primitives rather than duplicate palette values.
+    expect(base).not.toMatch(/--(?:mauve|iris):/);
     expect(typographyLab).toContain("--brand: #9DAFE6");
     expect(theme).toContain("--success: #9CD38E");
     expect(theme).toContain("--warning: #E1A750");
     expect(theme).toContain("--error: #CA6F6F");
     expect(theme).toContain("--info: #7F9FE8");
-    for (const block of [base, typographyLab]) {
+    for (const block of [theme, typographyLab]) {
       expect(block).toContain("--butter: #E1A750");
       expect(block).toContain("--rose: #CA6F6F");
     }
@@ -182,19 +186,19 @@ describe("theme styles", () => {
 
   test("keeps cosmic artwork fixed behind every application shell", () => {
     const themeStyles = source("styles/theme.css");
-    const shell = declarationBlock(themeStyles, ":root .app-shell");
-    const cosmicShell = declarationBlock(
-      themeStyles,
-      ":root .app-shell--cosmic",
-    );
+    // Cosmic shells inherit the shared transparent shell. The theme owns
+    // the fixed body artwork, not a redundant shell appearance override.
+    const shell = declarationBlock(source("styles/base.css"), ".app-shell");
+    expect(themeStyles).not.toMatch(/:root \.app-shell(?:--cosmic)?\s*\{/);
+    expect(source("components/Layout.tsx")).toContain("app-shell");
 
     expect(themeStyles).toMatch(
       /:root body\s*\{[\s\S]*?url\("\/assets\/home-dark-black-hole\.webp"\) 50% 60% \/ cover fixed no-repeat,[\s\S]*?\n\}/,
     );
     expect(shell).toContain("background: transparent");
-    expect(cosmicShell).toContain("background: transparent");
-    expect(cosmicShell).not.toContain("border-color");
-    expect(cosmicShell).toContain("box-shadow: none");
+    expect(shell).toContain("border: 0");
+    expect(shell).toContain("box-shadow: none");
+    expect(shell).toContain("backdrop-filter: none");
     expect(source("styles/base.css")).not.toContain("home-dark-black-hole.webp");
     expect(source("pages/home.css")).not.toContain("home-dark-black-hole.webp");
     expect(source("pages/home-typography-lab.css")).toContain(

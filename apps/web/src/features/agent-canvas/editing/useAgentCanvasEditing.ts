@@ -150,14 +150,28 @@ export function useAgentCanvasEditing(
   patchNode: PatchNode,
   onRevisionConflict?: () => Promise<unknown> | unknown,
 ) {
-  const manifestIdentity = JSON.stringify([workflow.workflow_id, node.node_id]);
+  const manifestIdentity = JSON.stringify([workflow.project_id, workflow.workflow_id, node.node_id]);
   const [pendingManifestCommit, setPendingManifestCommit] = useState({
     identity: manifestIdentity,
     pending: manifestCommitPending(manifestIdentity),
   });
-  const [exporting, setExporting] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Separate from manifest coordination: a new token also invalidates A → B → A results.
+  const operationScopeRef = useRef({ identity: manifestIdentity });
+  if (operationScopeRef.current.identity !== manifestIdentity) {
+    operationScopeRef.current = { identity: manifestIdentity };
+  }
+  const operationScope = operationScopeRef.current;
+  const exportOperationRef = useRef<object | null>(null);
+  const downloadOperationRef = useRef<object | null>(null);
+  const [exportOperation, setExportOperation] = useState<object | null>(null);
+  const [downloadOperation, setDownloadOperation] = useState<object | null>(null);
+  const [scopedError, setScopedError] = useState<{ scope: object; message: string | null } | null>(null);
+  const exporting = exportOperation === operationScope;
+  const downloading = downloadOperation === operationScope;
+  const error = scopedError?.scope === operationScope ? scopedError.message : null;
+  const setError = useCallback((message: string | null) => {
+    setScopedError({ scope: operationScope, message });
+  }, [operationScope]);
   const [draftManifest, setDraftManifest] = useState<{
     identity: string;
     nodeId: string;
@@ -331,7 +345,7 @@ export function useAgentCanvasEditing(
         }
       },
     });
-  }, [canonicalContent, currentManifest, manifestIdentity, node.node_id, onRevisionConflict, patchNode, setLocalDraft]);
+  }, [canonicalContent, currentManifest, manifestIdentity, node.node_id, onRevisionConflict, patchNode, setError, setLocalDraft]);
 
   const stageManifestUpdate = useCallback((
     updateManifest: ManifestUpdater,
@@ -355,7 +369,7 @@ export function useAgentCanvasEditing(
     setLocalDraft(next);
     setError(null);
     return true;
-  }, [currentManifest, manifestIdentity, setLocalDraft]);
+  }, [currentManifest, manifestIdentity, setError, setLocalDraft]);
 
   const stageVideoUpdate = useCallback((
     referenceId: string,
@@ -464,14 +478,22 @@ export function useAgentCanvasEditing(
   const exportComposition = useCallback(async () => {
     if (
       !content
-      || exporting
+      || !mountedRef.current
+      || operationScopeRef.current !== operationScope
+      || exportOperationRef.current === operationScope
+      || content.active_export?.status === "queued"
+      || content.active_export?.status === "exporting"
+      || stagedManifestRef.current
       || hasPendingManifestCommit
       || manifestCommitPending(manifestIdentity)
     ) return;
-    setExporting(true);
+    exportOperationRef.current = operationScope;
+    setExportOperation(operationScope);
     setError(null);
     try {
-      const exportScope = `${workflow.workflow_id}:${node.node_id}:${content.manifest.manifest_revision}`;
+      const exportScope = JSON.stringify([
+        workflow.project_id, workflow.workflow_id, node.node_id, content.manifest.manifest_revision,
+      ]);
       let idempotencyKey = editingExportIdempotencyKeys.get(exportScope);
       if (!idempotencyKey) {
         idempotencyKey = createOperationKey("editing-export");
@@ -491,23 +513,37 @@ export function useAgentCanvasEditing(
         idempotencyKey,
       );
     } catch (exportError) {
-      setError(errorMessage(exportError, "Unable to start export."));
+      if (mountedRef.current && operationScopeRef.current === operationScope) {
+        setError(errorMessage(exportError, "Unable to start export."));
+      }
     } finally {
-      setExporting(false);
+      if (exportOperationRef.current === operationScope) exportOperationRef.current = null;
+      if (mountedRef.current && operationScopeRef.current === operationScope) {
+        setExportOperation(null);
+      }
     }
   }, [
     content,
-    exporting,
     hasPendingManifestCommit,
     manifestIdentity,
     node.node_id,
+    operationScope,
+    setError,
+    workflow.project_id,
     workflow.workflow_id,
   ]);
 
   const cancelExport = useCallback(async () => {
     const activeExportId = content?.active_export?.export_id;
-    if (!activeExportId || exporting) return;
-    setExporting(true);
+    if (
+      !activeExportId
+      || !mountedRef.current
+      || operationScopeRef.current !== operationScope
+      || exportOperationRef.current === operationScope
+      || (content?.active_export?.status !== "queued" && content?.active_export?.status !== "exporting")
+    ) return;
+    exportOperationRef.current = operationScope;
+    setExportOperation(operationScope);
     setError(null);
     try {
       await agentCanvasApi.cancelAgentCanvasEditingExport(
@@ -516,11 +552,16 @@ export function useAgentCanvasEditing(
         activeExportId,
       );
     } catch (cancelError) {
-      setError(errorMessage(cancelError, "Unable to cancel export."));
+      if (mountedRef.current && operationScopeRef.current === operationScope) {
+        setError(errorMessage(cancelError, "Unable to cancel export."));
+      }
     } finally {
-      setExporting(false);
+      if (exportOperationRef.current === operationScope) exportOperationRef.current = null;
+      if (mountedRef.current && operationScopeRef.current === operationScope) {
+        setExportOperation(null);
+      }
     }
-  }, [content?.active_export?.export_id, exporting, node.node_id, workflow.workflow_id]);
+  }, [content?.active_export, node.node_id, operationScope, setError, workflow.workflow_id]);
 
   const outputAsset = node.output_asset_id
     ? workflow.assets.find((asset) => asset.asset_id === node.output_asset_id) ?? null
@@ -542,11 +583,17 @@ export function useAgentCanvasEditing(
   );
 
   const downloadExport = useCallback(async (assetId: string | null) => {
-    if (!assetId || downloading) return;
-    setDownloading(true);
+    if (
+      !assetId || !mountedRef.current
+      || operationScopeRef.current !== operationScope
+      || downloadOperationRef.current === operationScope
+    ) return;
+    downloadOperationRef.current = operationScope;
+    setDownloadOperation(operationScope);
     setError(null);
     try {
       const response = await agentCanvasApi.downloadAgentCanvasAsset(assetId);
+      if (!mountedRef.current || operationScopeRef.current !== operationScope) return;
       const url = URL.createObjectURL(response.blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -559,11 +606,16 @@ export function useAgentCanvasEditing(
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (downloadError) {
-      setError(errorMessage(downloadError, "Unable to download the exported video."));
+      if (mountedRef.current && operationScopeRef.current === operationScope) {
+        setError(errorMessage(downloadError, "Unable to download the exported video."));
+      }
     } finally {
-      setDownloading(false);
+      if (downloadOperationRef.current === operationScope) downloadOperationRef.current = null;
+      if (mountedRef.current && operationScopeRef.current === operationScope) {
+        setDownloadOperation(null);
+      }
     }
-  }, [downloading, node.title]);
+  }, [node.title, operationScope, setError]);
 
   return {
     content,

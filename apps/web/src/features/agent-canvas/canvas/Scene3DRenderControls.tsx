@@ -37,6 +37,19 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
+  const busyRef = useRef(false);
+  const cancelPendingRef = useRef(false);
+  const [pollRevision, setPollRevision] = useState(0);
+  const [cancelling, setCancelling] = useState(false);
+  const resume = () => {
+    if (!jobId || busyRef.current) return;
+    busyRef.current = true;
+    setError(null);
+    setNotice("继续查询原任务，不会创建新的渲染。");
+    setStatus("pending");
+    setPollRevision((revision) => revision + 1);
+  };
 
   const inFlight = status === "pending" || status === "running";
 
@@ -52,9 +65,17 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
   }, [inFlight]);
 
   // 卸载即停轮询
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => {
+    generationRef.current += 1;
+    abortRef.current?.abort();
+  }, []);
 
   const submit = useCallback(async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const generation = ++generationRef.current;
+    abortRef.current?.abort();
+    setJobId(null);
     setStatus("pending");
     setProgress(0);
     setError(null);
@@ -63,8 +84,11 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
     setWarnings([]);
     try {
       const nextJobId = await submitScene3DRender(sceneScript);
+      if (generation !== generationRef.current) return;
       setJobId(nextJobId);
     } catch (err) {
+      if (generation !== generationRef.current) return;
+      busyRef.current = false;
       setStatus("failed");
       setError(err instanceof Error ? err.message : "渲染提交失败");
     }
@@ -76,15 +100,24 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
     const controller = new AbortController();
     abortRef.current = controller;
     let attempts = 0;
+    let polling = false;
+    const finish = () => {
+      controller.abort();
+      busyRef.current = false;
+    };
     const tick = async () => {
+      if (controller.signal.aborted || polling) return;
+      polling = true;
       attempts += 1;
       try {
         const job = await fetchScene3DRenderJob(jobId);
         if (controller.signal.aborted) return;
         setStatus(job.status);
         if (typeof job.progress === "number") setProgress(job.progress);
+        if (["completed", "failed", "cancelled"].includes(job.status)) finish();
         if (job.status === "completed") {
-          const path = job.result?.video_path ?? job.result?.animatic_video_path ?? null;
+          const path = job.result?.animatic_video_url ?? job.result?.video_url
+            ?? job.result?.animatic_video_path ?? job.result?.video_path ?? null;
           setVideoUrl(path ? buildMediaUrl(path) : null);
           setWarnings(Array.isArray(job.result?.warnings) ? job.result!.warnings! : []);
         } else if (job.status === "failed") {
@@ -95,11 +128,19 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
           // 停止"（endpoint 的原文也只是 "Cancellation requested."）。
           setNotice("已取消：后端已接受取消请求，渲染将在阶段边界停止。");
         } else if (attempts >= POLL_LIMIT) {
-          setError("渲染轮询超时（5 分钟）——任务可能仍在后台进行，请稍后重新提交查看。");
+          finish();
+          setStatus("timed_out");
+          setError("渲染轮询超时（5 分钟）——任务可能仍在后台进行。");
         }
       } catch (err) {
         if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : "渲染状态查询失败");
+        if (attempts >= POLL_LIMIT) {
+          finish();
+          setStatus("timed_out");
+        }
+      } finally {
+        polling = false;
       }
     };
     void tick();
@@ -108,25 +149,37 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [jobId, inFlight]);
+  }, [jobId, inFlight, pollRevision]);
 
   const cancel = useCallback(async () => {
-    if (!jobId) return;
+    if (!jobId || cancelPendingRef.current) return;
+    cancelPendingRef.current = true;
+    setCancelling(true);
+    const generation = generationRef.current;
     abortRef.current?.abort();
     try {
       await cancelScene3DRender(jobId);
+      if (generation !== generationRef.current) return;
+      busyRef.current = false;
+      setError(null);
       setStatus("cancelled");
       setNotice("已取消：后端已接受取消请求，渲染将在阶段边界停止。");
     } catch (err) {
+      if (generation !== generationRef.current) return;
+      setPollRevision((revision) => revision + 1);
       // 取消失败不假装成功：任务可能仍在跑，如实说
       setError(
         `取消失败：${err instanceof Error ? err.message : "未知错误"}——任务可能仍在后台进行`,
       );
+    } finally {
+      cancelPendingRef.current = false;
+      if (generation === generationRef.current) setCancelling(false);
     }
   }, [jobId]);
 
   return (
     <div className="scene-script-3d-editor__render-controls" data-testid="scene-3d-render-controls">
+      <p className="scene-script-3d-editor__note">预览渲染使用当前草稿；需要本机 Blender。提交后可在这里查看进度和结果。</p>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
         <button
           type="button"
@@ -143,16 +196,18 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
             fontSize: 10,
           }}
         >
-          {inFlight ? "⏳ 渲染中…" : "🎬 预览渲染"}
+          {inFlight ? "⏳ 渲染中…" : status === "failed" ? "重试预览渲染" : "🎬 预览渲染"}
         </button>
         {inFlight && (
           <>
-            <span style={{ fontSize: 10, color: "#8cf" }} data-testid="scene-3d-render-progress">
-              {Math.round(progress * 100)}% · 已进行 {elapsed}s
+            <span role="status" aria-live="polite" style={{ fontSize: 10, color: "#8cf" }} data-testid="scene-3d-render-progress">
+              {jobId ? `${Math.round(progress * 100)}% · 已进行 ${elapsed}s` : "正在提交任务，请稍候…"}
             </span>
             <button
               type="button"
               onClick={() => void cancel()}
+              disabled={!jobId || cancelling}
+              title={!jobId ? "任务提交后才能请求取消" : "请求后端在阶段边界取消渲染"}
               style={{
                 background: "transparent",
                 border: "1px solid #678",
@@ -163,18 +218,27 @@ export function Scene3DRenderControls({ sceneScript, disabled }: Scene3DRenderCo
                 cursor: "pointer",
               }}
             >
-              ⏹ 取消渲染
+              {cancelling ? "正在请求取消…" : "⏹ 取消渲染"}
             </button>
           </>
         )}
       </div>
+      {status === "timed_out" && jobId && (
+        <div className="scene-script-3d-editor__render-recovery">
+          <p>查询已暂停，不代表后台任务停止。建议先继续查询原任务，避免重复渲染。</p>
+          <button type="button" onClick={resume} disabled={disabled || cancelling}>继续查询原任务</button>
+          <button type="button" onClick={() => void cancel()} disabled={cancelling}>
+            {cancelling ? "正在请求取消…" : "取消后台任务"}
+          </button>
+        </div>
+      )}
       {error && (
-        <p className="scene-script-3d-editor__error" data-testid="scene-3d-render-error">
+        <p role="alert" className="scene-script-3d-editor__error" data-testid="scene-3d-render-error">
           ⚠ {error}
         </p>
       )}
       {notice && (
-        <p className="scene-script-3d-editor__note" data-testid="scene-3d-render-notice">
+        <p role="status" className="scene-script-3d-editor__note" data-testid="scene-3d-render-notice">
           {notice}
         </p>
       )}

@@ -98,7 +98,7 @@ describe("typography system", () => {
     expect(homeStyles).toMatch(/\[data-home-typography-region="sectionHeading"\]\s*\{[^}]*font-size:\s*37px/s);
     expect(homeStyles).toMatch(/\[data-home-typography-region="heroMain"\]\s*\{[^}]*font-size:\s*60px/s);
     expect(homeStyles).toMatch(/\[data-home-typography-region="heroAccent"\]\s*\{[^}]*font-size:\s*80px/s);
-    expect(homeStyles).toMatch(/@media \(max-width: 620px\)\s*\{\s*\.home-page \.home-product-hero__title\[data-home-typography-region="heroMain"\]\s*\{[^}]*font-size:\s*40px/s);
+    expect(homeStyles).toMatch(/@media \(max-width: 620px\)\s*\{\s*\.home \.hero__title\[data-home-typography-region="heroMain"\]\s*\{[^}]*font-size:\s*40px/s);
     expect(invalidWeights).toEqual([]);
   });
 });

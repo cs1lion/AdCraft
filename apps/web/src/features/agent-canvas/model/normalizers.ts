@@ -167,6 +167,8 @@ import type {
 } from "../../../types-v2.ts";
 import { V2ContractValidationError } from "../../../api/v2ContractValidationError.ts";
 
+import { normalizeStrictRecord, type StrictRecordFieldsFor } from "./strictRecordFields.ts";
+
 type JsonRecord = Record<string, unknown>;
 
 const CANVAS_NODE_TYPES = new Set<CanvasNodeTypeV2>(["text", "script", "image", "video", "audio", "editing", "scene-3d", "voice-cast", "replica"]);
@@ -705,60 +707,42 @@ function expectIsoDateTimeString(value: unknown, path: string) {
 }
 
 function normalizeCanvasPositionV2(value: unknown, path: string): CanvasPositionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["x", "y"], path);
-  return {
-    x: expectFiniteNumber(record.x, `${path}.x`),
-    y: expectFiniteNumber(record.y, `${path}.y`),
-  };
+  return normalizeStrictRecord(value, path, {
+    x: expectFiniteNumber,
+    y: expectFiniteNumber,
+  } satisfies StrictRecordFieldsFor<CanvasPositionV2>);
 }
 
 export function normalizeAgentPlacementHintV2(
   value: unknown,
   path = "placementHint",
 ): AgentPlacementHintV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["intent", "anchor_node_id", "group_key"], path);
-  return {
-    intent: expectLiteral(record.intent, PLACEMENT_INTENTS, `${path}.intent`),
-    anchor_node_id: nullableStringWithDefault(record.anchor_node_id, `${path}.anchor_node_id`),
-    group_key: nullableStringWithDefault(record.group_key, `${path}.group_key`),
-  };
+  return normalizeStrictRecord(value, path, {
+    intent: (value, fieldPath) => expectLiteral(value, PLACEMENT_INTENTS, fieldPath),
+    anchor_node_id: nullableStringWithDefault,
+    group_key: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<AgentPlacementHintV2>);
 }
 
 export function normalizeCanvasVariationDraftV2(
   value: unknown,
   path = "variationDraft",
 ): CanvasVariationDraftV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "source_node_id",
-    "source_node_revision",
-    "title",
-    "generation_prompt",
-    "model_id",
-    "model_selection_mode",
-    "model_ref",
-    "parameters",
-    "variation_revision",
-    "created_at",
-    "updated_at",
-  ], path);
-  return {
-    source_node_id: expectNonEmptyString(record.source_node_id, `${path}.source_node_id`),
-    source_node_revision: expectPositiveInteger(record.source_node_revision, `${path}.source_node_revision`),
-    title: expectNonEmptyString(record.title, `${path}.title`),
-    generation_prompt: expectNonEmptyString(record.generation_prompt, `${path}.generation_prompt`),
-    model_id: nullableStringWithDefault(record.model_id, `${path}.model_id`),
-    model_selection_mode: record.model_selection_mode === undefined
+  return normalizeStrictRecord(value, path, {
+    source_node_id: expectNonEmptyString,
+    source_node_revision: expectPositiveInteger,
+    title: expectNonEmptyString,
+    generation_prompt: expectNonEmptyString,
+    model_id: nullableStringWithDefault,
+    model_selection_mode: (value, fieldPath) => value === undefined
       ? "default"
-      : expectLiteral(record.model_selection_mode, CANVAS_MODEL_SELECTION_MODES, `${path}.model_selection_mode`),
-    model_ref: nullableStringWithDefault(record.model_ref, `${path}.model_ref`),
-    parameters: optionalUnknownRecord(record.parameters, `${path}.parameters`, {}),
-    variation_revision: expectPositiveInteger(record.variation_revision, `${path}.variation_revision`),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+      : expectLiteral(value, CANVAS_MODEL_SELECTION_MODES, fieldPath),
+    model_ref: nullableStringWithDefault,
+    parameters: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    variation_revision: expectPositiveInteger,
+    created_at: expectIsoDateTimeString,
+    updated_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<CanvasVariationDraftV2>);
 }
 
 export function normalizeActionableFailureV1(value: unknown, path = "actionableFailure"): ActionableFailureV1 {
@@ -852,39 +836,25 @@ function normalizeAgentOperationFailureV2(
   value: unknown,
   path: string,
 ): AgentOperationFailureV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "code",
-    "message",
-    "operation",
-    "capability_id",
-    "attempt_stage",
-    "failure_stage",
-    "elapsed_ms",
-    "retryable",
-    "actionable_failure",
-    "validation_paths",
-    "occurred_at",
-  ], path);
-  return {
-    code: expectNonEmptyString(record.code, `${path}.code`),
-    message: expectNonEmptyString(record.message, `${path}.message`),
-    operation: expectNonEmptyString(record.operation, `${path}.operation`),
-    capability_id: record.capability_id === null
+  return normalizeStrictRecord(value, path, {
+    code: expectNonEmptyString,
+    message: expectNonEmptyString,
+    operation: expectNonEmptyString,
+    capability_id: (value, fieldPath) => value === null
       ? null
-      : expectLiteral(record.capability_id, AGENT_CAPABILITY_IDS, `${path}.capability_id`),
-    attempt_stage: expectLiteral(
-      record.attempt_stage,
+      : expectLiteral(value, AGENT_CAPABILITY_IDS, fieldPath),
+    attempt_stage: (value, fieldPath) => expectLiteral(
+      value,
       new Set<AgentOperationFailureV2["attempt_stage"]>([
         "initial",
         "transport_retry",
         "structured_repair",
         "fallback",
       ]),
-      `${path}.attempt_stage`,
+      fieldPath,
     ),
-    failure_stage: expectLiteral(
-      record.failure_stage,
+    failure_stage: (value, fieldPath) => expectLiteral(
+      value,
       new Set<AgentOperationFailureV2["failure_stage"]>([
         "routing",
         "proposal",
@@ -895,17 +865,17 @@ function normalizeAgentOperationFailureV2(
         "asset_publication",
         "revision",
       ]),
-      `${path}.failure_stage`,
+      fieldPath,
     ),
-    elapsed_ms: expectNonNegativeInteger(record.elapsed_ms, `${path}.elapsed_ms`),
-    retryable: expectBoolean(record.retryable, `${path}.retryable`),
-    actionable_failure: nullableActionableFailureV1(
-      record.actionable_failure,
-      `${path}.actionable_failure`,
+    elapsed_ms: expectNonNegativeInteger,
+    retryable: expectBoolean,
+    actionable_failure: (value, fieldPath) => nullableActionableFailureV1(
+      value,
+      fieldPath,
     ),
-    validation_paths: expectStringArray(record.validation_paths, `${path}.validation_paths`),
-    occurred_at: expectIsoDateTimeString(record.occurred_at, `${path}.occurred_at`),
-  };
+    validation_paths: expectStringArray,
+    occurred_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<AgentOperationFailureV2>);
 }
 
 function normalizePromptAssertionSourceSnapshotV1(
@@ -1308,21 +1278,19 @@ function normalizePresentationStreamResetV1(
   value: unknown,
   path: string,
 ): PresentationStreamResetV1 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["reason", "authoritative_id", "resource_kind"], path);
-  return {
-    reason: expectLiteral(
-      record.reason,
+  return normalizeStrictRecord(value, path, {
+    reason: (value, fieldPath) => expectLiteral(
+      value,
       new Set<PresentationStreamResetV1["reason"]>(["cursor_expired", "store_recovered"]),
-      `${path}.reason`,
+      fieldPath,
     ),
-    authoritative_id: nullableStringWithDefault(record.authoritative_id, `${path}.authoritative_id`),
-    resource_kind: expectLiteral(
-      record.resource_kind,
+    authoritative_id: nullableStringWithDefault,
+    resource_kind: (value, fieldPath) => expectLiteral(
+      value,
       new Set<PresentationStreamResetV1["resource_kind"]>(["message", "prompt", "workflow"]),
-      `${path}.resource_kind`,
+      fieldPath,
     ),
-  };
+  } satisfies StrictRecordFieldsFor<PresentationStreamResetV1>);
 }
 
 function normalizePresentationDelta(value: unknown, path: string): string {
@@ -1474,37 +1442,29 @@ function normalizeDocumentRevisions(value: unknown, path: string): Record<string
 }
 
 function normalizeResolvedNodeParameterV2(value: unknown, path: string): ResolvedNodeParameterV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["name", "value", "source_kind", "source_id", "source_revision"], path);
-  return {
-    name: expectNonEmptyString(record.name, `${path}.name`),
-    value: record.value,
-    source_kind: expectLiteral(record.source_kind, new Set<ResolvedNodeParameterV2["source_kind"]>([
+  return normalizeStrictRecord(value, path, {
+    name: expectNonEmptyString,
+    value: (value) => value,
+    source_kind: (value, fieldPath) => expectLiteral(value, new Set<ResolvedNodeParameterV2["source_kind"]>([
       "explicit_user", "bound_text", "node_parameter", "storyboard_plan", "style_advice", "installation_default",
-    ]), `${path}.source_kind`),
-    source_id: expectNonEmptyString(record.source_id, `${path}.source_id`),
-    source_revision: record.source_revision === undefined || record.source_revision === null
+    ]), fieldPath),
+    source_id: expectNonEmptyString,
+    source_revision: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectPositiveInteger(record.source_revision, `${path}.source_revision`),
-  };
+      : expectPositiveInteger(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<ResolvedNodeParameterV2>);
 }
 
 export function normalizeCanvasModelSummaryV2(value: unknown, path = "model_summary"): CanvasModelSummaryV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["model_ref", "provider_id", "display_name", "capability", "availability", "unavailable_reason", "catalog_revision"],
-    path,
-  );
-  return {
-    model_ref: expectNonEmptyString(record.model_ref, `${path}.model_ref`),
-    provider_id: expectNonEmptyString(record.provider_id, `${path}.provider_id`),
-    display_name: expectNonEmptyString(record.display_name, `${path}.display_name`),
-    capability: expectLiteral(record.capability, CANVAS_MODEL_CAPABILITIES, `${path}.capability`),
-    availability: expectLiteral(record.availability, CANVAS_MODEL_AVAILABILITIES, `${path}.availability`),
-    unavailable_reason: nullableString(record.unavailable_reason, `${path}.unavailable_reason`),
-    catalog_revision: expectPositiveInteger(record.catalog_revision, `${path}.catalog_revision`),
-  };
+  return normalizeStrictRecord(value, path, {
+    model_ref: expectNonEmptyString,
+    provider_id: expectNonEmptyString,
+    display_name: expectNonEmptyString,
+    capability: (value, fieldPath) => expectLiteral(value, CANVAS_MODEL_CAPABILITIES, fieldPath),
+    availability: (value, fieldPath) => expectLiteral(value, CANVAS_MODEL_AVAILABILITIES, fieldPath),
+    unavailable_reason: nullableString,
+    catalog_revision: expectPositiveInteger,
+  } satisfies StrictRecordFieldsFor<CanvasModelSummaryV2>);
 }
 
 function normalizeCanvasParameterScalarV2(
@@ -1570,21 +1530,15 @@ export function normalizeCanvasNodeLatestAttemptV2(
   value: unknown,
   path = "latestAttempt",
 ): CanvasNodeLatestAttemptV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["execution_id", "member_id", "run_intent_snapshot_id", "status", "created_at", "updated_at", "error"],
-    path,
-  );
-  return {
-    execution_id: expectNonEmptyString(record.execution_id, `${path}.execution_id`),
-    member_id: expectNonEmptyString(record.member_id, `${path}.member_id`),
-    run_intent_snapshot_id: nullableStringWithDefault(
-      record.run_intent_snapshot_id,
-      `${path}.run_intent_snapshot_id`,
+  return normalizeStrictRecord(value, path, {
+    execution_id: expectNonEmptyString,
+    member_id: expectNonEmptyString,
+    run_intent_snapshot_id: (value, fieldPath) => nullableStringWithDefault(
+      value,
+      fieldPath,
     ),
-    status: expectLiteral(
-      record.status,
+    status: (value, fieldPath) => expectLiteral(
+      value,
       new Set<CanvasNodeLatestAttemptV2["status"]>([
         "queued",
         "waiting",
@@ -1595,14 +1549,14 @@ export function normalizeCanvasNodeLatestAttemptV2(
         "failed",
         "cancelled",
       ]),
-      `${path}.status`,
+      fieldPath,
     ),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-    error: record.error === null || record.error === undefined
+    created_at: expectIsoDateTimeString,
+    updated_at: expectIsoDateTimeString,
+    error: (value, fieldPath) => value === null || value === undefined
       ? null
-      : normalizeCanvasNodeErrorV2(record.error, `${path}.error`),
-  };
+      : normalizeCanvasNodeErrorV2(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<CanvasNodeLatestAttemptV2>);
 }
 
 export function normalizeCanvasNodeV2(value: unknown, path = "node"): CanvasNodeV2 {
@@ -1719,25 +1673,21 @@ export function normalizeCanvasNodeV2(value: unknown, path = "node"): CanvasNode
 }
 
 function normalizeCanvasBindingSourceNodeV2(value: unknown, path: string): CanvasBindingSourceNodeV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["kind", "source_node_id"], path);
-  return {
-    kind: expectLiteral(record.kind, new Set<CanvasBindingSourceNodeV2["kind"]>(["node_output"]), `${path}.kind`),
-    source_node_id: expectNonEmptyString(record.source_node_id, `${path}.source_node_id`),
-  };
+  return normalizeStrictRecord(value, path, {
+    kind: (value, fieldPath) => expectLiteral(value, new Set<CanvasBindingSourceNodeV2["kind"]>(["node_output"]), fieldPath),
+    source_node_id: expectNonEmptyString,
+  } satisfies StrictRecordFieldsFor<CanvasBindingSourceNodeV2>);
 }
 
 function normalizeCanvasBindingSourceImageAssetV2(value: unknown, path: string): CanvasBindingSourceImageAssetV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["kind", "source_asset_id", "source_asset_version_id"], path);
-  return {
-    kind: expectLiteral(record.kind, new Set<CanvasBindingSourceImageAssetV2["kind"]>(["image_asset"]), `${path}.kind`),
-    source_asset_id: expectNonEmptyString(record.source_asset_id, `${path}.source_asset_id`),
-    source_asset_version_id: nullableStringWithDefault(
-      record.source_asset_version_id,
-      `${path}.source_asset_version_id`,
+  return normalizeStrictRecord(value, path, {
+    kind: (value, fieldPath) => expectLiteral(value, new Set<CanvasBindingSourceImageAssetV2["kind"]>(["image_asset"]), fieldPath),
+    source_asset_id: expectNonEmptyString,
+    source_asset_version_id: (value, fieldPath) => nullableStringWithDefault(
+      value,
+      fieldPath,
     ),
-  };
+  } satisfies StrictRecordFieldsFor<CanvasBindingSourceImageAssetV2>);
 }
 
 export function normalizeCanvasBindingSourceV2(value: unknown, path = "binding.source"): CanvasBindingSourceV2 {
@@ -1749,191 +1699,116 @@ export function normalizeCanvasBindingSourceV2(value: unknown, path = "binding.s
 }
 
 export function normalizeCanvasBindingV2(value: unknown, path = "binding"): CanvasBindingV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "binding_id",
-      "workflow_id",
-      "source",
-      "target_node_id",
-      "input_role",
-      "enabled",
-      "order",
-      "label",
-      "metadata",
-      "created_at",
-      "updated_at",
-    ],
-    path,
-  );
-  return {
-    binding_id: expectNonEmptyString(record.binding_id, `${path}.binding_id`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    source: normalizeCanvasBindingSourceV2(record.source, `${path}.source`),
-    target_node_id: expectNonEmptyString(record.target_node_id, `${path}.target_node_id`),
-    input_role: expectLiteral(record.input_role, CANVAS_BINDING_ROLES, `${path}.input_role`),
-    enabled: expectBoolean(record.enabled, `${path}.enabled`),
-    order: expectNonNegativeInteger(record.order, `${path}.order`),
-    label: nullableString(record.label, `${path}.label`),
-    metadata: expectRecordValue(record.metadata, `${path}.metadata`),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+  return normalizeStrictRecord(value, path, {
+    binding_id: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    source: normalizeCanvasBindingSourceV2,
+    target_node_id: expectNonEmptyString,
+    input_role: (value, fieldPath) => expectLiteral(value, CANVAS_BINDING_ROLES, fieldPath),
+    enabled: expectBoolean,
+    order: expectNonNegativeInteger,
+    label: nullableString,
+    metadata: expectRecordValue,
+    created_at: expectIsoDateTimeString,
+    updated_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<CanvasBindingV2>);
 }
 
 export function normalizeProjectAssetSummaryV2(value: unknown, path = "asset"): ProjectAssetSummaryV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "asset_id",
-      "version_id",
-      "project_id",
-      "workflow_id",
-      "media_type",
-      "source_type",
-      "semantic_type",
-      "display_name",
-      "mime_type",
-      "status",
-      "size_bytes",
-      "storage_key",
-      "preview_url",
-      "media_url",
-      "width",
-      "height",
-      "duration_seconds",
-      "checksum",
-      "source_semantic_role",
-      "source_node_id",
-      "source_execution_id",
-      "provider",
-      "model_id",
-      "prompt_provenance",
-      "actual_media_facts",
-      "generation_provenance",
-      "quality_metadata",
-      "created_at",
-    ],
-    path,
-  );
-  return {
-    asset_id: expectNonEmptyString(record.asset_id, `${path}.asset_id`),
-    version_id: record.version_id === undefined ? null : nullableString(record.version_id, `${path}.version_id`),
-    project_id: record.project_id === undefined ? null : nullableString(record.project_id, `${path}.project_id`),
-    workflow_id: record.workflow_id === undefined ? null : nullableString(record.workflow_id, `${path}.workflow_id`),
-    media_type: expectLiteral(record.media_type, ASSET_MEDIA_TYPES, `${path}.media_type`),
-    source_type: expectLiteral(record.source_type, ASSET_SOURCE_TYPES, `${path}.source_type`),
-    semantic_type: record.semantic_type === undefined ? null : nullableString(record.semantic_type, `${path}.semantic_type`),
-    display_name: expectNonEmptyString(record.display_name, `${path}.display_name`),
-    mime_type: expectNonEmptyString(record.mime_type, `${path}.mime_type`),
-    status: expectLiteral(record.status, PROJECT_ASSET_STATUSES, `${path}.status`),
-    size_bytes: record.size_bytes === undefined ? 0 : expectNonNegativeInteger(record.size_bytes, `${path}.size_bytes`),
-    storage_key: record.storage_key === undefined ? null : nullableString(record.storage_key, `${path}.storage_key`),
-    preview_url: nullableBrowserSafeUrl(record.preview_url, `${path}.preview_url`),
-    media_url: nullableBrowserSafeUrl(record.media_url, `${path}.media_url`),
-    width: nullablePositiveInteger(record.width, `${path}.width`),
-    height: nullablePositiveInteger(record.height, `${path}.height`),
-    duration_seconds: nullableNonNegativeNumber(record.duration_seconds, `${path}.duration_seconds`),
-    checksum: expectNonEmptyString(record.checksum, `${path}.checksum`),
-    source_semantic_role: record.source_semantic_role === undefined
+  return normalizeStrictRecord(value, path, {
+    asset_id: expectNonEmptyString,
+    version_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    project_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    workflow_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    media_type: (value, fieldPath) => expectLiteral(value, ASSET_MEDIA_TYPES, fieldPath),
+    source_type: (value, fieldPath) => expectLiteral(value, ASSET_SOURCE_TYPES, fieldPath),
+    semantic_type: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    display_name: expectNonEmptyString,
+    mime_type: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, PROJECT_ASSET_STATUSES, fieldPath),
+    size_bytes: (value, fieldPath) => value === undefined ? 0 : expectNonNegativeInteger(value, fieldPath),
+    storage_key: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    preview_url: nullableBrowserSafeUrl,
+    media_url: nullableBrowserSafeUrl,
+    width: nullablePositiveInteger,
+    height: nullablePositiveInteger,
+    duration_seconds: nullableNonNegativeNumber,
+    checksum: expectNonEmptyString,
+    source_semantic_role: (value, fieldPath) => value === undefined
       ? null
-      : nullableString(record.source_semantic_role, `${path}.source_semantic_role`),
-    source_node_id: record.source_node_id === undefined ? null : nullableString(record.source_node_id, `${path}.source_node_id`),
-    source_execution_id: record.source_execution_id === undefined
+      : nullableString(value, fieldPath),
+    source_node_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    source_execution_id: (value, fieldPath) => value === undefined
       ? null
-      : nullableString(record.source_execution_id, `${path}.source_execution_id`),
-    provider: record.provider === undefined ? null : nullableString(record.provider, `${path}.provider`),
-    model_id: record.model_id === undefined ? null : nullableString(record.model_id, `${path}.model_id`),
-    prompt_provenance: optionalUnknownRecord(record.prompt_provenance, `${path}.prompt_provenance`, {}),
-    actual_media_facts: optionalUnknownRecord(record.actual_media_facts, `${path}.actual_media_facts`, {}),
-    generation_provenance: optionalUnknownRecord(record.generation_provenance, `${path}.generation_provenance`, {}),
-    quality_metadata: optionalUnknownRecord(record.quality_metadata, `${path}.quality_metadata`, {}),
-    created_at: record.created_at === undefined || record.created_at === null
+      : nullableString(value, fieldPath),
+    provider: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    model_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    prompt_provenance: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    actual_media_facts: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    generation_provenance: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    quality_metadata: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    created_at: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-  };
+      : expectIsoDateTimeString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<ProjectAssetSummaryV2>);
 }
 
 function normalizeVideoSkillPreviewV2(value: unknown, path: string): VideoSkillPreviewV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["kind", "summary", "media_url"], path);
-  return {
-    kind: expectLiteral(
-      record.kind,
+  return normalizeStrictRecord(value, path, {
+    kind: (value, fieldPath) => expectLiteral(
+      value,
       new Set<VideoSkillPreviewV2["kind"]>(["none", "image", "video"]),
-      `${path}.kind`,
+      fieldPath,
     ),
-    summary: nullableStringWithDefault(record.summary, `${path}.summary`),
-    media_url: nullablePublicPreviewUrl(record.media_url ?? null, `${path}.media_url`),
-  };
+    summary: nullableStringWithDefault,
+    media_url: (value, fieldPath) => nullablePublicPreviewUrl(value ?? null, fieldPath),
+  } satisfies StrictRecordFieldsFor<VideoSkillPreviewV2>);
 }
 
 function normalizeVideoSkillCategoryV2(value: unknown, path: string): VideoSkillCategoryV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["category_id", "title", "display_order"], path);
-  return {
-    category_id: expectNonEmptyString(record.category_id, `${path}.category_id`),
-    title: expectNonEmptyString(record.title, `${path}.title`),
-    display_order: expectNonNegativeInteger(record.display_order, `${path}.display_order`),
-  };
+  return normalizeStrictRecord(value, path, {
+    category_id: expectNonEmptyString,
+    title: expectNonEmptyString,
+    display_order: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<VideoSkillCategoryV2>);
 }
 
 export function normalizeVideoSkillPublicDetailV2(
   value: unknown,
   path = "videoSkill",
 ): VideoSkillPublicDetailV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "skill_id",
-      "version",
-      "title",
-      "summary",
-      "category",
-      "tags",
-      "supported_use_cases",
-      "preview",
-      "display_order",
-    ],
-    path,
-  );
-  return {
-    skill_id: expectNonEmptyString(record.skill_id, `${path}.skill_id`),
-    version: expectNonEmptyString(record.version, `${path}.version`),
-    title: expectNonEmptyString(record.title, `${path}.title`),
-    summary: expectNonEmptyString(record.summary, `${path}.summary`),
-    category: expectNonEmptyString(record.category, `${path}.category`),
-    tags: optionalStringArray(record.tags, `${path}.tags`),
-    supported_use_cases: optionalStringArray(
-      record.supported_use_cases,
-      `${path}.supported_use_cases`,
+  return normalizeStrictRecord(value, path, {
+    skill_id: expectNonEmptyString,
+    version: expectNonEmptyString,
+    title: expectNonEmptyString,
+    summary: expectNonEmptyString,
+    category: expectNonEmptyString,
+    tags: optionalStringArray,
+    supported_use_cases: (value, fieldPath) => optionalStringArray(
+      value,
+      fieldPath,
     ),
-    preview: record.preview === undefined || record.preview === null
+    preview: (value, fieldPath) => value === undefined || value === null
       ? null
-      : normalizeVideoSkillPreviewV2(record.preview, `${path}.preview`),
-    display_order: expectNonNegativeInteger(record.display_order, `${path}.display_order`),
-  };
+      : normalizeVideoSkillPreviewV2(value, fieldPath),
+    display_order: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<VideoSkillPublicDetailV2>);
 }
 
 export function normalizeVideoSkillCatalogResponseV2(
   value: unknown,
   path = "videoSkillCatalog",
 ): VideoSkillCatalogResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["catalog_version", "categories", "items", "next_cursor"], path);
-  return {
-    catalog_version: expectNonEmptyString(record.catalog_version, `${path}.catalog_version`),
-    categories: expectArray(record.categories, `${path}.categories`).map((item, index) => (
-      normalizeVideoSkillCategoryV2(item, `${path}.categories[${index}]`)
+  return normalizeStrictRecord(value, path, {
+    catalog_version: expectNonEmptyString,
+    categories: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) => (
+      normalizeVideoSkillCategoryV2(item, `${fieldPath}[${index}]`)
     )),
-    items: expectArray(record.items, `${path}.items`).map((item, index) => (
-      normalizeVideoSkillPublicDetailV2(item, `${path}.items[${index}]`)
+    items: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) => (
+      normalizeVideoSkillPublicDetailV2(item, `${fieldPath}[${index}]`)
     )),
-    next_cursor: nullableStringWithDefault(record.next_cursor, `${path}.next_cursor`),
-  };
+    next_cursor: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<VideoSkillCatalogResponseV2>);
 }
 
 function normalizeActiveStyleSkillSummaryV2(
@@ -2032,23 +1907,17 @@ export function normalizeAgentExecutionSettingsV2(
   value: unknown,
   path = "agentSettings",
 ): AgentExecutionSettingsV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["workflow_id", "media_execution_mode", "revision", "created_at", "updated_at"],
-    path,
-  );
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    media_execution_mode: expectLiteral(
-      record.media_execution_mode,
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    media_execution_mode: (value, fieldPath) => expectLiteral(
+      value,
       AGENT_MEDIA_EXECUTION_MODES,
-      `${path}.media_execution_mode`,
+      fieldPath,
     ),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+    revision: expectPositiveInteger,
+    created_at: expectIsoDateTimeString,
+    updated_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<AgentExecutionSettingsV2>);
 }
 
 function normalizeAgentAnchorV2(value: unknown, path: string): AgentAnchorV2 {
@@ -2126,19 +1995,17 @@ function normalizeStoryboardPlanGlobalParametersV2(
   value: unknown,
   path: string,
 ): StoryboardPlanGlobalParametersV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["aspect_ratio", "total_duration_seconds", "segment_count"], path);
-  return {
-    aspect_ratio: expectNonEmptyString(record.aspect_ratio, `${path}.aspect_ratio`),
-    total_duration_seconds: boundedNumber(
-      record.total_duration_seconds,
-      `${path}.total_duration_seconds`,
+  return normalizeStrictRecord(value, path, {
+    aspect_ratio: expectNonEmptyString,
+    total_duration_seconds: (value, fieldPath) => boundedNumber(
+      value,
+      fieldPath,
       0,
       3600,
       true,
     ),
-    segment_count: boundedInteger(record.segment_count, `${path}.segment_count`, 1, 128),
-  };
+    segment_count: (value, fieldPath) => boundedInteger(value, fieldPath, 1, 128),
+  } satisfies StrictRecordFieldsFor<StoryboardPlanGlobalParametersV2>);
 }
 
 function normalizeStoryboardNarrativeSegmentV2(
@@ -2205,54 +2072,45 @@ function normalizeStoryboardPlanRowV2(value: unknown, path: string): StoryboardP
 }
 
 function normalizeStoryboardNodeRecordV2(value: unknown, path: string): StoryboardNodeRecordV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["sequence_id", "node_role", "node_id"], path);
-  return {
-    sequence_id: nullableStringWithDefault(record.sequence_id, `${path}.sequence_id`),
-    node_role: expectLiteral(
-      record.node_role,
+  return normalizeStrictRecord(value, path, {
+    sequence_id: nullableStringWithDefault,
+    node_role: (value, fieldPath) => expectLiteral(
+      value,
       new Set<StoryboardNodeRecordV2["node_role"]>([
         "storyboard_grid",
         "video_segment",
         "bgm",
         "editing",
       ]),
-      `${path}.node_role`,
+      fieldPath,
     ),
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-  };
+    node_id: expectNonEmptyString,
+  } satisfies StrictRecordFieldsFor<StoryboardNodeRecordV2>);
 }
 
 function normalizeStoryboardSegmentMaterializationV2(
   value: unknown,
   path: string,
 ): StoryboardSegmentMaterializationV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["sequence_id", "status", "generation_prompt"], path);
-  return {
-    sequence_id: expectNonEmptyString(record.sequence_id, `${path}.sequence_id`),
-    status: record.status === undefined
+  return normalizeStrictRecord(value, path, {
+    sequence_id: expectNonEmptyString,
+    status: (value, fieldPath) => value === undefined
       ? "pending"
-      : expectLiteral(record.status, STORYBOARD_SEGMENT_MATERIALIZATION_STATUSES, `${path}.status`),
-    generation_prompt: nullableStringWithDefault(
-      record.generation_prompt,
-      `${path}.generation_prompt`,
-    ),
-  };
+      : expectLiteral(value, STORYBOARD_SEGMENT_MATERIALIZATION_STATUSES, fieldPath),
+    generation_prompt: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<StoryboardSegmentMaterializationV2>);
 }
 
 function normalizeStoryboardVisualAnchorV2(
   value: unknown,
   path: string,
 ): StoryboardVisualAnchorV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["node_id", "asset_id", "node_revision", "document_revision"], path);
-  return {
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    asset_id: expectNonEmptyString(record.asset_id, `${path}.asset_id`),
-    node_revision: expectPositiveInteger(record.node_revision, `${path}.node_revision`),
-    document_revision: expectPositiveInteger(record.document_revision, `${path}.document_revision`),
-  };
+  return normalizeStrictRecord(value, path, {
+    node_id: expectNonEmptyString,
+    asset_id: expectNonEmptyString,
+    node_revision: expectPositiveInteger,
+    document_revision: expectPositiveInteger,
+  } satisfies StrictRecordFieldsFor<StoryboardVisualAnchorV2>);
 }
 
 function normalizeStoryboardProductionPlanContentV2(
@@ -2378,48 +2236,42 @@ function normalizeAgentAnchorNodeSourceV3(
   value: unknown,
   path: string,
 ): AgentAnchorNodeSourceV3 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["source_kind", "workflow_id", "node_id", "node_revision"], path);
-  return {
-    source_kind: expectLiteral(record.source_kind, new Set(["node"]), `${path}.source_kind`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    node_revision: expectPositiveInteger(record.node_revision, `${path}.node_revision`),
-  };
+  return normalizeStrictRecord(value, path, {
+    source_kind: (value, fieldPath) => expectLiteral(value, new Set(["node"]), fieldPath),
+    workflow_id: expectNonEmptyString,
+    node_id: expectNonEmptyString,
+    node_revision: expectPositiveInteger,
+  } satisfies StrictRecordFieldsFor<AgentAnchorNodeSourceV3>);
 }
 
 function normalizeAgentAnchorRoleSourceV3(
   value: unknown,
   path: string,
 ): AgentAnchorRoleSourceV3 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["role", "source"], path);
-  return {
-    role: expectLiteral(record.role, new Set<AgentAnchorRoleSourceV3["role"]>([
+  return normalizeStrictRecord(value, path, {
+    role: (value, fieldPath) => expectLiteral(value, new Set<AgentAnchorRoleSourceV3["role"]>([
       "product_main",
       "product_multiview",
       "character_main",
       "character_turnaround",
-    ]), `${path}.role`),
-    source: normalizeAgentAnchorNodeSourceV3(record.source, `${path}.source`),
-  };
+    ]), fieldPath),
+    source: normalizeAgentAnchorNodeSourceV3,
+  } satisfies StrictRecordFieldsFor<AgentAnchorRoleSourceV3>);
 }
 
 function normalizeAnchorAcceptanceEvidenceV1(value: unknown, path: string): AnchorAcceptanceEvidenceV1 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["evidence_id", "actor", "decision", "action_id", "requirement_revision_id", "requirement_revision_no", "node_revision", "asset_version_id", "document_revision", "recorded_at"], path);
-  return {
-    evidence_id: expectNonEmptyString(record.evidence_id, `${path}.evidence_id`),
-    actor: expectLiteral(record.actor, new Set<AnchorAcceptanceEvidenceV1["actor"]>(["user", "agent", "system"]), `${path}.actor`),
-    decision: expectLiteral(record.decision, new Set<AnchorAcceptanceEvidenceV1["decision"]>(["accepted", "delegated", "activated", "retired", "invalidated"]), `${path}.decision`),
-    action_id: expectNonEmptyString(record.action_id, `${path}.action_id`),
-    requirement_revision_id: expectNonEmptyString(record.requirement_revision_id, `${path}.requirement_revision_id`),
-    requirement_revision_no: expectPositiveInteger(record.requirement_revision_no, `${path}.requirement_revision_no`),
-    node_revision: record.node_revision === null || record.node_revision === undefined ? null : expectPositiveInteger(record.node_revision, `${path}.node_revision`),
-    asset_version_id: nullableStringWithDefault(record.asset_version_id, `${path}.asset_version_id`),
-    document_revision: expectPositiveInteger(record.document_revision, `${path}.document_revision`),
-    recorded_at: expectIsoDateTimeString(record.recorded_at, `${path}.recorded_at`),
-  };
+  return normalizeStrictRecord(value, path, {
+    evidence_id: expectNonEmptyString,
+    actor: (value, fieldPath) => expectLiteral(value, new Set<AnchorAcceptanceEvidenceV1["actor"]>(["user", "agent", "system"]), fieldPath),
+    decision: (value, fieldPath) => expectLiteral(value, new Set<AnchorAcceptanceEvidenceV1["decision"]>(["accepted", "delegated", "activated", "retired", "invalidated"]), fieldPath),
+    action_id: expectNonEmptyString,
+    requirement_revision_id: expectNonEmptyString,
+    requirement_revision_no: expectPositiveInteger,
+    node_revision: (value, fieldPath) => value === null || value === undefined ? null : expectPositiveInteger(value, fieldPath),
+    asset_version_id: nullableStringWithDefault,
+    document_revision: expectPositiveInteger,
+    recorded_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<AnchorAcceptanceEvidenceV1>);
 }
 
 function normalizeStoryboardProductionPlanContentV3(value: unknown, path: string): StoryboardProductionPlanContentV3 {
@@ -2457,60 +2309,62 @@ function normalizeStoryboardSegmentMaterializationV3(
   value: unknown,
   path: string,
 ): StoryboardSegmentMaterializationV3 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["sequence_id", "materialization_id", "status", "generation_prompt"],
-    path,
-  );
-  return {
-    sequence_id: expectNonEmptyString(record.sequence_id, `${path}.sequence_id`),
-    materialization_id: expectNonEmptyString(record.materialization_id, `${path}.materialization_id`),
-    status: record.status === undefined
+  return normalizeStrictRecord(value, path, {
+    sequence_id: expectNonEmptyString,
+    materialization_id: expectNonEmptyString,
+    status: (value, fieldPath) => value === undefined
       ? "pending"
       : expectLiteral(
-        record.status,
+        value,
         STORYBOARD_SEGMENT_MATERIALIZATION_STATUSES,
-        `${path}.status`,
+        fieldPath,
       ),
-    generation_prompt: nullableStringWithDefault(
-      record.generation_prompt,
-      `${path}.generation_prompt`,
-    ),
-  };
+    generation_prompt: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<StoryboardSegmentMaterializationV3>);
 }
 
 function normalizeStoryboardPlannedNodeV3(value: unknown, path: string): StoryboardPlannedNodeV3 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["sequence_id", "node_role", "node_id", "node_revision", "materialization_id"], path);
-  return { sequence_id: nullableStringWithDefault(record.sequence_id, `${path}.sequence_id`), node_role: expectLiteral(record.node_role, new Set<StoryboardPlannedNodeV3["node_role"]>(["storyboard_grid", "video_segment", "bgm", "editing"]), `${path}.node_role`), node_id: expectNonEmptyString(record.node_id, `${path}.node_id`), node_revision: expectPositiveInteger(record.node_revision, `${path}.node_revision`), materialization_id: expectNonEmptyString(record.materialization_id, `${path}.materialization_id`) };
+  return normalizeStrictRecord(value, path, {
+    sequence_id: nullableStringWithDefault,
+    node_role: (value, fieldPath) => expectLiteral(value, new Set<StoryboardPlannedNodeV3["node_role"]>(["storyboard_grid", "video_segment", "bgm", "editing"]), fieldPath),
+    node_id: expectNonEmptyString,
+    node_revision: expectPositiveInteger,
+    materialization_id: expectNonEmptyString,
+  } satisfies StrictRecordFieldsFor<StoryboardPlannedNodeV3>);
 }
 
 function normalizeStoryboardExcludedMediaV3(value: unknown, path: string): StoryboardExcludedMediaV3 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["sequence_id", "node_role", "node_id", "node_revision", "action_id"], path);
-  return { sequence_id: nullableStringWithDefault(record.sequence_id, `${path}.sequence_id`), node_role: expectLiteral(record.node_role, new Set<StoryboardExcludedMediaV3["node_role"]>(["video_segment", "bgm"]), `${path}.node_role`), node_id: expectNonEmptyString(record.node_id, `${path}.node_id`), node_revision: expectPositiveInteger(record.node_revision, `${path}.node_revision`), action_id: expectNonEmptyString(record.action_id, `${path}.action_id`) };
+  return normalizeStrictRecord(value, path, {
+    sequence_id: nullableStringWithDefault,
+    node_role: (value, fieldPath) => expectLiteral(value, new Set<StoryboardExcludedMediaV3["node_role"]>(["video_segment", "bgm"]), fieldPath),
+    node_id: expectNonEmptyString,
+    node_revision: expectPositiveInteger,
+    action_id: expectNonEmptyString,
+  } satisfies StrictRecordFieldsFor<StoryboardExcludedMediaV3>);
 }
 
 function normalizeStoryboardVisualAnchorV3(value: unknown, path: string): StoryboardVisualAnchorV3 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["sequence_id", "node_id", "node_revision", "asset_id", "asset_version_id", "acceptance_evidence_id"], path);
-  return { sequence_id: expectNonEmptyString(record.sequence_id, `${path}.sequence_id`), node_id: expectNonEmptyString(record.node_id, `${path}.node_id`), node_revision: expectPositiveInteger(record.node_revision, `${path}.node_revision`), asset_id: expectNonEmptyString(record.asset_id, `${path}.asset_id`), asset_version_id: expectNonEmptyString(record.asset_version_id, `${path}.asset_version_id`), acceptance_evidence_id: expectNonEmptyString(record.acceptance_evidence_id, `${path}.acceptance_evidence_id`) };
+  return normalizeStrictRecord(value, path, {
+    sequence_id: expectNonEmptyString,
+    node_id: expectNonEmptyString,
+    node_revision: expectPositiveInteger,
+    asset_id: expectNonEmptyString,
+    asset_version_id: expectNonEmptyString,
+    acceptance_evidence_id: expectNonEmptyString,
+  } satisfies StrictRecordFieldsFor<StoryboardVisualAnchorV3>);
 }
 
 function normalizeAgentDocumentLinkedNodeRuntimeV2(
   value: unknown,
   path: string,
 ): AgentDocumentLinkedNodeRuntimeV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["node_id", "node_type", "creative_role", "status", "revision"], path);
-  return {
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    node_type: expectLiteral(record.node_type, CANVAS_NODE_TYPES, `${path}.node_type`),
-    creative_role: expectNonEmptyString(record.creative_role, `${path}.creative_role`),
-    status: expectLiteral(record.status, CANVAS_NODE_STATUSES, `${path}.status`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-  };
+  return normalizeStrictRecord(value, path, {
+    node_id: expectNonEmptyString,
+    node_type: (value, fieldPath) => expectLiteral(value, CANVAS_NODE_TYPES, fieldPath),
+    creative_role: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, CANVAS_NODE_STATUSES, fieldPath),
+    revision: expectPositiveInteger,
+  } satisfies StrictRecordFieldsFor<AgentDocumentLinkedNodeRuntimeV2>);
 }
 
 export function normalizeAgentWorkingDocumentV2(
@@ -2585,14 +2439,12 @@ export function normalizeAgentWorkingDocumentPageV2(
   value: unknown,
   path = "agentDocuments",
 ): AgentWorkingDocumentPageV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["items", "next_cursor"], path);
-  return {
-    items: expectArray(record.items ?? [], `${path}.items`).map((item, index) => (
-      normalizeAgentWorkingDocumentV2(item, `${path}.items[${index}]`)
+  return normalizeStrictRecord(value, path, {
+    items: (value, fieldPath) => expectArray(value ?? [], fieldPath).map((item, index) => (
+      normalizeAgentWorkingDocumentV2(item, `${fieldPath}[${index}]`)
     )),
-    next_cursor: nullableStringWithDefault(record.next_cursor, `${path}.next_cursor`),
-  };
+    next_cursor: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<AgentWorkingDocumentPageV2>);
 }
 
 function normalizeCanvasConnectionRoleRuleV2(
@@ -2697,78 +2549,48 @@ export function normalizeCanvasConnectedNodeCreateResponseV2(
   value: unknown,
   path = "connectedNode",
 ): CanvasConnectedNodeCreateResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["workflow_id", "revision", "layout_revision", "node", "binding", "events_cursor"],
-    path,
-  );
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    layout_revision: expectPositiveInteger(record.layout_revision, `${path}.layout_revision`),
-    node: normalizeCanvasNodeV2(record.node, `${path}.node`),
-    binding: normalizeCanvasBindingV2(record.binding, `${path}.binding`),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    revision: expectPositiveInteger,
+    layout_revision: expectPositiveInteger,
+    node: normalizeCanvasNodeV2,
+    binding: normalizeCanvasBindingV2,
+    events_cursor: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<CanvasConnectedNodeCreateResponseV2>);
 }
 
 export function normalizeCanvasBindingMutationResponseV2(
   value: unknown,
   path = "bindingMutation",
 ): CanvasBindingMutationResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["workflow_id", "revision", "binding", "incoming_bindings", "events_cursor"],
-    path,
-  );
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    binding: normalizeCanvasBindingV2(record.binding, `${path}.binding`),
-    incoming_bindings: expectArray(record.incoming_bindings, `${path}.incoming_bindings`)
-      .map((item, index) => normalizeCanvasBindingV2(item, `${path}.incoming_bindings[${index}]`)),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    revision: expectPositiveInteger,
+    binding: normalizeCanvasBindingV2,
+    incoming_bindings: (value, fieldPath) => expectArray(value, fieldPath)
+      .map((item, index) => normalizeCanvasBindingV2(item, `${fieldPath}[${index}]`)),
+    events_cursor: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<CanvasBindingMutationResponseV2>);
 }
 
 export function normalizeResolvedTextInputSnapshotV2(value: unknown, path = "resolvedInput"): ResolvedTextInputSnapshotV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "snapshot_type",
-      "source_kind",
-      "source_node_id",
-      "source_node_revision",
-      "binding_kind",
-      "document_kind",
-      "content",
-      "content_hash",
-      "binding_id",
-      "input_role",
-      "display_order",
-    ],
-    path,
-  );
-  return {
-    snapshot_type: expectLiteral(record.snapshot_type, new Set<ResolvedTextInputSnapshotV2["snapshot_type"]>(["text"]), `${path}.snapshot_type`),
-    source_kind: expectLiteral(record.source_kind, new Set<ResolvedTextInputSnapshotV2["source_kind"]>(["node_output"]), `${path}.source_kind`),
-    source_node_id: expectNonEmptyString(record.source_node_id, `${path}.source_node_id`),
-    source_node_revision: expectPositiveInteger(record.source_node_revision, `${path}.source_node_revision`),
-    binding_kind: expectLiteral(record.binding_kind, RESOLVED_TEXT_BINDING_KINDS, `${path}.binding_kind`),
-    document_kind: expectLiteral(record.document_kind, RESOLVED_DOCUMENT_KINDS, `${path}.document_kind`),
-    content: expectString(record.content, `${path}.content`),
-    content_hash: expectNonEmptyString(record.content_hash, `${path}.content_hash`),
-    binding_id: nullableString(record.binding_id, `${path}.binding_id`),
-    input_role: expectLiteral(
-      record.input_role,
+  return normalizeStrictRecord(value, path, {
+    snapshot_type: (value, fieldPath) => expectLiteral(value, new Set<ResolvedTextInputSnapshotV2["snapshot_type"]>(["text"]), fieldPath),
+    source_kind: (value, fieldPath) => expectLiteral(value, new Set<ResolvedTextInputSnapshotV2["source_kind"]>(["node_output"]), fieldPath),
+    source_node_id: expectNonEmptyString,
+    source_node_revision: expectPositiveInteger,
+    binding_kind: (value, fieldPath) => expectLiteral(value, RESOLVED_TEXT_BINDING_KINDS, fieldPath),
+    document_kind: (value, fieldPath) => expectLiteral(value, RESOLVED_DOCUMENT_KINDS, fieldPath),
+    content: expectString,
+    content_hash: expectNonEmptyString,
+    binding_id: nullableString,
+    input_role: (value, fieldPath) => expectLiteral(
+      value,
       new Set<ResolvedTextInputSnapshotV2["input_role"]>(["text_context"]),
-      `${path}.input_role`,
+      fieldPath,
     ),
-    display_order: expectNonNegativeInteger(record.display_order, `${path}.display_order`),
-  };
+    display_order: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<ResolvedTextInputSnapshotV2>);
 }
 
 export function normalizeStorageAccessDescriptorV2(
@@ -2854,35 +2676,29 @@ function normalizeVideoParameterNormalizationV2(
   value: unknown,
   path: string,
 ): VideoParameterNormalizationV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["field", "requested_value", "effective_value", "normalization_code"],
-    path,
-  );
-  return {
-    field: expectLiteral(
-      record.field,
+  return normalizeStrictRecord(value, path, {
+    field: (value, fieldPath) => expectLiteral(
+      value,
       new Set<VideoParameterNormalizationV2["field"]>([
         "duration_seconds",
         "resolution",
         "aspect_ratio",
         "generate_audio",
       ]),
-      `${path}.field`,
+      fieldPath,
     ),
-    requested_value: normalizeCanvasParameterScalarV2(record.requested_value, `${path}.requested_value`),
-    effective_value: normalizeCanvasParameterScalarV2(record.effective_value, `${path}.effective_value`),
-    normalization_code: expectLiteral(
-      record.normalization_code,
+    requested_value: normalizeCanvasParameterScalarV2,
+    effective_value: normalizeCanvasParameterScalarV2,
+    normalization_code: (value, fieldPath) => expectLiteral(
+      value,
       new Set<VideoParameterNormalizationV2["normalization_code"]>([
         "duration_clamped_to_minimum",
         "duration_clamped_to_maximum",
         "resolution_reduced_to_supported",
       ]),
-      `${path}.normalization_code`,
+      fieldPath,
     ),
-  };
+  } satisfies StrictRecordFieldsFor<VideoParameterNormalizationV2>);
 }
 
 export function normalizeNodeRuntimeV2(value: unknown, path = "runtime.node_runtime"): NodeRuntimeV2 {
@@ -2988,25 +2804,15 @@ function normalizeCanvasPostReadyEffectSummaryV2(
   value: unknown,
   path: string,
 ): CanvasPostReadyEffectSummaryV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "effect_id",
-    "effect_type",
-    "node_id",
-    "status",
-    "attempt_no",
-    "error",
-    "updated_at",
-  ], path);
-  return {
-    effect_id: expectNonEmptyString(record.effect_id, `${path}.effect_id`),
-    effect_type: expectLiteral(record.effect_type, CANVAS_POST_READY_EFFECT_TYPES, `${path}.effect_type`),
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    status: expectLiteral(record.status, CANVAS_POST_READY_EFFECT_STATUSES, `${path}.status`),
-    attempt_no: expectNonNegativeInteger(record.attempt_no, `${path}.attempt_no`),
-    error: record.error === null ? null : normalizeCanvasNodeErrorV2(record.error, `${path}.error`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+  return normalizeStrictRecord(value, path, {
+    effect_id: expectNonEmptyString,
+    effect_type: (value, fieldPath) => expectLiteral(value, CANVAS_POST_READY_EFFECT_TYPES, fieldPath),
+    node_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, CANVAS_POST_READY_EFFECT_STATUSES, fieldPath),
+    attempt_no: expectNonNegativeInteger,
+    error: (value, fieldPath) => value === null ? null : normalizeCanvasNodeErrorV2(value, fieldPath),
+    updated_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<CanvasPostReadyEffectSummaryV2>);
 }
 
 export function normalizeCanvasPostReadyCheckpointV2(
@@ -3125,51 +2931,28 @@ function normalizeProviderReferenceLimits(
 }
 
 export function normalizeProviderModelCapabilityV2(value: unknown, path = "capability"): ProviderModelCapabilityV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "provider",
-      "model_id",
-      "output_type",
-      "accepted_input_types",
-      "max_references",
-      "reference_limits",
-      "supported_parameters",
-      "default_parameters",
-      "supported_resolutions",
-      "supported_aspect_ratios",
-      "duration_range_seconds",
-      "pixel_bounds",
-      "available",
-      "unavailable_reason",
-      "supports_native_audio",
-      "capability_revision",
-    ],
-    path,
-  );
-  return {
-    provider: expectNonEmptyString(record.provider, `${path}.provider`),
-    model_id: expectNonEmptyString(record.model_id, `${path}.model_id`),
-    output_type: expectLiteral(record.output_type, PROVIDER_OUTPUT_TYPES, `${path}.output_type`),
-    accepted_input_types: expectArray(record.accepted_input_types, `${path}.accepted_input_types`).map((item, index) =>
-      expectLiteral(item, PROVIDER_INPUT_TYPES, `${path}.accepted_input_types[${index}]`),
+  return normalizeStrictRecord(value, path, {
+    provider: expectNonEmptyString,
+    model_id: expectNonEmptyString,
+    output_type: (value, fieldPath) => expectLiteral(value, PROVIDER_OUTPUT_TYPES, fieldPath),
+    accepted_input_types: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      expectLiteral(item, PROVIDER_INPUT_TYPES, `${fieldPath}[${index}]`),
     ),
-    max_references: expectNonNegativeInteger(record.max_references, `${path}.max_references`),
-    reference_limits: normalizeProviderReferenceLimits(record.reference_limits, `${path}.reference_limits`),
-    supported_parameters: expectStringArray(record.supported_parameters, `${path}.supported_parameters`),
-    default_parameters: optionalUnknownRecord(record.default_parameters, `${path}.default_parameters`, {}),
-    supported_resolutions: optionalStringArray(record.supported_resolutions, `${path}.supported_resolutions`, []),
-    supported_aspect_ratios: expectStringArray(record.supported_aspect_ratios, `${path}.supported_aspect_ratios`),
-    duration_range_seconds: record.duration_range_seconds === null ? null : expectTuple2Number(record.duration_range_seconds, `${path}.duration_range_seconds`),
-    pixel_bounds: record.pixel_bounds === null ? null : expectTuple2Number(record.pixel_bounds, `${path}.pixel_bounds`, true),
-    available: expectBoolean(record.available, `${path}.available`),
-    unavailable_reason: nullableString(record.unavailable_reason, `${path}.unavailable_reason`),
-    supports_native_audio: record.supports_native_audio === undefined
+    max_references: expectNonNegativeInteger,
+    reference_limits: normalizeProviderReferenceLimits,
+    supported_parameters: expectStringArray,
+    default_parameters: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    supported_resolutions: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    supported_aspect_ratios: expectStringArray,
+    duration_range_seconds: (value, fieldPath) => value === null ? null : expectTuple2Number(value, fieldPath),
+    pixel_bounds: (value, fieldPath) => value === null ? null : expectTuple2Number(value, fieldPath, true),
+    available: expectBoolean,
+    unavailable_reason: nullableString,
+    supports_native_audio: (value, fieldPath) => value === undefined
       ? false
-      : expectBoolean(record.supports_native_audio, `${path}.supports_native_audio`),
-    capability_revision: expectPositiveInteger(record.capability_revision ?? 1, `${path}.capability_revision`),
-  };
+      : expectBoolean(value, fieldPath),
+    capability_revision: (value, fieldPath) => expectPositiveInteger(value ?? 1, fieldPath),
+  } satisfies StrictRecordFieldsFor<ProviderModelCapabilityV2>);
 }
 
 export function normalizeProviderModelCapabilityListV2(value: unknown, path = "capabilities"): ProviderModelCapabilityListV2 {
@@ -3180,18 +2963,16 @@ export function normalizeProviderModelCapabilityListV2(value: unknown, path = "c
 }
 
 export function normalizeBindingCapabilityDecisionV2(value: unknown, path = "bindingCapabilityDecision"): BindingCapabilityDecisionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["accepted", "target_node_id", "selected_model_id", "required_input_types", "compatible_model_ids", "switch_model_required"], path);
-  return {
-    accepted: expectBoolean(record.accepted, `${path}.accepted`),
-    target_node_id: expectNonEmptyString(record.target_node_id, `${path}.target_node_id`),
-    selected_model_id: nullableString(record.selected_model_id, `${path}.selected_model_id`),
-    required_input_types: expectArray(record.required_input_types, `${path}.required_input_types`).map((item, index) =>
-      expectLiteral(item, PROVIDER_INPUT_TYPES, `${path}.required_input_types[${index}]`),
+  return normalizeStrictRecord(value, path, {
+    accepted: expectBoolean,
+    target_node_id: expectNonEmptyString,
+    selected_model_id: nullableString,
+    required_input_types: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      expectLiteral(item, PROVIDER_INPUT_TYPES, `${fieldPath}[${index}]`),
     ),
-    compatible_model_ids: expectStringArray(record.compatible_model_ids, `${path}.compatible_model_ids`),
-    switch_model_required: expectBoolean(record.switch_model_required, `${path}.switch_model_required`),
-  };
+    compatible_model_ids: expectStringArray,
+    switch_model_required: expectBoolean,
+  } satisfies StrictRecordFieldsFor<BindingCapabilityDecisionV2>);
 }
 
 function normalizeCapabilityProposalOptionV2(
@@ -3220,51 +3001,37 @@ export function normalizeProposalMaterializationErrorV2(
   value: unknown,
   path: string,
 ): ProposalMaterializationErrorV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["code", "message", "actionable_failure"], path);
-  return {
-    code: expectNonEmptyString(record.code, `${path}.code`),
-    message: expectNonEmptyString(record.message, `${path}.message`),
-    actionable_failure: nullableActionableFailureV1(
-      record.actionable_failure,
-      `${path}.actionable_failure`,
+  return normalizeStrictRecord(value, path, {
+    code: expectNonEmptyString,
+    message: expectNonEmptyString,
+    actionable_failure: (value, fieldPath) => nullableActionableFailureV1(
+      value,
+      fieldPath,
     ),
-  };
+  } satisfies StrictRecordFieldsFor<ProposalMaterializationErrorV2>);
 }
 
 function normalizeProposalMaterializationProjectionV2(
   value: unknown,
   path: string,
 ): ProposalMaterializationProjectionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "materialization_id",
-    "option_id",
-    "turn_id",
-    "status",
-    "attempt_no",
-    "retryable",
-    "error",
-    "created_at",
-    "updated_at",
-  ], path);
-  return {
-    materialization_id: expectNonEmptyString(record.materialization_id, `${path}.materialization_id`),
-    option_id: expectNonEmptyString(record.option_id, `${path}.option_id`),
-    turn_id: expectNonEmptyString(record.turn_id, `${path}.turn_id`),
-    status: expectLiteral(
-      record.status,
+  return normalizeStrictRecord(value, path, {
+    materialization_id: expectNonEmptyString,
+    option_id: expectNonEmptyString,
+    turn_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(
+      value,
       new Set<ProposalMaterializationProjectionV2["status"]>(["queued", "working", "failed", "completed"]),
-      `${path}.status`,
+      fieldPath,
     ),
-    attempt_no: expectPositiveInteger(record.attempt_no, `${path}.attempt_no`),
-    retryable: expectBoolean(record.retryable, `${path}.retryable`),
-    error: record.error === null
+    attempt_no: expectPositiveInteger,
+    retryable: expectBoolean,
+    error: (value, fieldPath) => value === null
       ? null
-      : normalizeProposalMaterializationErrorV2(record.error, `${path}.error`),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+      : normalizeProposalMaterializationErrorV2(value, fieldPath),
+    created_at: expectIsoDateTimeString,
+    updated_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<ProposalMaterializationProjectionV2>);
 }
 
 function normalizeProposedDraftReferenceV2(
@@ -3334,34 +3101,18 @@ function normalizeProposalActionDescriptorV2(
   value: unknown,
   path: string,
 ): ProposalActionDescriptorV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "action_id",
-    "action",
-    "label",
-    "proposal_id",
-    "expected_session_revision",
-    "confirmation_required",
-    "reason",
-    "option_id",
-    "enabled",
-    "disabled_reason",
-  ], path);
-  return {
-    action_id: expectNonEmptyString(record.action_id, `${path}.action_id`),
-    action: expectLiteral(record.action, PROPOSAL_ACTIONS, `${path}.action`),
-    label: expectNonEmptyString(record.label, `${path}.label`),
-    proposal_id: expectNonEmptyString(record.proposal_id, `${path}.proposal_id`),
-    expected_session_revision: expectPositiveInteger(
-      record.expected_session_revision,
-      `${path}.expected_session_revision`,
-    ),
-    confirmation_required: expectBoolean(record.confirmation_required, `${path}.confirmation_required`),
-    reason: expectNonEmptyString(record.reason, `${path}.reason`),
-    option_id: nullableStringWithDefault(record.option_id, `${path}.option_id`),
-    enabled: record.enabled === undefined ? true : expectBoolean(record.enabled, `${path}.enabled`),
-    disabled_reason: nullableStringWithDefault(record.disabled_reason, `${path}.disabled_reason`),
-  };
+  return normalizeStrictRecord(value, path, {
+    action_id: expectNonEmptyString,
+    action: (value, fieldPath) => expectLiteral(value, PROPOSAL_ACTIONS, fieldPath),
+    label: expectNonEmptyString,
+    proposal_id: expectNonEmptyString,
+    expected_session_revision: expectPositiveInteger,
+    confirmation_required: expectBoolean,
+    reason: expectNonEmptyString,
+    option_id: nullableStringWithDefault,
+    enabled: (value, fieldPath) => value === undefined ? true : expectBoolean(value, fieldPath),
+    disabled_reason: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<ProposalActionDescriptorV2>);
 }
 
 export function normalizeConceptProposalV2(
@@ -3487,34 +3238,24 @@ function normalizeProposalApplicationSummaryV2(
   value: unknown,
   path: string,
 ): ProposalApplicationSummaryV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "application_id",
-    "option_id",
-    "action",
-    "receipt_id",
-    "created_node_ids",
-    "queued_execution_ids",
-    "created_at",
-  ], path);
-  return {
-    application_id: expectNonEmptyString(record.application_id, `${path}.application_id`),
-    option_id: expectNonEmptyString(record.option_id, `${path}.option_id`),
-    action: expectLiteral(
-      record.action,
+  return normalizeStrictRecord(value, path, {
+    application_id: expectNonEmptyString,
+    option_id: expectNonEmptyString,
+    action: (value, fieldPath) => expectLiteral(
+      value,
       new Set<ProposalApplicationSummaryV2["action"]>([
         "select_option",
         "custom_direction",
         "delegate_choice",
         "reuse_direction",
       ]),
-      `${path}.action`,
+      fieldPath,
     ),
-    receipt_id: expectNonEmptyString(record.receipt_id, `${path}.receipt_id`),
-    created_node_ids: optionalStringArray(record.created_node_ids, `${path}.created_node_ids`, []),
-    queued_execution_ids: optionalStringArray(record.queued_execution_ids, `${path}.queued_execution_ids`, []),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-  };
+    receipt_id: expectNonEmptyString,
+    created_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    queued_execution_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    created_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<ProposalApplicationSummaryV2>);
 }
 
 function normalizeChatMessageV2(value: unknown, path: string): ChatMessageV2 {
@@ -3909,23 +3650,14 @@ function normalizeAgentOperationResultV2(
   value: unknown,
   path: string,
 ): AgentOperationResultV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "operation_id",
-    "node_id",
-    "binding_id",
-    "execution_id",
-    "status",
-    "error_code",
-  ], path);
-  return {
-    operation_id: expectNonEmptyString(record.operation_id, `${path}.operation_id`),
-    node_id: nullableStringWithDefault(record.node_id, `${path}.node_id`),
-    binding_id: nullableStringWithDefault(record.binding_id, `${path}.binding_id`),
-    execution_id: nullableStringWithDefault(record.execution_id, `${path}.execution_id`),
-    status: expectLiteral(record.status, new Set(["applied", "queued", "failed"] as const), `${path}.status`),
-    error_code: nullableStringWithDefault(record.error_code, `${path}.error_code`),
-  };
+  return normalizeStrictRecord(value, path, {
+    operation_id: expectNonEmptyString,
+    node_id: nullableStringWithDefault,
+    binding_id: nullableStringWithDefault,
+    execution_id: nullableStringWithDefault,
+    status: (value, fieldPath) => expectLiteral(value, new Set(["applied", "queued", "failed"] as const), fieldPath),
+    error_code: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<AgentOperationResultV2>);
 }
 
 function normalizeAgentCanvasContinuationV2(
@@ -4006,81 +3738,49 @@ export function normalizeAgentActionReceiptV2(
   value: unknown,
   path = "actionReceipt",
 ): AgentActionReceiptV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "receipt_id",
-    "workflow_id",
-    "plan_id",
-    "action_id",
-    "proposal_id",
-    "proposal_option_id",
-    "proposal_action",
-    "actor_kind",
-    "occurrence_id",
-    "character_phase",
-    "idempotency_key",
-    "status",
-    "summary",
-    "created_node_ids",
-    "updated_node_ids",
-    "deleted_node_ids",
-    "created_binding_ids",
-    "deleted_binding_ids",
-    "queued_execution_ids",
-    "run_queue_errors",
-    "operation_results",
-    "workflow_revision",
-    "before_workflow_revision",
-    "placement_hints",
-    "continuation_turn_id",
-    "superseded_by",
-    "error_code",
-    "error_message",
-    "created_at",
-  ], path);
-  return {
-    receipt_id: expectNonEmptyString(record.receipt_id, `${path}.receipt_id`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    plan_id: nullableStringWithDefault(record.plan_id, `${path}.plan_id`),
-    action_id: nullableStringWithDefault(record.action_id, `${path}.action_id`),
-    proposal_id: nullableStringWithDefault(record.proposal_id, `${path}.proposal_id`),
-    proposal_option_id: nullableStringWithDefault(record.proposal_option_id, `${path}.proposal_option_id`),
-    proposal_action: record.proposal_action === undefined || record.proposal_action === null
+  return normalizeStrictRecord(value, path, {
+    receipt_id: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    plan_id: nullableStringWithDefault,
+    action_id: nullableStringWithDefault,
+    proposal_id: nullableStringWithDefault,
+    proposal_option_id: nullableStringWithDefault,
+    proposal_action: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectLiteral(record.proposal_action, PROPOSAL_ACTIONS, `${path}.proposal_action`),
-    actor_kind: record.actor_kind === undefined
+      : expectLiteral(value, PROPOSAL_ACTIONS, fieldPath),
+    actor_kind: (value, fieldPath) => value === undefined
       ? "system"
-      : expectLiteral(record.actor_kind, new Set(["agent", "user", "system"] as const), `${path}.actor_kind`),
-    occurrence_id: nullableStringWithDefault(record.occurrence_id, `${path}.occurrence_id`),
-    character_phase: record.character_phase === undefined || record.character_phase === null
+      : expectLiteral(value, new Set(["agent", "user", "system"] as const), fieldPath),
+    occurrence_id: nullableStringWithDefault,
+    character_phase: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectLiteral(record.character_phase, new Set(["main", "turnaround"] as const), `${path}.character_phase`),
-    idempotency_key: nullableStringWithDefault(record.idempotency_key, `${path}.idempotency_key`),
-    status: expectLiteral(record.status, RECEIPT_STATUSES, `${path}.status`),
-    summary: expectNonEmptyString(record.summary, `${path}.summary`),
-    created_node_ids: optionalStringArray(record.created_node_ids, `${path}.created_node_ids`, []),
-    updated_node_ids: optionalStringArray(record.updated_node_ids, `${path}.updated_node_ids`, []),
-    deleted_node_ids: optionalStringArray(record.deleted_node_ids, `${path}.deleted_node_ids`, []),
-    created_binding_ids: optionalStringArray(record.created_binding_ids, `${path}.created_binding_ids`, []),
-    deleted_binding_ids: optionalStringArray(record.deleted_binding_ids, `${path}.deleted_binding_ids`, []),
-    queued_execution_ids: optionalStringArray(record.queued_execution_ids, `${path}.queued_execution_ids`, []),
-    run_queue_errors: optionalStringArray(record.run_queue_errors, `${path}.run_queue_errors`, []),
-    operation_results: expectArray(record.operation_results ?? [], `${path}.operation_results`)
-      .map((item, index) => normalizeAgentOperationResultV2(item, `${path}.operation_results[${index}]`)),
-    workflow_revision: expectPositiveInteger(record.workflow_revision, `${path}.workflow_revision`),
-    before_workflow_revision: record.before_workflow_revision === undefined || record.before_workflow_revision === null
+      : expectLiteral(value, new Set(["main", "turnaround"] as const), fieldPath),
+    idempotency_key: nullableStringWithDefault,
+    status: (value, fieldPath) => expectLiteral(value, RECEIPT_STATUSES, fieldPath),
+    summary: expectNonEmptyString,
+    created_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    updated_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    deleted_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    created_binding_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    deleted_binding_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    queued_execution_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    run_queue_errors: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    operation_results: (value, fieldPath) => expectArray(value ?? [], fieldPath)
+      .map((item, index) => normalizeAgentOperationResultV2(item, `${fieldPath}[${index}]`)),
+    workflow_revision: expectPositiveInteger,
+    before_workflow_revision: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectPositiveInteger(record.before_workflow_revision, `${path}.before_workflow_revision`),
-    placement_hints: expectArray(record.placement_hints ?? [], `${path}.placement_hints`)
-      .map((item, index) => normalizeAgentPlacementHintV2(item, `${path}.placement_hints[${index}]`)),
-    continuation_turn_id: nullableStringWithDefault(record.continuation_turn_id, `${path}.continuation_turn_id`),
-    superseded_by: nullableStringWithDefault(record.superseded_by, `${path}.superseded_by`),
-    error_code: nullableStringWithDefault(record.error_code, `${path}.error_code`),
-    error_message: nullableStringWithDefault(record.error_message, `${path}.error_message`),
-    created_at: record.created_at === undefined
+      : expectPositiveInteger(value, fieldPath),
+    placement_hints: (value, fieldPath) => expectArray(value ?? [], fieldPath)
+      .map((item, index) => normalizeAgentPlacementHintV2(item, `${fieldPath}[${index}]`)),
+    continuation_turn_id: nullableStringWithDefault,
+    superseded_by: nullableStringWithDefault,
+    error_code: nullableStringWithDefault,
+    error_message: nullableStringWithDefault,
+    created_at: (value, fieldPath) => value === undefined
       ? new Date(0).toISOString()
-      : expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-  };
+      : expectIsoDateTimeString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<AgentActionReceiptV2>);
 }
 
 function normalizeChatCommandPlanCardV2(value: unknown, path: string): ChatTimelineItemV2 {
@@ -4127,22 +3827,20 @@ export function normalizeChatTimelineItemV2(value: unknown, path = "chatItem"): 
 }
 
 export function normalizeChatTimelineListResponseV2(value: unknown, path = "chatTimeline"): ChatTimelineListResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow_id", "conversation_id", "guidance_advance_precondition", "items", "next_after_seq"], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    conversation_id: record.conversation_id === null
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    conversation_id: (value, fieldPath) => value === null
       ? null
-      : expectNonEmptyString(record.conversation_id, `${path}.conversation_id`),
-    guidance_advance_precondition: record.guidance_advance_precondition === undefined || record.guidance_advance_precondition === null
+      : expectNonEmptyString(value, fieldPath),
+    guidance_advance_precondition: (value, fieldPath) => value === undefined || value === null
       ? null
       : normalizeGuidanceAdvancePreconditionV1(
-        record.guidance_advance_precondition,
-        `${path}.guidance_advance_precondition`,
+        value,
+        fieldPath,
       ),
-    items: expectArray(record.items, `${path}.items`).map((item, index) => normalizeChatTimelineItemV2(item, `${path}.items[${index}]`)),
-    next_after_seq: expectNonNegativeInteger(record.next_after_seq, `${path}.next_after_seq`),
-  };
+    items: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) => normalizeChatTimelineItemV2(item, `${fieldPath}[${index}]`)),
+    next_after_seq: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<ChatTimelineListResponseV2>);
 }
 
 function normalizeChatTimelinePresentationViewItemsV2(
@@ -4653,85 +4351,73 @@ export function normalizeEditingManifestV2(value: unknown, path = "editing.manif
 }
 
 export function normalizeEditingSkippedInputV2(value: unknown, path = "editing.skippedInput"): EditingSkippedInputV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["reference_id", "node_id", "asset_id", "reason"], path);
-  return {
-    reference_id: expectNonEmptyString(record.reference_id, `${path}.reference_id`),
-    node_id: record.node_id === undefined ? null : nullableString(record.node_id, `${path}.node_id`),
-    asset_id: record.asset_id === undefined ? null : nullableString(record.asset_id, `${path}.asset_id`),
-    reason: expectLiteral(record.reason, EDITING_SKIPPED_REASONS, `${path}.reason`),
-  };
+  return normalizeStrictRecord(value, path, {
+    reference_id: expectNonEmptyString,
+    node_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    asset_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    reason: (value, fieldPath) => expectLiteral(value, EDITING_SKIPPED_REASONS, fieldPath),
+  } satisfies StrictRecordFieldsFor<EditingSkippedInputV2>);
 }
 
 export function normalizeEditingPreviewClipV2(value: unknown, path = "editing.previewClip"): EditingPreviewClipV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["reference_id", "binding_id", "node_id", "asset_id", "status", "display_order", "preview_url", "duration_seconds", "warning"], path);
-  return {
-    reference_id: expectNonEmptyString(record.reference_id, `${path}.reference_id`),
-    binding_id: record.binding_id === undefined ? null : nullableString(record.binding_id, `${path}.binding_id`),
-    node_id: record.node_id === undefined ? null : nullableString(record.node_id, `${path}.node_id`),
-    asset_id: record.asset_id === undefined ? null : nullableString(record.asset_id, `${path}.asset_id`),
-    status: expectLiteral(record.status, CANVAS_NODE_STATUSES, `${path}.status`),
-    display_order: expectNonNegativeInteger(record.display_order, `${path}.display_order`),
-    preview_url: nullableString(record.preview_url, `${path}.preview_url`),
-    duration_seconds: nullableFiniteNumber(record.duration_seconds, `${path}.duration_seconds`),
-    warning: nullableString(record.warning, `${path}.warning`),
-  };
+  return normalizeStrictRecord(value, path, {
+    reference_id: expectNonEmptyString,
+    binding_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    node_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    asset_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    status: (value, fieldPath) => expectLiteral(value, CANVAS_NODE_STATUSES, fieldPath),
+    display_order: expectNonNegativeInteger,
+    preview_url: nullableString,
+    duration_seconds: nullableFiniteNumber,
+    warning: nullableString,
+  } satisfies StrictRecordFieldsFor<EditingPreviewClipV2>);
 }
 
 export function normalizeEditingPreviewV2(value: unknown, path = "editing.preview"): EditingPreviewV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["clips", "bgm_binding_id", "bgm_node_id", "bgm_asset_id", "estimated_duration_seconds", "warnings"], path);
-  return {
-    clips: expectArray(record.clips, `${path}.clips`).map((item, index) => normalizeEditingPreviewClipV2(item, `${path}.clips[${index}]`)),
-    bgm_binding_id: record.bgm_binding_id === undefined ? null : nullableString(record.bgm_binding_id, `${path}.bgm_binding_id`),
-    bgm_node_id: record.bgm_node_id === undefined ? null : nullableString(record.bgm_node_id, `${path}.bgm_node_id`),
-    bgm_asset_id: record.bgm_asset_id === undefined ? null : nullableString(record.bgm_asset_id, `${path}.bgm_asset_id`),
-    estimated_duration_seconds: expectFiniteNumber(record.estimated_duration_seconds, `${path}.estimated_duration_seconds`),
-    warnings: optionalStringArray(record.warnings, `${path}.warnings`, []),
-  };
+  return normalizeStrictRecord(value, path, {
+    clips: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) => normalizeEditingPreviewClipV2(item, `${fieldPath}[${index}]`)),
+    bgm_binding_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    bgm_node_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    bgm_asset_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    estimated_duration_seconds: expectFiniteNumber,
+    warnings: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+  } satisfies StrictRecordFieldsFor<EditingPreviewV2>);
 }
 
 export function normalizeEditingExportRuntimeV2(value: unknown, path = "editing.exportRuntime"): EditingExportRuntimeV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["export_id", "status", "manifest_revision", "fingerprint", "ready_video_node_ids", "skipped_inputs", "bgm_node_id", "output_asset_id", "error", "started_at", "finished_at"], path);
-  return {
-    export_id: expectNonEmptyString(record.export_id, `${path}.export_id`),
-    status: expectLiteral(record.status, EDITING_EXPORT_STATUSES, `${path}.status`),
-    manifest_revision: expectNonNegativeInteger(record.manifest_revision, `${path}.manifest_revision`),
-    fingerprint: expectNonEmptyString(record.fingerprint, `${path}.fingerprint`),
-    ready_video_node_ids: optionalStringArray(record.ready_video_node_ids, `${path}.ready_video_node_ids`, []),
-    skipped_inputs: expectArray(record.skipped_inputs, `${path}.skipped_inputs`).map((item, index) =>
-      normalizeEditingSkippedInputV2(item, `${path}.skipped_inputs[${index}]`),
+  return normalizeStrictRecord(value, path, {
+    export_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, EDITING_EXPORT_STATUSES, fieldPath),
+    manifest_revision: expectNonNegativeInteger,
+    fingerprint: expectNonEmptyString,
+    ready_video_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    skipped_inputs: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      normalizeEditingSkippedInputV2(item, `${fieldPath}[${index}]`),
     ),
-    bgm_node_id: record.bgm_node_id === undefined ? null : nullableString(record.bgm_node_id, `${path}.bgm_node_id`),
-    output_asset_id: record.output_asset_id === undefined ? null : nullableString(record.output_asset_id, `${path}.output_asset_id`),
-    error: record.error === null ? null : normalizeCanvasNodeErrorV2(record.error, `${path}.error`),
-    started_at: record.started_at === undefined ? null : nullableString(record.started_at, `${path}.started_at`),
-    finished_at: record.finished_at === undefined ? null : nullableString(record.finished_at, `${path}.finished_at`),
-  };
+    bgm_node_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    output_asset_id: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    error: (value, fieldPath) => value === null ? null : normalizeCanvasNodeErrorV2(value, fieldPath),
+    started_at: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    finished_at: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<EditingExportRuntimeV2>);
 }
 
 export function normalizeEditingNodeContentV2(value: unknown, path = "editing"): EditingNodeContentV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["manifest", "dirty", "preview", "last_successful_export", "active_export"], path);
-  return {
-    manifest: normalizeEditingManifestV2(record.manifest, `${path}.manifest`),
-    dirty: expectBoolean(record.dirty, `${path}.dirty`),
-    preview: normalizeEditingPreviewV2(record.preview, `${path}.preview`),
-    last_successful_export:
-      record.last_successful_export === null
+  return normalizeStrictRecord(value, path, {
+    manifest: normalizeEditingManifestV2,
+    dirty: expectBoolean,
+    preview: normalizeEditingPreviewV2,
+    last_successful_export: (value, fieldPath) => value === null
         ? null
-        : record.last_successful_export === undefined
+        : value === undefined
           ? null
-          : normalizeEditingExportRuntimeV2(record.last_successful_export, `${path}.last_successful_export`),
-    active_export:
-      record.active_export === null
+          : normalizeEditingExportRuntimeV2(value, fieldPath),
+    active_export: (value, fieldPath) => value === null
         ? null
-        : record.active_export === undefined
+        : value === undefined
           ? null
-          : normalizeEditingExportRuntimeV2(record.active_export, `${path}.active_export`),
-  };
+          : normalizeEditingExportRuntimeV2(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<EditingNodeContentV2>);
 }
 
 export function normalizeCanvasMutationResponseV2(
@@ -4811,110 +4497,71 @@ export function normalizeCanvasEditingExportImportResponseV2(
   value: unknown,
   path = "editingExportImport",
 ): CanvasEditingExportImportResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "workflow_id",
-    "revision",
-    "layout_revision",
-    "node",
-    "binding",
-    "asset",
-    "events_cursor",
-    "replayed",
-  ], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    revision: expectNonNegativeInteger(record.revision, `${path}.revision`),
-    layout_revision: expectNonNegativeInteger(record.layout_revision, `${path}.layout_revision`),
-    node: normalizeCanvasNodeV2(record.node, `${path}.node`),
-    binding: normalizeCanvasBindingV2(record.binding, `${path}.binding`),
-    asset: normalizeProjectAssetSummaryV2(record.asset, `${path}.asset`),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-    replayed: expectBoolean(record.replayed, `${path}.replayed`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    revision: expectNonNegativeInteger,
+    layout_revision: expectNonNegativeInteger,
+    node: normalizeCanvasNodeV2,
+    binding: normalizeCanvasBindingV2,
+    asset: normalizeProjectAssetSummaryV2,
+    events_cursor: expectNonNegativeInteger,
+    replayed: expectBoolean,
+  } satisfies StrictRecordFieldsFor<CanvasEditingExportImportResponseV2>);
 }
 
 export function normalizeCanvasVariationDraftResponseV2(
   value: unknown,
   path = "variationDraftResponse",
 ): CanvasVariationDraftResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "workflow_id",
-    "workflow_revision",
-    "node_id",
-    "variation_draft",
-  ], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    workflow_revision: expectPositiveInteger(record.workflow_revision, `${path}.workflow_revision`),
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    variation_draft: normalizeCanvasVariationDraftV2(record.variation_draft, `${path}.variation_draft`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    workflow_revision: expectPositiveInteger,
+    node_id: expectNonEmptyString,
+    variation_draft: normalizeCanvasVariationDraftV2,
+  } satisfies StrictRecordFieldsFor<CanvasVariationDraftResponseV2>);
 }
 
 export function normalizeCanvasVariationMaterializeResponseV2(
   value: unknown,
   path = "variationMaterialize",
 ): CanvasVariationMaterializeResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "workflow_id",
-    "workflow_revision",
-    "source_node_id",
-    "sibling_node",
-    "copied_binding_ids",
-    "run",
-    "run_error",
-    "placement_hint",
-    "created_node_ids",
-    "created_binding_ids",
-    "placement_hints",
-  ], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    workflow_revision: expectPositiveInteger(record.workflow_revision, `${path}.workflow_revision`),
-    source_node_id: expectNonEmptyString(record.source_node_id, `${path}.source_node_id`),
-    sibling_node: normalizeCanvasNodeV2(record.sibling_node, `${path}.sibling_node`),
-    copied_binding_ids: optionalStringArray(record.copied_binding_ids, `${path}.copied_binding_ids`, []),
-    run: record.run === null || record.run === undefined
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    workflow_revision: expectPositiveInteger,
+    source_node_id: expectNonEmptyString,
+    sibling_node: normalizeCanvasNodeV2,
+    copied_binding_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    run: (value, fieldPath) => value === null || value === undefined
       ? null
-      : expectUnknownRecord(record.run, `${path}.run`),
-    run_error: record.run_error === null || record.run_error === undefined
+      : expectUnknownRecord(value, fieldPath),
+    run_error: (value, fieldPath) => value === null || value === undefined
       ? null
-      : normalizeCanvasNodeErrorV2(record.run_error, `${path}.run_error`),
-    placement_hint: normalizeAgentPlacementHintV2(record.placement_hint, `${path}.placement_hint`),
-    created_node_ids: optionalStringArray(record.created_node_ids, `${path}.created_node_ids`, []),
-    created_binding_ids: optionalStringArray(
-      record.created_binding_ids,
-      `${path}.created_binding_ids`,
+      : normalizeCanvasNodeErrorV2(value, fieldPath),
+    placement_hint: normalizeAgentPlacementHintV2,
+    created_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    created_binding_ids: (value, fieldPath) => optionalStringArray(
+      value,
+      fieldPath,
       [],
     ),
-    placement_hints: expectArray(record.placement_hints ?? [], `${path}.placement_hints`)
+    placement_hints: (value, fieldPath) => expectArray(value ?? [], fieldPath)
       .map((item, index) => normalizeAgentPlacementHintV2(
         item,
-        `${path}.placement_hints[${index}]`,
+        `${fieldPath}[${index}]`,
       )),
-  };
+  } satisfies StrictRecordFieldsFor<CanvasVariationMaterializeResponseV2>);
 }
 
 export function normalizeCanvasLayoutPatchResponseV2(
   value: unknown,
   path = "layoutPatch",
 ): CanvasLayoutPatchResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "workflow_id",
-    "revision",
-    "layout_revision",
-    "positions",
-  ], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    layout_revision: expectPositiveInteger(record.layout_revision, `${path}.layout_revision`),
-    positions: expectArray(record.positions, `${path}.positions`).map((item, index) => {
-      const positionPath = `${path}.positions[${index}]`;
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    revision: expectPositiveInteger,
+    layout_revision: expectPositiveInteger,
+    positions: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) => {
+      const positionPath = `${fieldPath}[${index}]`;
       const position = expectRecord(item, positionPath);
       forbidUnknownFields(position, ["node_id", "x", "y"], positionPath);
       return {
@@ -4923,196 +4570,149 @@ export function normalizeCanvasLayoutPatchResponseV2(
         y: expectFiniteNumber(position.y, `${positionPath}.y`),
       };
     }),
-  };
+  } satisfies StrictRecordFieldsFor<CanvasLayoutPatchResponseV2>);
 }
 
 export function normalizeProjectAssetUploadResponseV2(
   value: unknown,
   path = "assetUpload",
 ): ProjectAssetUploadResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow_id", "asset", "pending_handoff_id"], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    asset: normalizeProjectAssetSummaryV2(record.asset, `${path}.asset`),
-    pending_handoff_id: nullableStringWithDefault(record.pending_handoff_id, `${path}.pending_handoff_id`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    asset: normalizeProjectAssetSummaryV2,
+    pending_handoff_id: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<ProjectAssetUploadResponseV2>);
 }
 
 export function normalizeProjectAssetListResponseV2(
   value: unknown,
   path = "assetList",
 ): ProjectAssetListResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow_id", "assets"], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    assets: expectArray(record.assets, `${path}.assets`).map((item, index) =>
-      normalizeProjectAssetSummaryV2(item, `${path}.assets[${index}]`),
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    assets: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      normalizeProjectAssetSummaryV2(item, `${fieldPath}[${index}]`),
     ),
-  };
+  } satisfies StrictRecordFieldsFor<ProjectAssetListResponseV2>);
 }
 
 export function normalizeAgentCanvasImageLibraryListResponseV2(
   value: unknown,
   path = "imageLibrary",
 ): AgentCanvasImageLibraryListResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["items"], path);
-  return {
-    items: expectArray(record.items, `${path}.items`).map((item, index) =>
-      expectUnknownRecord(item, `${path}.items[${index}]`),
+  return normalizeStrictRecord(value, path, {
+    items: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      expectUnknownRecord(item, `${fieldPath}[${index}]`),
     ),
-  };
+  } satisfies StrictRecordFieldsFor<AgentCanvasImageLibraryListResponseV2>);
 }
 
 function normalizeCreativeGoalV2(value: unknown, path: string): CreativeGoalV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "requested_output",
-    "delivery_scope",
-    "summary",
-    "explicit_constraints",
-  ], path);
-  return {
-    requested_output: expectLiteral(
-      record.requested_output,
+  return normalizeStrictRecord(value, path, {
+    requested_output: (value, fieldPath) => expectLiteral(
+      value,
       new Set<CreativeGoalV2["requested_output"]>(["text", "script", "image", "video", "audio"]),
-      `${path}.requested_output`,
+      fieldPath,
     ),
-    delivery_scope: expectLiteral(
-      record.delivery_scope,
+    delivery_scope: (value, fieldPath) => expectLiteral(
+      value,
       new Set<CreativeGoalV2["delivery_scope"]>(["draft", "generated_media"]),
-      `${path}.delivery_scope`,
+      fieldPath,
     ),
-    summary: expectNonEmptyString(record.summary, `${path}.summary`),
-    explicit_constraints: optionalUnknownRecord(
-      record.explicit_constraints,
-      `${path}.explicit_constraints`,
+    summary: expectNonEmptyString,
+    explicit_constraints: (value, fieldPath) => optionalUnknownRecord(
+      value,
+      fieldPath,
       {},
     ),
-  };
+  } satisfies StrictRecordFieldsFor<CreativeGoalV2>);
 }
 
 function normalizeCreativeElementDecisionV2(
   value: unknown,
   path: string,
 ): CreativeElementDecisionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["element_kind", "presence", "authority", "requirements", "source"], path);
-  return {
-    element_kind: expectLiteral(
-      record.element_kind,
+  return normalizeStrictRecord(value, path, {
+    element_kind: (value, fieldPath) => expectLiteral(
+      value,
       CREATIVE_ELEMENT_KINDS,
-      `${path}.element_kind`,
+      fieldPath,
     ),
-    presence: expectLiteral(
-      record.presence,
+    presence: (value, fieldPath) => expectLiteral(
+      value,
       new Set<CreativeElementDecisionV2["presence"]>(["include", "exclude", "unspecified"]),
-      `${path}.presence`,
+      fieldPath,
     ),
-    authority: expectLiteral(
-      record.authority,
+    authority: (value, fieldPath) => expectLiteral(
+      value,
       new Set<CreativeElementDecisionV2["authority"]>(["user", "agent"]),
-      `${path}.authority`,
+      fieldPath,
     ),
-    requirements: optionalUnknownRecord(record.requirements, `${path}.requirements`, {}),
-    source: expectLiteral(
-      record.source,
+    requirements: (value, fieldPath) => optionalUnknownRecord(value, fieldPath, {}),
+    source: (value, fieldPath) => expectLiteral(
+      value,
       new Set<CreativeElementDecisionV2["source"]>([
         "explicit_user",
         "accepted_proposal",
         "delegated_to_agent",
       ]),
-      `${path}.source`,
+      fieldPath,
     ),
-  };
+  } satisfies StrictRecordFieldsFor<CreativeElementDecisionV2>);
 }
 
 function normalizeGuidanceTopicStateV2(value: unknown, path: string): GuidanceTopicStateV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "topic_id",
-    "topic_kind",
-    "title",
-    "status",
-    "capability_id",
-    "capability_display_name",
-    "related_node_ids",
-    "source_proposal_id",
-    "revision",
-  ], path);
-  return {
-    topic_id: expectNonEmptyString(record.topic_id, `${path}.topic_id`),
-    topic_kind: expectLiteral(record.topic_kind, GUIDANCE_TOPIC_KINDS, `${path}.topic_kind`),
-    title: expectNonEmptyString(record.title, `${path}.title`),
-    status: expectLiteral(
-      record.status,
+  return normalizeStrictRecord(value, path, {
+    topic_id: expectNonEmptyString,
+    topic_kind: (value, fieldPath) => expectLiteral(value, GUIDANCE_TOPIC_KINDS, fieldPath),
+    title: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(
+      value,
       new Set<GuidanceTopicStateV2["status"]>(["proposed", "selected", "deferred", "excluded"]),
-      `${path}.status`,
+      fieldPath,
     ),
-    capability_id: expectLiteral(record.capability_id, AGENT_CAPABILITY_IDS, `${path}.capability_id`),
-    capability_display_name: expectNonEmptyString(
-      record.capability_display_name,
-      `${path}.capability_display_name`,
+    capability_id: (value, fieldPath) => expectLiteral(value, AGENT_CAPABILITY_IDS, fieldPath),
+    capability_display_name: (value, fieldPath) => expectNonEmptyString(
+      value,
+      fieldPath,
     ),
-    related_node_ids: optionalStringArray(record.related_node_ids, `${path}.related_node_ids`, []),
-    source_proposal_id: nullableStringWithDefault(record.source_proposal_id, `${path}.source_proposal_id`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-  };
+    related_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    source_proposal_id: nullableStringWithDefault,
+    revision: expectPositiveInteger,
+  } satisfies StrictRecordFieldsFor<GuidanceTopicStateV2>);
 }
 
 function normalizeGuidanceCompletionProjectionV2(
   value: unknown,
   path: string,
 ): GuidanceCompletionProjectionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "authoring",
-    "delivery",
-    "plan_document_id",
-    "plan_revision",
-    "editing_preparation",
-    "editing_node_id",
-    "preparation_receipt_id",
-    "manifest_revision",
-    "export_status",
-    "export_id",
-    "final_completion_receipt_id",
-    "final_asset_id",
-    "matching_node_ids",
-    "matching_asset_ids",
-  ], path);
-  return {
-    authoring: expectLiteral(
-      record.authoring ?? "not_ready",
+  return normalizeStrictRecord(value, path, {
+    authoring: (value, fieldPath) => expectLiteral(
+      value ?? "not_ready",
       new Set<GuidanceCompletionProjectionV2["authoring"]>(["not_ready", "ready"]),
-      `${path}.authoring`,
+      fieldPath,
     ),
-    delivery: expectLiteral(
-      record.delivery ?? "not_ready",
+    delivery: (value, fieldPath) => expectLiteral(
+      value ?? "not_ready",
       new Set<GuidanceCompletionProjectionV2["delivery"]>(["not_ready", "ready"]),
-      `${path}.delivery`,
+      fieldPath,
     ),
-    plan_document_id: nullableStringWithDefault(record.plan_document_id, `${path}.plan_document_id`),
-    plan_revision: record.plan_revision === undefined
+    plan_document_id: nullableStringWithDefault,
+    plan_revision: (value, fieldPath) => value === undefined
       ? null
-      : nullablePositiveInteger(record.plan_revision, `${path}.plan_revision`),
-    editing_preparation: expectLiteral(
-      record.editing_preparation ?? "not_ready",
+      : nullablePositiveInteger(value, fieldPath),
+    editing_preparation: (value, fieldPath) => expectLiteral(
+      value ?? "not_ready",
       new Set<GuidanceCompletionProjectionV2["editing_preparation"]>(["not_ready", "prepared"]),
-      `${path}.editing_preparation`,
+      fieldPath,
     ),
-    editing_node_id: nullableStringWithDefault(record.editing_node_id, `${path}.editing_node_id`),
-    preparation_receipt_id: nullableStringWithDefault(
-      record.preparation_receipt_id,
-      `${path}.preparation_receipt_id`,
-    ),
-    manifest_revision: record.manifest_revision === undefined
+    editing_node_id: nullableStringWithDefault,
+    preparation_receipt_id: nullableStringWithDefault,
+    manifest_revision: (value, fieldPath) => value === undefined
       ? null
-      : nullablePositiveInteger(record.manifest_revision, `${path}.manifest_revision`),
-    export_status: expectLiteral(
-      record.export_status ?? "not_started",
+      : nullablePositiveInteger(value, fieldPath),
+    export_status: (value, fieldPath) => expectLiteral(
+      value ?? "not_started",
       new Set<GuidanceCompletionProjectionV2["export_status"]>([
         "not_started",
         "queued",
@@ -5121,65 +4721,44 @@ function normalizeGuidanceCompletionProjectionV2(
         "failed",
         "cancelled",
       ]),
-      `${path}.export_status`,
+      fieldPath,
     ),
-    export_id: nullableStringWithDefault(record.export_id, `${path}.export_id`),
-    final_completion_receipt_id: nullableStringWithDefault(
-      record.final_completion_receipt_id,
-      `${path}.final_completion_receipt_id`,
-    ),
-    final_asset_id: nullableStringWithDefault(record.final_asset_id, `${path}.final_asset_id`),
-    matching_node_ids: optionalStringArray(record.matching_node_ids, `${path}.matching_node_ids`, []),
-    matching_asset_ids: optionalStringArray(record.matching_asset_ids, `${path}.matching_asset_ids`, []),
-  };
+    export_id: nullableStringWithDefault,
+    final_completion_receipt_id: nullableStringWithDefault,
+    final_asset_id: nullableStringWithDefault,
+    matching_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    matching_asset_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+  } satisfies StrictRecordFieldsFor<GuidanceCompletionProjectionV2>);
 }
 
 export function normalizeDecisionBundleV2(value: unknown, path = "decisionBundle"): DecisionBundleV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "bundle_id",
-    "workflow_id",
-    "conversation_id",
-    "source_turn_id",
-    "replacement_bundle_id",
-    "status",
-    "revision",
-    "title",
-    "introduction",
-    "questions",
-    "answers",
-    "requirement_revision_no",
-    "created_at",
-    "updated_at",
-    "closed_at",
-  ], path);
-  return {
-    bundle_id: expectNonEmptyString(record.bundle_id, `${path}.bundle_id`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    conversation_id: expectNonEmptyString(record.conversation_id, `${path}.conversation_id`),
-    source_turn_id: expectNonEmptyString(record.source_turn_id, `${path}.source_turn_id`),
-    replacement_bundle_id: nullableStringWithDefault(record.replacement_bundle_id, `${path}.replacement_bundle_id`),
-    status: expectLiteral(
-      record.status,
+  return normalizeStrictRecord(value, path, {
+    bundle_id: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    conversation_id: expectNonEmptyString,
+    source_turn_id: expectNonEmptyString,
+    replacement_bundle_id: nullableStringWithDefault,
+    status: (value, fieldPath) => expectLiteral(
+      value,
       new Set<DecisionBundleV2["status"]>(["open", "answered", "skipped", "superseded"]),
-      `${path}.status`,
+      fieldPath,
     ),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    title: expectNonEmptyString(record.title, `${path}.title`),
-    introduction: expectNonEmptyString(record.introduction, `${path}.introduction`),
-    questions: expectArray(record.questions ?? [], `${path}.questions`)
-      .map((item, index) => normalizeDecisionBundleQuestionV2(item, `${path}.questions[${index}]`)),
-    answers: expectArray(record.answers ?? [], `${path}.answers`)
-      .map((item, index) => normalizeDecisionBundleAnswerV2(item, `${path}.answers[${index}]`)),
-    requirement_revision_no: record.requirement_revision_no === undefined || record.requirement_revision_no === null
+    revision: expectPositiveInteger,
+    title: expectNonEmptyString,
+    introduction: expectNonEmptyString,
+    questions: (value, fieldPath) => expectArray(value ?? [], fieldPath)
+      .map((item, index) => normalizeDecisionBundleQuestionV2(item, `${fieldPath}[${index}]`)),
+    answers: (value, fieldPath) => expectArray(value ?? [], fieldPath)
+      .map((item, index) => normalizeDecisionBundleAnswerV2(item, `${fieldPath}[${index}]`)),
+    requirement_revision_no: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectPositiveInteger(record.requirement_revision_no, `${path}.requirement_revision_no`),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-    closed_at: record.closed_at === undefined || record.closed_at === null
+      : expectPositiveInteger(value, fieldPath),
+    created_at: expectIsoDateTimeString,
+    updated_at: expectIsoDateTimeString,
+    closed_at: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectIsoDateTimeString(record.closed_at, `${path}.closed_at`),
-  };
+      : expectIsoDateTimeString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<DecisionBundleV2>);
 }
 
 function normalizeDecisionBundleQuestionV2(value: unknown, path: string): DecisionBundleQuestionV2 {
@@ -5242,101 +4821,66 @@ export function normalizeDecisionBundleActionAcceptedV2(
   value: unknown,
   path = "decisionBundleAccepted",
 ): DecisionBundleActionAcceptedV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "workflow_id",
-    "bundle_id",
-    "status",
-    "revision",
-    "requirement_revision_no",
-    "turn_id",
-    "events_cursor",
-    "replayed",
-  ], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    bundle_id: expectNonEmptyString(record.bundle_id, `${path}.bundle_id`),
-    status: expectLiteral(record.status, new Set(["answered", "skipped"] as const), `${path}.status`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    requirement_revision_no: expectPositiveInteger(
-      record.requirement_revision_no,
-      `${path}.requirement_revision_no`,
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    bundle_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, new Set(["answered", "skipped"] as const), fieldPath),
+    revision: expectPositiveInteger,
+    requirement_revision_no: (value, fieldPath) => expectPositiveInteger(
+      value,
+      fieldPath,
     ),
-    turn_id: expectNonEmptyString(record.turn_id, `${path}.turn_id`),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-    replayed: record.replayed === undefined ? false : expectBoolean(record.replayed, `${path}.replayed`),
-  };
+    turn_id: expectNonEmptyString,
+    events_cursor: expectNonNegativeInteger,
+    replayed: (value, fieldPath) => value === undefined ? false : expectBoolean(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<DecisionBundleActionAcceptedV2>);
 }
 
 export function normalizeGuidedSessionStateV2(value: unknown, path = "creativeSession"): GuidedSessionStateV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "session_id",
-    "workflow_id",
-    "status",
-    "response_locale",
-    "goal",
-    "creative_authority",
-    "current_checkpoint",
-    "narrative_direction",
-    "element_decisions",
-    "current_topic_id",
-    "topics",
-    "active_proposal_id",
-    "active_style_skill_run_id",
-    "completion",
-    "journey",
-    "interaction",
-    "awaiting",
-    "actionable_failure",
-    "revision",
-    "updated_at",
-  ], path);
-  return {
-    session_id: expectNonEmptyString(record.session_id, `${path}.session_id`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    status: expectLiteral(
-      record.status,
+  return normalizeStrictRecord(value, path, {
+    session_id: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(
+      value,
       new Set<GuidedSessionStateV2["status"]>(["active", "paused", "completed"]),
-      `${path}.status`,
+      fieldPath,
     ),
-    // Older persisted sessions predate the additive field; new responses always provide it.
-    response_locale: record.response_locale === undefined
+    response_locale: (value, fieldPath) => value === undefined
       ? "und"
-      : expectNonEmptyString(record.response_locale, `${path}.response_locale`),
-    goal: normalizeCreativeGoalV2(record.goal, `${path}.goal`),
-    creative_authority: record.creative_authority === undefined || record.creative_authority === null
+      : expectNonEmptyString(value, fieldPath),
+    goal: normalizeCreativeGoalV2,
+    creative_authority: (value, fieldPath) => value === undefined || value === null
       ? null
-      : normalizeCreativeAuthorityStateV2(record.creative_authority, `${path}.creative_authority`),
-    current_checkpoint: record.current_checkpoint === undefined || record.current_checkpoint === null
+      : normalizeCreativeAuthorityStateV2(value, fieldPath),
+    current_checkpoint: (value, fieldPath) => value === undefined || value === null
       ? null
-      : normalizeGuidedStepCheckpointV2(record.current_checkpoint, `${path}.current_checkpoint`),
-    narrative_direction: nullableStringWithDefault(record.narrative_direction, `${path}.narrative_direction`),
-    element_decisions: expectArray(record.element_decisions ?? [], `${path}.element_decisions`)
-      .map((item, index) => normalizeCreativeElementDecisionV2(item, `${path}.element_decisions[${index}]`)),
-    current_topic_id: nullableStringWithDefault(record.current_topic_id, `${path}.current_topic_id`),
-    topics: expectArray(record.topics ?? [], `${path}.topics`)
-      .map((item, index) => normalizeGuidanceTopicStateV2(item, `${path}.topics[${index}]`)),
-    active_proposal_id: nullableStringWithDefault(record.active_proposal_id, `${path}.active_proposal_id`),
-    active_style_skill_run_id: nullableStringWithDefault(
-      record.active_style_skill_run_id,
-      `${path}.active_style_skill_run_id`,
+      : normalizeGuidedStepCheckpointV2(value, fieldPath),
+    narrative_direction: nullableStringWithDefault,
+    element_decisions: (value, fieldPath) => expectArray(value ?? [], fieldPath)
+      .map((item, index) => normalizeCreativeElementDecisionV2(item, `${fieldPath}[${index}]`)),
+    current_topic_id: nullableStringWithDefault,
+    topics: (value, fieldPath) => expectArray(value ?? [], fieldPath)
+      .map((item, index) => normalizeGuidanceTopicStateV2(item, `${fieldPath}[${index}]`)),
+    active_proposal_id: nullableStringWithDefault,
+    active_style_skill_run_id: (value, fieldPath) => nullableStringWithDefault(
+      value,
+      fieldPath,
     ),
-    completion: normalizeGuidanceCompletionProjectionV2(record.completion ?? {}, `${path}.completion`),
-    journey: normalizeGuidedProductionJourneyV2(record.journey, `${path}.journey`),
-    interaction: record.interaction === undefined || record.interaction === null
+    completion: (value, fieldPath) => normalizeGuidanceCompletionProjectionV2(value ?? {}, fieldPath),
+    journey: normalizeGuidedProductionJourneyV2,
+    interaction: (value, fieldPath) => value === undefined || value === null
       ? null
-      : normalizeGuidedInteractionV1(record.interaction, `${path}.interaction`),
-    awaiting: record.awaiting === undefined || record.awaiting === null
+      : normalizeGuidedInteractionV1(value, fieldPath),
+    awaiting: (value, fieldPath) => value === undefined || value === null
       ? null
-      : normalizeGuidanceAwaitingV1(record.awaiting, `${path}.awaiting`),
-    actionable_failure: nullableActionableFailureV1(
-      record.actionable_failure,
-      `${path}.actionable_failure`,
+      : normalizeGuidanceAwaitingV1(value, fieldPath),
+    actionable_failure: (value, fieldPath) => nullableActionableFailureV1(
+      value,
+      fieldPath,
     ),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+    revision: expectPositiveInteger,
+    updated_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<GuidedSessionStateV2>);
 }
 
 export function normalizeGuidanceAdvancePreconditionV1(
@@ -5577,15 +5121,23 @@ function normalizeGuidedQuestionV1(value: unknown, path: string) {
 }
 
 function normalizeGuidedChoiceOptionV1(value: unknown, path: string) {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["option_id", "title", "summary", "difference_tags", "recommended", "reference_preview"], path);
-  return { option_id: expectNonEmptyString(record.option_id, `${path}.option_id`), title: expectNonEmptyString(record.title, `${path}.title`), summary: expectNonEmptyString(record.summary, `${path}.summary`), difference_tags: optionalStringArray(record.difference_tags, `${path}.difference_tags`, []), recommended: record.recommended === undefined ? false : expectBoolean(record.recommended, `${path}.recommended`), reference_preview: expectArray(record.reference_preview ?? [], `${path}.reference_preview`).map((item, index) => normalizeGuidedReferencePreviewV1(item, `${path}.reference_preview[${index}]`)) };
+  return normalizeStrictRecord(value, path, {
+    option_id: expectNonEmptyString,
+    title: expectNonEmptyString,
+    summary: expectNonEmptyString,
+    difference_tags: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    recommended: (value, fieldPath) => value === undefined ? false : expectBoolean(value, fieldPath),
+    reference_preview: (value, fieldPath) => expectArray(value ?? [], fieldPath).map((item, index) => normalizeGuidedReferencePreviewV1(item, `${fieldPath}[${index}]`)),
+  } satisfies StrictRecordFieldsFor<Extract<GuidedInteractionContentV1, { content_kind: "concept_choice" }>["options"][number]>);
 }
 
 function normalizeGuidedReferencePreviewV1(value: unknown, path: string) {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["source_kind", "source_id", "display_name", "media_type"], path);
-  return { source_kind: expectLiteral(record.source_kind, new Set(["node", "image_asset"] as const), `${path}.source_kind`), source_id: expectNonEmptyString(record.source_id, `${path}.source_id`), display_name: expectNonEmptyString(record.display_name, `${path}.display_name`), media_type: expectLiteral(record.media_type, new Set(["text", "image", "video", "audio"] as const), `${path}.media_type`) };
+  return normalizeStrictRecord(value, path, {
+    source_kind: (value, fieldPath) => expectLiteral(value, new Set(["node", "image_asset"] as const), fieldPath),
+    source_id: expectNonEmptyString,
+    display_name: expectNonEmptyString,
+    media_type: (value, fieldPath) => expectLiteral(value, new Set(["text", "image", "video", "audio"] as const), fieldPath),
+  } satisfies StrictRecordFieldsFor<Extract<GuidedInteractionContentV1, { content_kind: "concept_choice" }>["options"][number]["reference_preview"][number]>);
 }
 
 function normalizeGuidanceAwaitingV1(value: unknown, path: string): GuidanceAwaitingV1 {
@@ -5625,9 +5177,20 @@ function normalizeGuidanceAwaitingV1(value: unknown, path: string): GuidanceAwai
 }
 
 export function normalizeGuidedInteractionAcceptedV1(value: unknown, path = "guidedInteractionAccepted"): GuidedInteractionAcceptedV1 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow_id", "interaction_id", "submission_id", "receipt_id", "created_node_ids", "created_binding_ids", "document_revisions", "continuation_id", "automatic_run_command_ids", "resulting_session_revision", "events_cursor", "replayed"], path);
-  return { workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`), interaction_id: expectNonEmptyString(record.interaction_id, `${path}.interaction_id`), submission_id: expectNonEmptyString(record.submission_id, `${path}.submission_id`), receipt_id: expectNonEmptyString(record.receipt_id, `${path}.receipt_id`), created_node_ids: optionalStringArray(record.created_node_ids, `${path}.created_node_ids`, []), created_binding_ids: optionalStringArray(record.created_binding_ids, `${path}.created_binding_ids`, []), document_revisions: normalizeDocumentRevisions(record.document_revisions, `${path}.document_revisions`), continuation_id: nullableStringWithDefault(record.continuation_id, `${path}.continuation_id`), automatic_run_command_ids: optionalStringArray(record.automatic_run_command_ids, `${path}.automatic_run_command_ids`, []), resulting_session_revision: expectPositiveInteger(record.resulting_session_revision, `${path}.resulting_session_revision`), events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`), replayed: record.replayed === undefined ? false : expectBoolean(record.replayed, `${path}.replayed`) };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    interaction_id: expectNonEmptyString,
+    submission_id: expectNonEmptyString,
+    receipt_id: expectNonEmptyString,
+    created_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    created_binding_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    document_revisions: normalizeDocumentRevisions,
+    continuation_id: nullableStringWithDefault,
+    automatic_run_command_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    resulting_session_revision: expectPositiveInteger,
+    events_cursor: expectNonNegativeInteger,
+    replayed: (value, fieldPath) => value === undefined ? false : expectBoolean(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<GuidedInteractionAcceptedV1>);
 }
 
 function normalizeGuidedProductionJourneyV2(
@@ -5723,222 +5286,152 @@ function normalizeGuidedProductionJourneyV2(
 }
 
 function normalizeJourneyElementDecisionV2(value: unknown, path: string): JourneyElementDecisionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "decision_id",
-    "element_kind",
-    "occurrence_id",
-    "occurrence_index",
-    "outcome",
-    "source",
-    "source_revision",
-    "requirements",
-  ], path);
-  return {
-    decision_id: expectNonEmptyString(record.decision_id, `${path}.decision_id`),
-    element_kind: expectNonEmptyString(record.element_kind, `${path}.element_kind`),
-    occurrence_id: expectNonEmptyString(record.occurrence_id, `${path}.occurrence_id`),
-    occurrence_index: expectPositiveInteger(record.occurrence_index, `${path}.occurrence_index`),
-    outcome: expectLiteral(record.outcome, JOURNEY_DECISION_OUTCOMES, `${path}.outcome`),
-    source: expectLiteral(record.source, JOURNEY_DECISION_SOURCES, `${path}.source`),
-    source_revision: expectPositiveInteger(record.source_revision, `${path}.source_revision`),
-    requirements: expectRecordValue(record.requirements ?? {}, `${path}.requirements`),
-  };
+  return normalizeStrictRecord(value, path, {
+    decision_id: expectNonEmptyString,
+    element_kind: expectNonEmptyString,
+    occurrence_id: expectNonEmptyString,
+    occurrence_index: expectPositiveInteger,
+    outcome: (value, fieldPath) => expectLiteral(value, JOURNEY_DECISION_OUTCOMES, fieldPath),
+    source: (value, fieldPath) => expectLiteral(value, JOURNEY_DECISION_SOURCES, fieldPath),
+    source_revision: expectPositiveInteger,
+    requirements: (value, fieldPath) => expectRecordValue(value ?? {}, fieldPath),
+  } satisfies StrictRecordFieldsFor<JourneyElementDecisionV2>);
 }
 
 function normalizeJourneyActionProjectionV2(value: unknown, path: string): JourneyActionProjectionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "action_id",
-    "action_kind",
-    "stage",
-    "stage_revision",
-    "status",
-    "turn_id",
-    "occurrence_id",
-    "character_phase",
-  ], path);
-  return {
-    action_id: expectNonEmptyString(record.action_id, `${path}.action_id`),
-    action_kind: expectNonEmptyString(record.action_kind, `${path}.action_kind`),
-    stage: expectLiteral(record.stage, GUIDED_JOURNEY_STAGES, `${path}.stage`),
-    stage_revision: expectPositiveInteger(record.stage_revision, `${path}.stage_revision`),
-    status: expectLiteral(record.status, JOURNEY_ACTION_STATUSES, `${path}.status`),
-    turn_id: record.turn_id === undefined || record.turn_id === null
+  return normalizeStrictRecord(value, path, {
+    action_id: expectNonEmptyString,
+    action_kind: expectNonEmptyString,
+    stage: (value, fieldPath) => expectLiteral(value, GUIDED_JOURNEY_STAGES, fieldPath),
+    stage_revision: expectPositiveInteger,
+    status: (value, fieldPath) => expectLiteral(value, JOURNEY_ACTION_STATUSES, fieldPath),
+    turn_id: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectNonEmptyString(record.turn_id, `${path}.turn_id`),
-    occurrence_id: record.occurrence_id === undefined || record.occurrence_id === null
+      : expectNonEmptyString(value, fieldPath),
+    occurrence_id: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectNonEmptyString(record.occurrence_id, `${path}.occurrence_id`),
-    character_phase: record.character_phase === undefined || record.character_phase === null
+      : expectNonEmptyString(value, fieldPath),
+    character_phase: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectLiteral(record.character_phase, new Set(["main", "turnaround"] as const), `${path}.character_phase`),
-  };
+      : expectLiteral(value, new Set(["main", "turnaround"] as const), fieldPath),
+  } satisfies StrictRecordFieldsFor<JourneyActionProjectionV2>);
 }
 
 function normalizeJourneyTransitionEvidenceV2(
   value: unknown,
   path: string,
 ): JourneyTransitionEvidenceV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "evidence_id",
-    "evidence_kind",
-    "source_id",
-    "source_revision",
-    "stage",
-    "stage_revision",
-    "occurrence_id",
-    "character_phase",
-    "actor",
-    "recorded_at",
-  ], path);
-  return {
-    evidence_id: expectNonEmptyString(record.evidence_id, `${path}.evidence_id`),
-    evidence_kind: expectLiteral(record.evidence_kind, JOURNEY_EVIDENCE_KINDS, `${path}.evidence_kind`),
-    source_id: expectNonEmptyString(record.source_id, `${path}.source_id`),
-    source_revision: record.source_revision === undefined || record.source_revision === null
+  return normalizeStrictRecord(value, path, {
+    evidence_id: expectNonEmptyString,
+    evidence_kind: (value, fieldPath) => expectLiteral(value, JOURNEY_EVIDENCE_KINDS, fieldPath),
+    source_id: expectNonEmptyString,
+    source_revision: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectPositiveInteger(record.source_revision, `${path}.source_revision`),
-    stage: expectLiteral(record.stage, GUIDED_JOURNEY_STAGES, `${path}.stage`),
-    stage_revision: expectPositiveInteger(record.stage_revision, `${path}.stage_revision`),
-    occurrence_id: nullableStringWithDefault(record.occurrence_id, `${path}.occurrence_id`),
-    character_phase: record.character_phase === undefined || record.character_phase === null
+      : expectPositiveInteger(value, fieldPath),
+    stage: (value, fieldPath) => expectLiteral(value, GUIDED_JOURNEY_STAGES, fieldPath),
+    stage_revision: expectPositiveInteger,
+    occurrence_id: nullableStringWithDefault,
+    character_phase: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectLiteral(record.character_phase, new Set(["main", "turnaround"] as const), `${path}.character_phase`),
-    actor: record.actor === undefined
+      : expectLiteral(value, new Set(["main", "turnaround"] as const), fieldPath),
+    actor: (value, fieldPath) => value === undefined
       ? "system"
-      : expectLiteral(record.actor, JOURNEY_DECISION_SOURCES, `${path}.actor`),
-    recorded_at: expectIsoDateTimeString(record.recorded_at, `${path}.recorded_at`),
-  };
+      : expectLiteral(value, JOURNEY_DECISION_SOURCES, fieldPath),
+    recorded_at: expectIsoDateTimeString,
+  } satisfies StrictRecordFieldsFor<JourneyTransitionEvidenceV2>);
 }
 
 function normalizeGuidanceSessionActionV2(
   value: unknown,
   path: string,
 ): GuidanceSessionActionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "action_id",
-    "logical_key",
-    "action",
-    "state",
-    "creating_turn_id",
-    "expected_session_revision",
-    "label",
-    "workflow_id",
-    "confirmation_required",
-    "reason",
-    "authority",
-  ], path);
-  return {
-    action_id: expectNonEmptyString(record.action_id, `${path}.action_id`),
-    logical_key: expectNonEmptyString(record.logical_key, `${path}.logical_key`),
-    action: expectLiteral(
-      record.action,
+  return normalizeStrictRecord(value, path, {
+    action_id: expectNonEmptyString,
+    logical_key: expectNonEmptyString,
+    action: (value, fieldPath) => expectLiteral(
+      value,
       new Set<GuidanceSessionActionV2["action"]>([
         "stop_guidance",
         "resume_guidance",
         "set_creative_authority",
       ]),
-      `${path}.action`,
+      fieldPath,
     ),
-    state: expectLiteral(
-      record.state,
+    state: (value, fieldPath) => expectLiteral(
+      value,
       new Set<GuidanceSessionActionV2["state"]>(["pending", "applying", "applied", "superseded", "failed"]),
-      `${path}.state`,
+      fieldPath,
     ),
-    creating_turn_id: expectNonEmptyString(record.creating_turn_id, `${path}.creating_turn_id`),
-    expected_session_revision: expectPositiveInteger(
-      record.expected_session_revision,
-      `${path}.expected_session_revision`,
-    ),
-    label: expectNonEmptyString(record.label, `${path}.label`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    confirmation_required: expectBoolean(record.confirmation_required, `${path}.confirmation_required`),
-    reason: expectNonEmptyString(record.reason, `${path}.reason`),
-    authority: record.authority === undefined || record.authority === null
+    creating_turn_id: expectNonEmptyString,
+    expected_session_revision: expectPositiveInteger,
+    label: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    confirmation_required: expectBoolean,
+    reason: expectNonEmptyString,
+    authority: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectLiteral(record.authority, new Set(["user", "director"] as const), `${path}.authority`),
-  };
+      : expectLiteral(value, new Set(["user", "director"] as const), fieldPath),
+  } satisfies StrictRecordFieldsFor<GuidanceSessionActionV2>);
 }
 
 function normalizeCreativeAuthorityStateV2(
   value: unknown,
   path: string,
 ): GuidedSessionStateV2["creative_authority"] {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["authority", "source", "decided_at_turn_id", "revision"], path);
-  return {
-    authority: expectLiteral(record.authority, new Set(["user", "director"] as const), `${path}.authority`),
-    source: expectLiteral(
-      record.source,
+  return normalizeStrictRecord(value, path, {
+    authority: (value, fieldPath) => expectLiteral(value, new Set(["user", "director"] as const), fieldPath),
+    source: (value, fieldPath) => expectLiteral(
+      value,
       new Set(["explicit_user", "explicit_delegation", "director_inference"] as const),
-      `${path}.source`,
+      fieldPath,
     ),
-    decided_at_turn_id: expectNonEmptyString(record.decided_at_turn_id, `${path}.decided_at_turn_id`),
-    revision: expectPositiveInteger(record.revision, `${path}.revision`),
-  };
+    decided_at_turn_id: expectNonEmptyString,
+    revision: expectPositiveInteger,
+  } satisfies StrictRecordFieldsFor<GuidedSessionStateV2["creative_authority"]>);
 }
 
 function normalizeGuidedStepCheckpointV2(
   value: unknown,
   path: string,
 ): GuidedSessionStateV2["current_checkpoint"] {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, [
-    "checkpoint_id",
-    "workflow_id",
-    "session_revision",
-    "stage_kind",
-    "status",
-    "trigger",
-    "action_id",
-  ], path);
-  return {
-    checkpoint_id: expectNonEmptyString(record.checkpoint_id, `${path}.checkpoint_id`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    session_revision: expectPositiveInteger(record.session_revision, `${path}.session_revision`),
-    stage_kind: record.stage_kind === undefined || record.stage_kind === null
+  return normalizeStrictRecord(value, path, {
+    checkpoint_id: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    session_revision: expectPositiveInteger,
+    stage_kind: (value, fieldPath) => value === undefined || value === null
       ? null
       : expectLiteral(
-        record.stage_kind,
+        value,
         new Set([
           "world_setting", "narrative_direction", "product", "prop", "character", "scene",
           "script", "storyboard", "video", "bgm", "editing",
         ] as const),
-        `${path}.stage_kind`,
+        fieldPath,
       ),
-    status: expectLiteral(
-      record.status,
+    status: (value, fieldPath) => expectLiteral(
+      value,
       new Set(["pending", "waiting_user", "completed", "failed", "superseded"] as const),
-      `${path}.status`,
+      fieldPath,
     ),
-    trigger: expectLiteral(
-      record.trigger,
+    trigger: (value, fieldPath) => expectLiteral(
+      value,
       new Set(["user_message", "proposal_action", "continuation", "recovery"] as const),
-      `${path}.trigger`,
+      fieldPath,
     ),
-    action_id: nullableStringWithDefault(record.action_id, `${path}.action_id`),
-  };
+    action_id: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<GuidedSessionStateV2["current_checkpoint"]>);
 }
 
 function normalizeCreationModeDecisionV2(
   value: unknown,
   path: string,
 ): CreationModeDecisionV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    ["mode", "reason", "target_node_id", "target_asset_id"],
-    path,
-  );
-  return {
-    mode: expectLiteral(record.mode, CREATION_MODES, `${path}.mode`),
-    reason: expectNonEmptyString(record.reason, `${path}.reason`),
-    target_node_id: nullableStringWithDefault(record.target_node_id, `${path}.target_node_id`),
-    target_asset_id: nullableStringWithDefault(record.target_asset_id, `${path}.target_asset_id`),
-  };
+  return normalizeStrictRecord(value, path, {
+    mode: (value, fieldPath) => expectLiteral(value, CREATION_MODES, fieldPath),
+    reason: expectNonEmptyString,
+    target_node_id: nullableStringWithDefault,
+    target_asset_id: nullableStringWithDefault,
+  } satisfies StrictRecordFieldsFor<CreationModeDecisionV2>);
 }
 
 function normalizeAgentCanvasChatTimelineEntryV2(
@@ -6251,48 +5744,31 @@ export function normalizeAgentCanvasVideoSkillRunV2(
   value: unknown,
   path = "videoSkillRun",
 ): AgentCanvasVideoSkillRunV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "skill_run_id",
-      "workflow_id",
-      "skill_id",
-      "skill_version",
-      "source_skill_run_id",
-      "status",
-      "active_creative_direction_snapshot_id",
-      "public_skill",
-      "created_at",
-      "updated_at",
-    ],
-    path,
-  );
-  return {
-    skill_run_id: expectNonEmptyString(record.skill_run_id, `${path}.skill_run_id`),
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    skill_id: expectNonEmptyString(record.skill_id, `${path}.skill_id`),
-    skill_version: expectNonEmptyString(record.skill_version, `${path}.skill_version`),
-    source_skill_run_id: record.source_skill_run_id === undefined
+  return normalizeStrictRecord(value, path, {
+    skill_run_id: expectNonEmptyString,
+    workflow_id: expectNonEmptyString,
+    skill_id: expectNonEmptyString,
+    skill_version: expectNonEmptyString,
+    source_skill_run_id: (value, fieldPath) => value === undefined
       ? null
-      : nullableString(record.source_skill_run_id, `${path}.source_skill_run_id`),
-    status: expectLiteral(
-      record.status ?? "active",
+      : nullableString(value, fieldPath),
+    status: (value, fieldPath) => expectLiteral(
+      value ?? "active",
       new Set<AgentCanvasVideoSkillRunV2["status"]>(["active", "superseded"]),
-      `${path}.status`,
+      fieldPath,
     ),
-    active_creative_direction_snapshot_id: nullableStringWithDefault(
-      record.active_creative_direction_snapshot_id,
-      `${path}.active_creative_direction_snapshot_id`,
+    active_creative_direction_snapshot_id: (value, fieldPath) => nullableStringWithDefault(
+      value,
+      fieldPath,
     ),
-    public_skill: record.public_skill === undefined || record.public_skill === null
+    public_skill: (value, fieldPath) => value === undefined || value === null
       ? null
-      : normalizeVideoSkillPublicDetailV2(record.public_skill, `${path}.public_skill`),
-    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
-    updated_at: record.updated_at === undefined || record.updated_at === null
+      : normalizeVideoSkillPublicDetailV2(value, fieldPath),
+    created_at: expectIsoDateTimeString,
+    updated_at: (value, fieldPath) => value === undefined || value === null
       ? null
-      : expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
-  };
+      : expectIsoDateTimeString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<AgentCanvasVideoSkillRunV2>);
 }
 
 export function normalizeCanvasRunAcceptedV2(
@@ -6348,15 +5824,13 @@ export function normalizeCanvasRunCancelResponseV2(
   value: unknown,
   path = "runCancel",
 ): CanvasRunCancelResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow_id", "execution_id", "status", "cancelled_node_ids", "events_cursor"], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    execution_id: expectNonEmptyString(record.execution_id, `${path}.execution_id`),
-    status: expectLiteral(record.status, new Set<CanvasRunCancelResponseV2["status"]>(["cancelled"]), `${path}.status`),
-    cancelled_node_ids: optionalStringArray(record.cancelled_node_ids, `${path}.cancelled_node_ids`, []),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    execution_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, new Set<CanvasRunCancelResponseV2["status"]>(["cancelled"]), fieldPath),
+    cancelled_node_ids: (value, fieldPath) => optionalStringArray(value, fieldPath, []),
+    events_cursor: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<CanvasRunCancelResponseV2>);
 }
 
 export function normalizeCanvasRuntimeEventsResponseV2(
@@ -6378,50 +5852,32 @@ export function normalizeEditingExportAcceptedV2(
   value: unknown,
   path = "editingExportAccepted",
 ): EditingExportAcceptedV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(
-    record,
-    [
-      "workflow_id",
-      "node_id",
-      "export_id",
-      "status",
-      "manifest_revision",
-      "ready_video_node_ids",
-      "skipped_inputs",
-      "bgm_node_id",
-      "events_cursor",
-    ],
-    path,
-  );
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    export_id: expectNonEmptyString(record.export_id, `${path}.export_id`),
-    status: expectLiteral(record.status, EDITING_EXPORT_STATUSES, `${path}.status`),
-    manifest_revision: expectNonNegativeInteger(record.manifest_revision, `${path}.manifest_revision`),
-    ready_video_node_ids: expectStringArray(record.ready_video_node_ids, `${path}.ready_video_node_ids`),
-    skipped_inputs: expectArray(record.skipped_inputs, `${path}.skipped_inputs`).map((item, index) =>
-      normalizeEditingSkippedInputV2(item, `${path}.skipped_inputs[${index}]`),
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    node_id: expectNonEmptyString,
+    export_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, EDITING_EXPORT_STATUSES, fieldPath),
+    manifest_revision: expectNonNegativeInteger,
+    ready_video_node_ids: expectStringArray,
+    skipped_inputs: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      normalizeEditingSkippedInputV2(item, `${fieldPath}[${index}]`),
     ),
-    bgm_node_id: nullableString(record.bgm_node_id, `${path}.bgm_node_id`),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-  };
+    bgm_node_id: nullableString,
+    events_cursor: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<EditingExportAcceptedV2>);
 }
 
 export function normalizeEditingExportCancelResponseV2(
   value: unknown,
   path = "editingExportCancel",
 ): EditingExportCancelResponseV2 {
-  const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["workflow_id", "node_id", "export_id", "status", "events_cursor"], path);
-  return {
-    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
-    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
-    export_id: expectNonEmptyString(record.export_id, `${path}.export_id`),
-    status: expectLiteral(record.status, new Set<EditingExportCancelResponseV2["status"]>(["cancelled"]), `${path}.status`),
-    events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
-  };
+  return normalizeStrictRecord(value, path, {
+    workflow_id: expectNonEmptyString,
+    node_id: expectNonEmptyString,
+    export_id: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, new Set<EditingExportCancelResponseV2["status"]>(["cancelled"]), fieldPath),
+    events_cursor: expectNonNegativeInteger,
+  } satisfies StrictRecordFieldsFor<EditingExportCancelResponseV2>);
 }
 
 

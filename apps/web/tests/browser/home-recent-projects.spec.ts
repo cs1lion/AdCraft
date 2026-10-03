@@ -52,7 +52,7 @@ for (const width of [1440, 390]) {
     await expect(section.locator("[data-project-id]")).toHaveCount(4);
     await expect(section.getByRole("button", { name: "View all" })).toHaveCount(0);
     await expect(section.locator(".section-title p")).toHaveCount(0);
-    await expect(section.locator(".home-recent-actions")).toHaveCount(0);
+    await expect(section.locator(".recent__actions")).toHaveCount(0);
     await section.scrollIntoViewIfNeeded();
     await expect(section.getByText("No cover yet")).toHaveCount(2);
     for (const img of await section.locator("img").all()) {

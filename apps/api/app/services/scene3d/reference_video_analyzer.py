@@ -30,6 +30,9 @@ from app.services.scene3d.reference_upload import (
     VideoMetadata,
     extract_keyframes_from_video,
     extract_metadata,
+    validate_frame_count,
+    validate_metadata,
+    validate_upload,
 )
 
 
@@ -554,9 +557,10 @@ def analyze_reference_video(
 
     Args:
         video_path: Path to the uploaded video file.
-        num_frames: Number of evenly-spaced frames to extract and analyze.
+        num_frames: Number of evenly-spaced frames to extract and analyze (1..12).
         user_description: Optional user-provided description to guide analysis.
-        output_dir: Directory to save extracted frames. Defaults to temp dir.
+        output_dir: Caller-owned frame directory, preserved on success and failure.
+            If omitted, temporary frames are cleaned up on every exit path.
 
     Returns:
         ReferenceVideoAnalysisResult with SceneScript, frame analyses, and summary.
@@ -565,22 +569,39 @@ def analyze_reference_video(
         AnalysisError: If analysis fails at any stage.
     """
     video_path = Path(video_path)
-    if not video_path.exists():
-        raise AnalysisError(f"Video file not found: {video_path}", error_type="input")
+    try:
+        validate_frame_count(num_frames)
+        validate_upload(video_path.name, video_path.stat().st_size)
+    except Exception as e:
+        raise AnalysisError(f"Invalid reference video input: {e}", error_type="input") from e
 
-    # Extract metadata
+    # Reject invalid metadata before extraction, temporary directories, or paid calls.
     try:
         video_metadata = extract_metadata(video_path)
+        validate_metadata(video_metadata)
     except Exception as e:
-        raise AnalysisError(f"Failed to extract video metadata: {e}", error_type="metadata") from e
+        raise AnalysisError(f"Invalid video metadata: {e}", error_type="metadata") from e
 
-    # Extract frames
     if output_dir is None:
-        output_dir = Path(tempfile.mkdtemp(prefix="ref_video_frames_"))
-    else:
-        output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        # Results contain analyses, not frame paths; owned frames are always disposable.
+        with tempfile.TemporaryDirectory(prefix="ref_video_frames_") as temp_dir:
+            return _analyze_validated_reference_video(
+                video_path, num_frames, user_description, Path(temp_dir), video_metadata,
+            )
+    return _analyze_validated_reference_video(
+        video_path, num_frames, user_description, Path(output_dir), video_metadata,
+    )
 
+
+def _analyze_validated_reference_video(
+    video_path: Path,
+    num_frames: int,
+    user_description: str | None,
+    output_dir: Path,
+    video_metadata: VideoMetadata,
+) -> ReferenceVideoAnalysisResult:
+    """Extract and analyze validated input; caller owns the output directory."""
+    output_dir.mkdir(parents=True, exist_ok=True)
     try:
         frame_paths = extract_keyframes_from_video(
             video_path=video_path,

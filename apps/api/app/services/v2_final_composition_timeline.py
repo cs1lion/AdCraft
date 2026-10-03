@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.services.v2_composition_render_mode import effective_composition_render_mode
 from app.schemas.workflow_v2 import (
     V2ProviderResult,
     V2FinalCompositionFingerprint,
@@ -286,6 +288,43 @@ class V2FinalCompositionTimelineService:
             runtime=self._runtime_snapshot(workflow).model_dump(mode="json"),
         )
 
+    def save_system_timeline(
+        self,
+        workflow_id: str,
+        timeline: WorkflowV2Timeline,
+        *,
+        expected_version: int,
+    ) -> WorkflowV2TimelineUpdateResponse:
+        """Save an automatic composition without claiming or replacing user edits."""
+        workflow = self._load_workflow(workflow_id)
+        item, _slot = self._final_item_and_slot(workflow)
+        current = self._load_timeline(workflow_id)
+        if current is None:
+            current = self.get_timeline(workflow_id).timeline
+        if expected_version != current.version:
+            raise V2FinalCompositionTimelineError(
+                "v2_timeline_version_conflict", "Timeline version does not match expected_version.",
+                status_code=409,
+            )
+        if current.metadata.get("edit_mode") == "user_edited":
+            raise V2FinalCompositionTimelineError(
+                "replica_user_timeline_preserved", "User-edited timeline must not be replaced automatically.",
+                status_code=409,
+            )
+        incoming = timeline.model_copy(deep=True)
+        self._validate_timeline(workflow_id, incoming)
+        changed = _changed_clip_ids(current, incoming)
+        incoming = incoming.model_copy(update={"version": current.version + 1,
+            "metadata": {**incoming.metadata, "edit_mode": "system_default",
+                "source_selection_hash": self._source_selection_hash(workflow),
+                "updated_by": "system", "updated_at": utc_now().isoformat()}}, deep=True)
+        self._write_timeline(workflow_id, incoming)
+        self._project_compatibility_timeline(item, incoming)
+        workflow = self._commit_semantic_workflow(workflow, source="timeline_edit")
+        self._emit_timeline_updated(workflow, incoming, changed_clip_ids=changed)
+        return WorkflowV2TimelineUpdateResponse(workflow_id=workflow_id, timeline=incoming,
+            changed_clip_ids=changed, runtime=self._runtime_snapshot(workflow).model_dump(mode="json"))
+
     def render_timeline(
         self,
         workflow_id: str,
@@ -323,8 +362,11 @@ class V2FinalCompositionTimelineService:
         self._validate_timeline(workflow_id, timeline)
         resolved_render_id = render_id or f"render_{uuid4().hex[:12]}"
         simple_plan = simple_plan_override
+        render_mode = effective_composition_render_mode(
+            self._settings.final_composition_render_mode, timeline,
+        )
         if (
-            self._settings.final_composition_render_mode.strip().lower() == "simple_sequence"
+            render_mode == "simple_sequence"
             and simple_plan is None
         ):
             simple_plan = self._simple_plan_service.build(workflow)
@@ -345,7 +387,7 @@ class V2FinalCompositionTimelineService:
                     slot_id=slot.slot_id,
                     timeline=timeline,
                     render_settings=request.render_settings,
-                    render_mode=self._settings.final_composition_render_mode.strip().lower(),
+                    render_mode=render_mode,
                     audio_mode=workflow.audio_mode,
                     simple_plan=simple_plan,
                 )
@@ -378,7 +420,8 @@ class V2FinalCompositionTimelineService:
                     "timeline_version": timeline.version,
                 },
             )
-        renderer = self._renderer_factory(self._data_dir, self._settings)
+        renderer_settings = replace(self._settings, final_composition_render_mode=render_mode)
+        renderer = self._renderer_factory(self._data_dir, renderer_settings)
         result = renderer.render(workflow, item, slot, provider_payload)
         if result.status != "completed" or not result.local_file_path:
             if emit_lifecycle_events:
@@ -991,7 +1034,7 @@ class V2FinalCompositionTimelineService:
         *,
         simple_plan: V2SimpleCompositionPlan | None,
     ) -> dict[str, Any]:
-        mode = self._settings.final_composition_render_mode.strip().lower()
+        mode = effective_composition_render_mode(self._settings.final_composition_render_mode, timeline)
         if mode == "simple_sequence":
             if simple_plan is None:
                 raise V2FinalCompositionTimelineError(
@@ -1179,11 +1222,14 @@ class V2FinalCompositionTimelineService:
             available_sources=self._available_sources(workflow),
             stale_clip_ids=self._stale_clip_ids(workflow, timeline),
             missing_source_clip_ids=self._missing_source_clip_ids(workflow.workflow_id, timeline),
-            composition_capabilities=self._composition_capabilities(),
+            composition_capabilities=self._composition_capabilities(timeline),
         )
 
-    def _composition_capabilities(self) -> WorkflowV2CompositionCapabilities:
-        mode = self._settings.final_composition_render_mode.strip().lower()
+    def _composition_capabilities(self, timeline: WorkflowV2Timeline | None = None) -> WorkflowV2CompositionCapabilities:
+        mode = (
+            effective_composition_render_mode(self._settings.final_composition_render_mode, timeline)
+            if timeline is not None else self._settings.final_composition_render_mode.strip().lower()
+        )
         timeline_controls = mode == "timeline_editor"
         return WorkflowV2CompositionCapabilities(
             render_mode=mode,  # type: ignore[arg-type]
@@ -1277,8 +1323,9 @@ class V2FinalCompositionTimelineService:
                 "slot_id": slot.slot_id,
                 "asset_id": record.asset_id,
                 "version_id": record.version_id,
+                "duration_seconds": _duration_for_shot(item, record),
             }
-            for _item, slot, record in self._selected_shot_video_records(workflow)
+            for item, slot, record in self._selected_shot_video_records(workflow)
         ]
         bgm = self._selected_bgm_record(workflow)
         if bgm is not None:
@@ -1289,6 +1336,10 @@ class V2FinalCompositionTimelineService:
                     "version_id": bgm.version_id,
                 }
             )
+        composition_hash = getattr(workflow, "metadata", {}).get("replica_composition_plan_hash")
+        if composition_hash:
+            selected.append({"replica_composition_plan_hash": composition_hash,
+                             "audio_mode": workflow.audio_mode})
         encoded = json.dumps(selected, sort_keys=True, separators=(",", ":")).encode("utf-8")
         import hashlib
 

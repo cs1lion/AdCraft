@@ -435,7 +435,11 @@ export function useAgentCanvasChat({
     };
     const schedule = (run: () => Promise<void>) => {
       queue.push(() => {
-        void run().finally(() => {
+        void run().catch((error: unknown) => {
+          // A failed sibling must not reject the detached queue or block later
+          // turns. hydrateTurn evicts failures so the next refresh can retry.
+          console.warn("Capability turn hydration failed; retrying on next refresh.", error);
+        }).finally(() => {
           active -= 1;
           pump();
         });

@@ -28,6 +28,15 @@
 import type { ReactElement } from "react";
 
 import {
+  BoxGeometry,
+  ConeGeometry,
+  CylinderGeometry,
+  Group,
+  IcosahedronGeometry,
+  Mesh,
+  MeshStandardMaterial,
+} from "./LeanSceneCanvas";
+import {
   PLACEHOLDER_ASSET_COLOR,
   SCENE_SCRIPT_ASSET_COLORS,
   SCENE_SCRIPT_PART_COLOR_OVERRIDES,
@@ -68,10 +77,10 @@ function box(
   key?: string,
 ): ReactElement {
   return (
-    <mesh key={key} position={position} castShadow>
-      <boxGeometry args={size} />
-      <meshStandardMaterial color={colour} />
-    </mesh>
+    <Mesh key={key} position={position} castShadow>
+      <BoxGeometry args={size} />
+      <MeshStandardMaterial color={colour} />
+    </Mesh>
   );
 }
 
@@ -85,10 +94,10 @@ function column(
   segments = 16,
 ): ReactElement {
   return (
-    <mesh position={position} castShadow>
-      <cylinderGeometry args={[radiusTop, radiusBottom, height, segments]} />
-      <meshStandardMaterial color={colour} />
-    </mesh>
+    <Mesh position={position} castShadow>
+      <CylinderGeometry args={[radiusTop, radiusBottom, height, segments]} />
+      <MeshStandardMaterial color={colour} />
+    </Mesh>
   );
 }
 
@@ -107,14 +116,14 @@ function legs(
 // ---------------------------------------------------------------------------
 
 const roundTable: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {column([0, 0.75 * scale, 0], 0.6 * scale, 0.6 * scale, 0.05, colourFor("round_table"))}
     {column([0, 0.375 * scale, 0], 0.08, 0.08, 0.75, colourFor("round_table"), 8)}
-  </group>
+  </Group>
 );
 
 const rectTable: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {box([0, 0.75 * scale, 0], [1.5 * scale, 0.05, 0.9 * scale], colourFor("rect_table"), "top")}
     {legs(
       [
@@ -127,11 +136,11 @@ const rectTable: AssetGeometry = ({ scale, rotationY, pos }) => (
       [0.08 * scale, 0.36 * scale, 0.08 * scale],
       colourFor("rect_table"),
     )}
-  </group>
+  </Group>
 );
 
 const chair: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {box([0, 0.45 * scale, 0], [0.5 * scale, 0.05, 0.5 * scale], colourFor("chair"), "seat")}
     {box([0, 0.9 * scale, -0.24 * scale], [0.5 * scale, 0.45, 0.05], colourFor("chair"), "back")}
     {legs(
@@ -145,40 +154,40 @@ const chair: AssetGeometry = ({ scale, rotationY, pos }) => (
       [0.05 * scale, 0.22 * scale, 0.05 * scale],
       colourFor("chair"),
     )}
-  </group>
+  </Group>
 );
 
 const stool: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {column([0, 0.5 * scale, 0], 0.28 * scale, 0.28 * scale, 0.06, colourFor("stool"))}
     {column([0, 0.25 * scale, 0], 0.05, 0.05, 0.5 * scale, colourFor("stool"), 8)}
-  </group>
+  </Group>
 );
 
 const lantern: AssetGeometry = ({ scale, rotationY, pos }) => {
   const colour = colourFor("lantern");
   return (
-    <mesh position={[pos[0], pos[1] + 2.8 * scale, pos[2]]} rotation={[0, rotationY, 0]}>
-      <boxGeometry args={[0.3 * scale, 0.4 * scale, 0.3 * scale]} />
+    <Mesh position={[pos[0], pos[1] + 2.8 * scale, pos[2]]} rotation={[0, rotationY, 0]}>
+      <BoxGeometry args={[0.3 * scale, 0.4 * scale, 0.3 * scale]} />
       {/* Emissive, matching the converter: a lantern is the one asset whose
           whole point is that it is a light source. */}
-      <meshStandardMaterial color={colour} emissive={colour} emissiveIntensity={0.5} />
-    </mesh>
+      <MeshStandardMaterial color={colour} emissive={colour} emissiveIntensity={0.5} />
+    </Mesh>
   );
 };
 
 const boxProp: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh position={[pos[0], pos[1] + 0.4 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
-    <boxGeometry args={[0.8 * scale, 0.8 * scale, 0.8 * scale]} />
-    <meshStandardMaterial color={colourFor("box")} />
-  </mesh>
+  <Mesh position={[pos[0], pos[1] + 0.4 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
+    <BoxGeometry args={[0.8 * scale, 0.8 * scale, 0.8 * scale]} />
+    <MeshStandardMaterial color={colourFor("box")} />
+  </Mesh>
 );
 
 const crate: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh position={[pos[0], pos[1] + 0.45 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
-    <boxGeometry args={[0.9 * scale, 0.9 * scale, 0.9 * scale]} />
-    <meshStandardMaterial color={colourFor("crate")} />
-  </mesh>
+  <Mesh position={[pos[0], pos[1] + 0.45 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
+    <BoxGeometry args={[0.9 * scale, 0.9 * scale, 0.9 * scale]} />
+    <MeshStandardMaterial color={colourFor("crate")} />
+  </Mesh>
 );
 
 /**
@@ -188,43 +197,43 @@ const crate: AssetGeometry = ({ scale, rotationY, pos }) => (
  * single radius and cannot express a top/bottom pair.
  */
 const vase: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh position={[pos[0], pos[1] + 0.3 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
-    <cylinderGeometry args={[0.14 * scale, 0.24 * scale, 0.6 * scale, 16]} />
-    <meshStandardMaterial color={colourFor("vase")} />
-  </mesh>
+  <Mesh position={[pos[0], pos[1] + 0.3 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
+    <CylinderGeometry args={[0.14 * scale, 0.24 * scale, 0.6 * scale, 16]} />
+    <MeshStandardMaterial color={colourFor("vase")} />
+  </Mesh>
 );
 
 const weapon: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {box([0, 1.0 * scale, 0], [0.06 * scale, 1.1 * scale, 0.02], colourFor("weapon"), "blade")}
     {box([0, 0.32 * scale, 0], [0.05 * scale, 0.28 * scale, 0.05], colourFor("weapon"), "grip")}
-  </group>
+  </Group>
 );
 
 const scroll: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 1.0 * scale, pos[2]]}
     // Laid on its side, as in the converter's ``rotation_euler.x = 90``.
     rotation={[Math.PI / 2, rotationY, 0]}
     castShadow
   >
-    <cylinderGeometry args={[0.12 * scale, 0.12 * scale, 0.9 * scale, 12]} />
-    <meshStandardMaterial color={colourFor("scroll")} />
-  </mesh>
+    <CylinderGeometry args={[0.12 * scale, 0.12 * scale, 0.9 * scale, 12]} />
+    <MeshStandardMaterial color={colourFor("scroll")} />
+  </Mesh>
 );
 
 const book: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh position={[pos[0], pos[1] + 0.04 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
-    <boxGeometry args={[0.34 * scale, 0.08 * scale, 0.26 * scale]} />
-    <meshStandardMaterial color={colourFor("book")} />
-  </mesh>
+  <Mesh position={[pos[0], pos[1] + 0.04 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
+    <BoxGeometry args={[0.34 * scale, 0.08 * scale, 0.26 * scale]} />
+    <MeshStandardMaterial color={colourFor("book")} />
+  </Mesh>
 );
 
 const cup: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh position={[pos[0], pos[1] + 0.07 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
-    <cylinderGeometry args={[0.07 * scale, 0.09 * scale, 0.14 * scale, 12]} />
-    <meshStandardMaterial color={colourFor("cup")} />
-  </mesh>
+  <Mesh position={[pos[0], pos[1] + 0.07 * scale, pos[2]]} rotation={[0, rotationY, 0]} castShadow>
+    <CylinderGeometry args={[0.07 * scale, 0.09 * scale, 0.14 * scale, 12]} />
+    <MeshStandardMaterial color={colourFor("cup")} />
+  </Mesh>
 );
 
 // ---------------------------------------------------------------------------
@@ -232,120 +241,120 @@ const cup: AssetGeometry = ({ scale, rotationY, pos }) => (
 // ---------------------------------------------------------------------------
 
 const wall: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 2.5 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     castShadow
     receiveShadow
   >
-    <boxGeometry args={[6.0 * scale, 5.0 * scale, 0.3 * scale]} />
-    <meshStandardMaterial color={colourFor("wall")} />
-  </mesh>
+    <BoxGeometry args={[6.0 * scale, 5.0 * scale, 0.3 * scale]} />
+    <MeshStandardMaterial color={colourFor("wall")} />
+  </Mesh>
 );
 
 const pillar: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 2.1 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     castShadow
   >
-    <cylinderGeometry args={[0.3 * scale, 0.3 * scale, 4.2 * scale, 8]} />
-    <meshStandardMaterial color={colourFor("pillar")} />
-  </mesh>
+    <CylinderGeometry args={[0.3 * scale, 0.3 * scale, 4.2 * scale, 8]} />
+    <MeshStandardMaterial color={colourFor("pillar")} />
+  </Mesh>
 );
 
 const floor: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] - 0.05 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     receiveShadow
   >
-    <boxGeometry args={[15.0 * scale, 0.1 * scale, 15.0 * scale]} />
-    <meshStandardMaterial color={colourFor("floor")} />
-  </mesh>
+    <BoxGeometry args={[15.0 * scale, 0.1 * scale, 15.0 * scale]} />
+    <MeshStandardMaterial color={colourFor("floor")} />
+  </Mesh>
 );
 
 const ground: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] - 0.05 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     receiveShadow
   >
-    <boxGeometry args={[15.0 * scale, 0.1 * scale, 15.0 * scale]} />
-    <meshStandardMaterial color={colourFor("ground")} />
-  </mesh>
+    <BoxGeometry args={[15.0 * scale, 0.1 * scale, 15.0 * scale]} />
+    <MeshStandardMaterial color={colourFor("ground")} />
+  </Mesh>
 );
 
 /** A gable roof: a 4-sided cone, yawed 45° so a ridge faces the camera. */
 const gableRoof: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 5.5 * scale, pos[2]]}
     rotation={[0, rotationY, Math.PI / 4]}
     castShadow
   >
-    <coneGeometry args={[4.0 * scale, 3.0 * scale, 4]} />
-    <meshStandardMaterial color={colourFor("gable_roof")} />
-  </mesh>
+    <ConeGeometry args={[4.0 * scale, 3.0 * scale, 4]} />
+    <MeshStandardMaterial color={colourFor("gable_roof")} />
+  </Mesh>
 );
 
 const flatRoof: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 5.2 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     castShadow
   >
-    <boxGeometry args={[6.4 * scale, 0.25 * scale, 5.2 * scale]} />
-    <meshStandardMaterial color={colourFor("flat_roof")} />
-  </mesh>
+    <BoxGeometry args={[6.4 * scale, 0.25 * scale, 5.2 * scale]} />
+    <MeshStandardMaterial color={colourFor("flat_roof")} />
+  </Mesh>
 );
 
 const door: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 1.1 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     castShadow
   >
-    <boxGeometry args={[1.0 * scale, 2.2 * scale, 0.15 * scale]} />
-    <meshStandardMaterial color={colourFor("door")} />
-  </mesh>
+    <BoxGeometry args={[1.0 * scale, 2.2 * scale, 0.15 * scale]} />
+    <MeshStandardMaterial color={colourFor("door")} />
+  </Mesh>
 );
 
 const windowEnv: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 1.8 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     castShadow
   >
-    <boxGeometry args={[1.4 * scale, 1.6 * scale, 0.12 * scale]} />
-    <meshStandardMaterial color={colourFor("window")} />
-  </mesh>
+    <BoxGeometry args={[1.4 * scale, 1.6 * scale, 0.12 * scale]} />
+    <MeshStandardMaterial color={colourFor("window")} />
+  </Mesh>
 );
 
 const stairs: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {[0, 1, 2, 3, 4].map((i) => (
-      <mesh key={i} position={[0, 0.2 * scale * (i + 1), 0.9 * scale * i]} castShadow>
-        <boxGeometry args={[2.4 * scale, 0.2 * scale, 0.9 * scale]} />
-        <meshStandardMaterial color={colourFor("stairs")} />
-      </mesh>
+      <Mesh key={i} position={[0, 0.2 * scale * (i + 1), 0.9 * scale * i]} castShadow>
+        <BoxGeometry args={[2.4 * scale, 0.2 * scale, 0.9 * scale]} />
+        <MeshStandardMaterial color={colourFor("stairs")} />
+      </Mesh>
     ))}
-  </group>
+  </Group>
 );
 
 const platform: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 0.4 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     castShadow
     receiveShadow
   >
-    <boxGeometry args={[5.0 * scale, 0.4 * scale, 5.0 * scale]} />
-    <meshStandardMaterial color={colourFor("platform")} />
-  </mesh>
+    <BoxGeometry args={[5.0 * scale, 0.4 * scale, 5.0 * scale]} />
+    <MeshStandardMaterial color={colourFor("platform")} />
+  </Mesh>
 );
 
 const tree: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {column(
       [0, 1.3 * scale, 0],
       0.22 * scale,
@@ -354,36 +363,36 @@ const tree: AssetGeometry = ({ scale, rotationY, pos }) => (
       SCENE_SCRIPT_PART_COLOR_OVERRIDES._Trunk ?? colourFor("tree"),
       8,
     )}
-    <mesh position={[0, 3.4 * scale, 0]} castShadow>
-      <icosahedronGeometry args={[1.7 * scale, 1]} />
-      <meshStandardMaterial
+    <Mesh position={[0, 3.4 * scale, 0]} castShadow>
+      <IcosahedronGeometry args={[1.7 * scale, 1]} />
+      <MeshStandardMaterial
         color={SCENE_SCRIPT_PART_COLOR_OVERRIDES._Canopy ?? colourFor("tree")}
       />
-    </mesh>
-  </group>
+    </Mesh>
+  </Group>
 );
 
 const rock: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <mesh
+  <Mesh
     position={[pos[0], pos[1] + 0.6 * scale, pos[2]]}
     rotation={[0, rotationY, 0]}
     scale={[1.4 * scale, 0.8 * scale, 1.1 * scale]}
     castShadow
   >
-    <icosahedronGeometry args={[0.9, 1]} />
-    <meshStandardMaterial color={colourFor("rock")} />
-  </mesh>
+    <IcosahedronGeometry args={[0.9, 1]} />
+    <MeshStandardMaterial color={colourFor("rock")} />
+  </Mesh>
 );
 
 const fence: AssetGeometry = ({ scale, rotationY, pos }) => (
-  <group position={pos} rotation={[0, rotationY, 0]}>
+  <Group position={pos} rotation={[0, rotationY, 0]}>
     {[0, 1, 2, 3].map((i) => (
-      <mesh key={i} position={[0, 0.8 * scale, 1.5 * scale * (i - 1.5)]} castShadow>
-        <boxGeometry args={[0.12 * scale, 0.8 * scale, 0.12 * scale]} />
-        <meshStandardMaterial color={colourFor("fence")} />
-      </mesh>
+      <Mesh key={i} position={[0, 0.8 * scale, 1.5 * scale * (i - 1.5)]} castShadow>
+        <BoxGeometry args={[0.12 * scale, 0.8 * scale, 0.12 * scale]} />
+        <MeshStandardMaterial color={colourFor("fence")} />
+      </Mesh>
     ))}
-  </group>
+  </Group>
 );
 
 // ---------------------------------------------------------------------------

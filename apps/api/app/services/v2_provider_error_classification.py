@@ -16,6 +16,7 @@ existing polling path and the canvas-side backoff agree on one definition of
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 # Response bodies that describe a transient overload even when the provider
@@ -101,6 +102,16 @@ def classify_provider_error(
     for a condition the provider itself calls temporary.
     """
 
+    # Legacy/native transports sometimes retain only MediaApiError's envelope.
+    # Read its explicit header, never an arbitrary status mentioned in a prompt
+    # or response payload. Structured status supplied by the caller wins.
+    if status_code is None and response_body and response_body.startswith("media_api_failed:\n"):
+        envelope_headers = response_body.split("\nresponse_body=", 1)[0]
+        match = re.search(r"(?m)^status=([1-5][0-9]{2})$", envelope_headers)
+        if match:
+            status_code = int(match.group(1))
+    if status_code == 429:
+        return "provider_rate_limited", True
     lowered = (response_body or "").casefold()
     if lowered and any(marker in lowered for marker in _TRANSIENT_BODY_MARKERS):
         if any(marker in lowered for marker in _RATE_LIMIT_BODY_MARKERS):

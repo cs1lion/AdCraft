@@ -34,6 +34,7 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   model_parameter_incompatible: "One or more parameters are not supported by the selected model.",
   reference_input_mode_unsupported: "The selected model cannot use the current reference input mode.",
   reference_count_exceeded: "The current references exceed the selected model's limit.",
+  provider_rate_limited: "The provider is rate limiting requests. Your completed media is preserved; wait before manually retrying this node. Do not resubmit the whole workflow.",
   provider_generation_failed: "The provider rejected this generation. Check the provider credential and quota, then retry.",
   provider_quota_exceeded: "The provider account is out of quota. Top up or switch credentials in API settings, then retry.",
   // D4: 3D 线本地引擎缺失必须"看得懂 + 知道下一步"——不是"失败"两个字。

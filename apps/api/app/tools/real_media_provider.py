@@ -1159,6 +1159,7 @@ class RealMediaProvider:
         task_url = _video_generation_task_url(
             self._settings.video_generation_endpoint or "",
             task_id,
+            self._settings.video_generation_model,
         )
         response = self._get_video_generation_task_response(task_url)
         response_task_id = _video_generation_task_id_from_response(response)
@@ -1201,6 +1202,7 @@ class RealMediaProvider:
         task_url = _video_generation_task_url(
             self._settings.video_generation_endpoint or "",
             task_id,
+            self._settings.video_generation_model,
         )
         response = self._get_video_generation_task_response(task_url)
         response_task_id = _optional_video_generation_task_id_from_response(response) or task_id

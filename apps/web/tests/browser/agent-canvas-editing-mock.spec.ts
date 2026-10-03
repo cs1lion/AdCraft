@@ -24,6 +24,7 @@ function importedNode() {
     parameter_provenance: {},
     prompt_context_snapshot_id: null,
     output_asset_id: "asset-export",
+    output_asset_version_id: "version-asset-export",
     position: { x: 900, y: 160 },
     revision: 1,
     error: null,
@@ -251,14 +252,18 @@ test("exports, downloads, and imports a 30 second Editing result without creatin
   await expect.poll(() => downloadRequests.length).toBe(1);
   expect(downloadRequests).toEqual(["asset-export"]);
 
-  const sourceContentRequestsBeforeCanvasImport = canvasSourceContentRequests.length;
   await page.getByRole("button", { name: "Add exported video to canvas" }).click();
   await expect(page.getByTestId("agent-canvas-node-video-export")).toBeVisible();
   const importedNodeCard = page.getByTestId("agent-canvas-node-video-export");
-  await expect(importedNodeCard.locator("video")).toHaveCount(0);
-  await expect.poll(() => previewRequests.length).toBe(1);
+  // Canvas now uses native video metadata/first-frame preview. Lock the
+  // versioned source and conservative preload instead of the former image-only UI.
+  const importedVideo = importedNodeCard.locator("video");
+  await expect(importedVideo).toHaveCount(1);
+  await expect(importedVideo).toHaveAttribute("preload", "metadata");
+  await expect(importedVideo).toHaveAttribute("src", /\/api\/v2\/assets\/asset-export\/content\?v=version-asset-export/);
+  await expect.poll(() => previewRequests.length).toBeGreaterThan(0);
   expect(new URL(previewRequests[0]).searchParams.get("v")).toBe("version-asset-export");
-  expect(canvasSourceContentRequests).toHaveLength(sourceContentRequestsBeforeCanvasImport);
+  expect(canvasSourceContentRequests.every((url) => new URL(url).searchParams.get("v") === "version-asset-export")).toBe(true);
   await expect(page.getByTestId("import-binding")).toContainText("node_output:video-export");
   const importedWorkbench = page.getByTestId("imported-workbench");
   await expect(importedWorkbench.locator("button, input, select, textarea")).toHaveCount(0);

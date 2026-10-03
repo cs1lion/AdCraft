@@ -10,11 +10,12 @@
  * without the workspace provider.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CanvasNodeV2, ReplicaBlueprintContentV2 } from "../../../types-v2.ts";
 import { ReplicaBlueprintPanel, describeReplicaError } from "./ReplicaBlueprintPanel.tsx";
+import { timelineMutationRefreshStore } from "../timeline/timelineMutationRefresh.ts";
 
 const BLUEPRINT: ReplicaBlueprintContentV2 = {
   blueprint_version: "replica-blueprint-v1",
@@ -73,9 +74,10 @@ function replicaNode(): CanvasNodeV2 {
 }
 
 const setAgentCanvasWorkflow = vi.fn();
+const appState = vi.hoisted(() => ({ workflow: null as unknown }));
 
 vi.mock("../../../AppContextValue.ts", () => ({
-  useApp: () => ({ setAgentCanvasWorkflow }),
+  useApp: () => ({ setAgentCanvasWorkflow, agentCanvasWorkflow: appState.workflow }),
 }));
 
 const patchNode = vi.fn(async () => ({ value: { workflow: { id: "wf-1" } } }));
@@ -91,6 +93,7 @@ vi.mock("../../../api/agentCanvasApi.ts", () => ({
 }));
 
 beforeEach(() => {
+  appState.workflow = null;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   patchNode.mockClear();
@@ -106,10 +109,115 @@ beforeEach(() => {
 // 用例的点击赛跑——偶发失败且难复现（-t 过滤跑必现行）。每个用例后清空。
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   window.localStorage.clear();
 });
 
 describe("ReplicaBlueprintPanel", () => {
+  it("opens the existing asset browser without generation or assembly", () => {
+    const onOpenAssets = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(<ReplicaBlueprintPanel node={replicaNode()} onOpenAssets={onOpenAssets} />);
+    const details = container.querySelector<HTMLDetailsElement>(".replica-workbench__composition-details")!;
+    expect(details.open).toBe(false);
+    fireEvent.click(screen.getByText("字幕与声音", { selector: "summary" }));
+    expect(screen.getByText(/当前项目还没有可用的声音素材/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "选择或上传声音素材" }));
+    expect(onOpenAssets).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(patchNode).not.toHaveBeenCalled();
+    expect(createNode).not.toHaveBeenCalled();
+  });
+
+  it("explains missing audio without requiring an asset-browser callback", () => {
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    expect(screen.getByText(/当前项目还没有可用的声音素材/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "选择或上传声音素材" })).toBeNull();
+  });
+
+  it("offers audio management and warns about unavailable or unpinned audio", () => {
+    appState.workflow = { workflow_id: "wf-1", nodes: [], assets: [
+      { asset_id: "music", version_id: "v2", status: "ready", media_type: "audio", display_name: "可用配乐", duration_seconds: 30 },
+      { asset_id: "gone", version_id: "v1", status: "unavailable", media_type: "audio", display_name: "已丢失配乐", duration_seconds: 30 },
+      { asset_id: "unpinned", version_id: null, status: "ready", media_type: "audio", display_name: "无版本配乐", duration_seconds: 30 },
+      { asset_id: "untimed", version_id: "v1", status: "ready", media_type: "audio", display_name: "无时长配乐", duration_seconds: 0 },
+    ] };
+    const onOpenAssets = vi.fn();
+    render(<ReplicaBlueprintPanel node={replicaNode()} onOpenAssets={onOpenAssets} />);
+    expect(screen.queryByText(/当前项目还没有可用的声音素材/)).toBeNull();
+    expect(screen.getByText(/部分声音素材不可用/)).toBeTruthy();
+    const select = screen.getByLabelText("配乐素材");
+    expect(within(select).getByRole("option", { name: "可用配乐 · 30.0s" }).getAttribute("value")).toBe("music:v2");
+    expect(within(select).getAllByRole("option")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "管理声音素材" }));
+    expect(onOpenAssets).toHaveBeenCalledOnce();
+  });
+
+  it("disables opening the asset browser while film generation is busy", async () => {
+    const onOpenAssets = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    render(<ReplicaBlueprintPanel node={replicaNode()} onOpenAssets={onOpenAssets} />);
+    fireEvent.click(screen.getByRole("button", { name: /生成复刻成片/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "选择或上传声音素材" }).closest("fieldset")?.disabled).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "选择或上传声音素材" }));
+    expect(onOpenAssets).not.toHaveBeenCalled();
+  });
+
+  it("reassembles ready owned shots with pinned audio without video generation", async () => {
+    appState.workflow = { workflow_id: "wf-1", nodes: [
+      { node_id: "shot-owned", title: "复刻镜头1", node_type: "video", status: "ready", parameters: { replica_node_id: "node_replica" }, structured_content: { segment: { duration_seconds: 4 } } },
+      { node_id: "shot-owned2", title: "复刻镜头2", node_type: "video", status: "ready", parameters: { replica_node_id: "node_replica" }, structured_content: { segment: { duration_seconds: 4 } } },
+      { node_id: "manual", node_type: "video", status: "ready", parameters: {} },
+    ], assets: [{ asset_id: "music", version_id: "music-v2", media_type: "audio", display_name: "轻快配乐", duration_seconds: 30 }] };
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? JSON.parse(String(init.body)) : {} });
+      return { ok: true, status: 200, json: async () => ({ success: true, clip_count: 1, warnings: ["保留用户编辑时间线"], caption_timing_quality: "authored_shot" }) };
+    }));
+    const node = replicaNode();
+    node.structured_content = { ...BLUEPRINT, shots: [...BLUEPRINT.shots, { ...BLUEPRINT.shots[0], index: 2 }] } as unknown as Record<string, unknown>;
+    render(<ReplicaBlueprintPanel node={node} />);
+    fireEvent.click(screen.getByText("字幕与声音", { selector: "summary" }));
+    expect(screen.getByText("重新合成现有镜头（不调用视频模型）").className).toBe("replica-workbench__primary");
+    expect(screen.getByText("🎬 生成复刻成片").className).toBe("replica-workbench__secondary");
+    fireEvent.change(screen.getByLabelText("配乐素材"), { target: { value: "music:music-v2" } });
+    fireEvent.click(screen.getByText("重新合成现有镜头（不调用视频模型）"));
+    await screen.findByText("保留用户编辑时间线");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toContain("assemble-film");
+    expect(requests[0].body).toMatchObject({ replica_node_id: "node_replica", node_ids: ["shot-owned", "shot-owned2"], source_audio_policy: "mute", include_captions: true, ducking: false,
+      audio_clips: [{ role: "bgm", asset_id: "music", asset_version_id: "music-v2", duration_seconds: 8, start_seconds: 0, volume: 0.3 }] });
+    expect(screen.getByText(/镜头级编排/)).toBeTruthy();
+  });
+
+  it("retries an existing-shot assembly failure without requesting video generation", async () => {
+    appState.workflow = { workflow_id: "wf-1", nodes: [{ node_id: "shot1", title: "复刻镜头1", node_type: "video", status: "ready", parameters: { replica_node_id: "node_replica" } }], assets: [] };
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ success: false, error: "assembly offline" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("重新合成现有镜头（不调用视频模型）")); });
+    expect(screen.getByText(/合成失败：assembly offline/)).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试合成" })); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls as unknown as Array<[string]>).every(([url]) => url === "/api/v1/creation/assemble-film")).toBe(true);
+  });
+
+  it("keeps canonical owner when captions and ducking are disabled", async () => {
+    appState.workflow = { workflow_id: "wf-1", nodes: [{ node_id: "shot1", title: "复刻镜头1", node_type: "video", status: "ready", parameters: { replica_node_id: "node_replica" } }], assets: [] };
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ success: true, clip_count: 0 }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("字幕与声音", { selector: "summary" }));
+    fireEvent.click(screen.getByLabelText("添加行级字幕 / 屏上文字"));
+    expect(screen.queryByLabelText("旁白时自动压低配乐")).toBeNull();
+    const beforeRefresh = timelineMutationRefreshStore.getSnapshot();
+    fireEvent.click(screen.getByText("重新合成现有镜头（不调用视频模型）"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(timelineMutationRefreshStore.getSnapshot()).toBeGreaterThan(beforeRefresh));
+    const body = JSON.parse(String((fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0][1].body));
+    expect(body).toMatchObject({ replica_node_id: "node_replica", include_captions: false, ducking: false, audio_clips: [] });
+  });
   it("shows the empty hint for a blank blueprint", () => {
     const node = replicaNode();
     node.structured_content = {};
@@ -1372,6 +1480,236 @@ describe("ReplicaBlueprintPanel actionable errors (E5)", () => {
     await waitFor(() =>
       expect(screen.getByText("body.library_resolutions.0.asset_id: field required")).toBeTruthy(),
     );
+  });
+});
+
+describe("Replica film generation end-to-end orchestration", () => {
+  function filmFetch(statuses: string[], empty = false, assemblyOk = true) {
+    let poll = 0;
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: !url.includes("assemble-film") || assemblyOk,
+      status: url.includes("assemble-film") && !assemblyOk ? 500 : 200,
+      json: async () => url.includes("generate-film")
+        ? { success: true, shots: empty ? [] : [{ node_id: "shot1", title: "镜头1" }] }
+        : url.includes("assemble-film")
+          ? { success: assemblyOk, render_id: "render1", clip_count: assemblyOk ? 1 : 0, error: assemblyOk ? "" : "assembly unavailable" }
+          : url.includes("/nodes/")
+            ? { status: statuses[Math.min(poll++, statuses.length - 1)] }
+            : { status: "completed", output_url: "https://cdn.test/replica.mp4", progress_percent: 100 },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("assembles the final ready poll instead of the callback's stale state", async () => {
+    vi.useFakeTimers();
+    const fetchMock = filmFetch(["working", "ready"]);
+    const timelineNonce = timelineMutationRefreshStore.getSnapshot();
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    const request = fetchMock.mock.calls.find(([url]) => url.includes("assemble-film"));
+    expect(request).toBeTruthy();
+    expect(JSON.parse((request as unknown as [string, RequestInit])[1].body as string))
+      .toEqual({ workflow_id: "wf-1", node_ids: ["shot1"], replica_node_id: "node_replica", include_captions: true, audio_clips: [], source_audio_policy: "mute", ducking: false });
+    expect(screen.getByText(/成片渲染完成/)).toBeTruthy();
+    expect(timelineMutationRefreshStore.getSnapshot()).toBeGreaterThan(timelineNonce);
+    expect(document.querySelector("video")?.getAttribute("src")).toBe("https://cdn.test/replica.mp4");
+  });
+
+  it("reports empty shot responses rather than pretending generation finished", async () => {
+    const fetchMock = filmFetch([], true);
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    expect(screen.getByText(/生成响应没有镜头/)).toBeTruthy();
+    expect(fetchMock.mock.calls).toHaveLength(1);
+  });
+
+  it("does not silently export an incomplete film after a failed shot", async () => {
+    vi.useFakeTimers();
+    const fetchMock = filmFetch(["failed"]);
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(screen.getByText(/未自动合成不完整影片/)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => url.includes("assemble-film"))).toBe(false);
+  });
+
+  it("stops polling when the workbench unmounts", async () => {
+    vi.useFakeTimers();
+    const fetchMock = filmFetch(["working"]);
+    const { unmount } = render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(fetchMock.mock.calls).toHaveLength(1);
+  });
+
+  it("ignores an old generation when the panel changes workflow", async () => {
+    vi.useFakeTimers();
+    let finish!: (value: unknown) => void;
+    const fetchMock = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    rerender(<ReplicaBlueprintPanel node={{ ...replicaNode(), workflow_id: "wf-2", node_id: "replica-2" }} />);
+    await act(async () => {
+      finish({ ok: true, status: 200, json: async () => ({ success: true, shots: [{ node_id: "old-shot", title: "旧镜头" }] }) });
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(screen.queryByText(/旧镜头/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports timeout instead of assembling still-working shots", async () => {
+    vi.useFakeTimers();
+    const fetchMock = filmFetch(["working"]);
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000); });
+    expect(screen.getByText(/镜头生成查询超时/)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => url.includes("assemble-film"))).toBe(false);
+  });
+
+  it("surfaces HTTP assembly failure", async () => {
+    vi.useFakeTimers();
+    const fetchMock = filmFetch(["ready"], false, false);
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => { fireEvent.click(screen.getByText("🎬 生成复刻成片")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(screen.getByText(/合成失败：assembly unavailable/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "重试生成" })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试合成" })); });
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes("generate-film"))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes("assemble-film"))).toHaveLength(2);
+  });
+});
+
+describe("Replica default creation experience", () => {
+  it("collapses composition and advanced SFX by default with a live plain-language summary", () => {
+    appState.workflow = { workflow_id: "wf-1", nodes: [], assets: [
+      { asset_id: "audio", version_id: "v1", media_type: "audio", display_name: "我的配乐", duration_seconds: 10 },
+    ] };
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    const summary = screen.getByText("字幕与声音", { selector: "summary" });
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(summary.textContent).toContain("字幕开启 · 旁白：不添加 · 配乐：不添加");
+    expect(summary.querySelector('[aria-live="polite"]')).toBeTruthy();
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
+    expect(screen.getByText(/更多声音选项/, { selector: "summary" }).closest("details")?.open).toBe(false);
+    expect(screen.queryByLabelText("旁白时自动压低配乐")).toBeNull();
+    fireEvent.change(screen.getByLabelText("配乐素材"), { target: { value: "audio:v1" } });
+    fireEvent.change(screen.getByLabelText("旁白素材"), { target: { value: "audio:v1" } });
+    fireEvent.click(screen.getByLabelText("添加行级字幕 / 屏上文字"));
+    expect(summary.textContent).toContain("字幕关闭 · 旁白：我的配乐 · 配乐：我的配乐");
+    expect(screen.getByLabelText("旁白时自动压低配乐")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("旁白素材"), { target: { value: "" } });
+    expect(screen.queryByLabelText("旁白时自动压低配乐")).toBeNull();
+  });
+
+  it.each(["partial", "wrong identity", "duplicate identity", "not ready", "foreign owner"])("does not offer a complete-film reassemble for %s shots", (kind) => {
+    const node = replicaNode();
+    node.structured_content = { ...BLUEPRINT, shots: [...BLUEPRINT.shots, { ...BLUEPRINT.shots[0], index: 2 }] } as unknown as Record<string, unknown>;
+    const first = { node_id: "shot1", title: "复刻镜头1", node_type: "video", status: "ready", parameters: { replica_node_id: "node_replica" } };
+    const second = { ...first, node_id: "shot2", title: kind === "wrong identity" ? "复刻镜头3" : kind === "duplicate identity" ? "复刻镜头1" : "复刻镜头2", status: kind === "not ready" ? "working" : "ready", parameters: { replica_node_id: kind === "foreign owner" ? "another-replica" : "node_replica" } };
+    appState.workflow = { workflow_id: "wf-1", nodes: kind === "partial" ? [first] : [first, second], assets: [] };
+    render(<ReplicaBlueprintPanel node={node} />);
+    expect(screen.queryByText("重新合成现有镜头（不调用视频模型）")).toBeNull();
+    expect(screen.getByRole("button", { name: "🎬 生成复刻成片" }).className).toBe("replica-workbench__primary");
+  });
+  it("labels editable slots and keeps advanced controls collapsed", () => {
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    expect(screen.getByRole("textbox", { name: /人物/ })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: /商品/ })).toBeTruthy();
+    expect(screen.getByRole("list", { name: "复刻创作步骤" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "⚙ 高级" }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("restores progress in the default path and prevents repeated generation", async () => {
+    localStorage.setItem("adcraft:agent-canvas:replica-render:wf-1:node_replica", JSON.stringify({ renderId: "restored", renderPhase: "polling" }));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, json: async () => ({ status: "running", progress_percent: 42 }) })));
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => {});
+    expect(screen.getByRole("progressbar", { name: "成片渲染进度" }).getAttribute("value")).toBe("42");
+    expect(screen.getByRole("button", { name: "🎬 生成复刻成片" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "取消成片渲染" })).toBeTruthy();
+  });
+
+  it("does not poll an old restored render under a different workflow", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem("adcraft:agent-canvas:replica-render:wf-1:node_replica", JSON.stringify({ renderId: "old", renderPhase: "polling" }));
+    const fetchMock = vi.fn(async () => ({ status: 200, json: async () => ({ status: "running" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => {});
+    rerender(<ReplicaBlueprintPanel node={{ ...replicaNode(), workflow_id: "wf-2", node_id: "new" }} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("wf-2"))).toBe(false);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("switches between two restored jobs without querying the new workflow with the old id", async () => {
+    const key = (workflow: string, nodeId: string) => `adcraft:agent-canvas:replica-render:${workflow}:${nodeId}`;
+    localStorage.setItem(key("wf-1", "node_replica"), JSON.stringify({ renderId: "old-job", renderPhase: "polling" }));
+    localStorage.setItem(key("wf-2", "next"), JSON.stringify({ renderId: "new-job", renderPhase: "polling" }));
+    const fetchMock = vi.fn(async () => ({ status: 200, json: async () => ({ status: "running" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => {});
+    rerender(<ReplicaBlueprintPanel node={{ ...replicaNode(), workflow_id: "wf-2", node_id: "next" }} />);
+    await act(async () => {});
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("wf-2") && String(call[0]).includes("old-job"))).toBe(false);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("wf-2") && String(call[0]).includes("new-job"))).toBe(true);
+  });
+
+  it("does not discard the destination node's saved task when the previous task completed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, json: async () => ({ status: "running" }) })));
+    const { rerender } = render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    const key = "adcraft:agent-canvas:replica-render:wf-2:next";
+    localStorage.setItem(key, JSON.stringify({ renderId: "next-task", renderPhase: "polling" }));
+    rerender(<ReplicaBlueprintPanel node={{ ...replicaNode(), workflow_id: "wf-2", node_id: "next" }} />);
+    await act(async () => {});
+    expect(localStorage.getItem(key)).toContain("next-task");
+    expect(screen.getByRole("button", { name: "取消成片渲染" })).toBeTruthy();
+  });
+
+  it("does not submit a stale direct render or install its workflow after switching node", async () => {
+    let finish!: (value: unknown) => void;
+    patchNode.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    fireEvent.click(screen.getByText("⚙ 高级"));
+    fireEvent.click(screen.getByText("源码 .adreplica"));
+    await act(async () => { fireEvent.click(screen.getByText("⚡ 零模型费直出")); });
+    rerender(<ReplicaBlueprintPanel node={{ ...replicaNode(), workflow_id: "wf-2", node_id: "next" }} />);
+    await act(async () => { finish({ value: { workflow: { workflow_id: "wf-1" } } }); });
+    expect(setAgentCanvasWorkflow).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("direct-execute/render"))).toBe(false);
+  });
+
+  it("keeps tracking and the resumable handle if cancellation fails", async () => {
+    const key = "adcraft:agent-canvas:replica-render:wf-1:node_replica";
+    localStorage.setItem(key, JSON.stringify({ renderId: "running", renderPhase: "polling" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ status: url.includes("/cancel") ? 500 : 200, json: async () => ({ status: "running" }) })));
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => {});
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "取消成片渲染" })); });
+    expect(localStorage.getItem(key)).toContain("running");
+    expect(screen.getByText(/仍在跟踪后台渲染/)).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "成片渲染进度" })).toBeTruthy();
+  });
+
+  it("shows playable output and open/download links without entering advanced", async () => {
+    localStorage.setItem("adcraft:agent-canvas:replica-render:wf-1:node_replica", JSON.stringify({ renderId: "done", renderPhase: "polling" }));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, json: async () => ({ status: "completed", output_url: "https://cdn.test/final.mp4" }) })));
+    render(<ReplicaBlueprintPanel node={replicaNode()} />);
+    await act(async () => {});
+    expect(screen.getByRole("link", { name: "打开成片" }).getAttribute("href")).toBe("https://cdn.test/final.mp4");
+    expect(screen.getByRole("link", { name: "下载成片" }).hasAttribute("download")).toBe(true);
+    expect(screen.getByLabelText("复刻成片预览")).toBeTruthy();
   });
 });
 

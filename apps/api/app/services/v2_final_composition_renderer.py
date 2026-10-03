@@ -33,6 +33,7 @@ from app.services.v2_final_composition_filters import (
     V2ResolvedTimelineClip,
     build_audio_filter_graph,
     build_visual_filter_graph,
+    validated_ducking_config,
 )
 from app.services.v2_media_toolchain_capabilities import (
     PROFILE_ID,
@@ -229,8 +230,9 @@ class V2FinalCompositionRenderer:
                 code="final_composition_not_llm_generation",
                 message=f"Final composition renderer only supports final_video, got {slot.slot_type}.",
             )
+        enabled_track_ids = {track.track_id for track in timeline.tracks if track.enabled}
         video_clips_present = any(
-            clip.enabled and clip.clip_type == "video" for clip in timeline.clips
+            clip.enabled and clip.track_id in enabled_track_ids and clip.clip_type == "video" for clip in timeline.clips
         )
         # 纯字幕直出（ADR 0010 R1）：编译层在 timeline.metadata 里诚实标注
         # needs_placeholder_video——渲染器据此自动补一个占位 video clip
@@ -250,7 +252,7 @@ class V2FinalCompositionRenderer:
             capabilities = self._toolchain.require_profile(
                 profile_id=PROFILE_ID,
                 requires_subtitles=any(
-                    clip.enabled and clip.clip_type == "subtitle" for clip in timeline.clips
+                    clip.enabled and clip.track_id in enabled_track_ids and clip.clip_type == "subtitle" for clip in timeline.clips
                 ),
             )
         except V2MediaToolchainCapabilityError as exc:
@@ -287,6 +289,12 @@ class V2FinalCompositionRenderer:
             duration_seconds=timeline.duration_seconds,
             subtitle_font_path=self._settings.final_composition_subtitle_font_path,
         )
+        try:
+            ducking = validated_ducking_config(timeline.metadata.get("ducking"))
+        except (ValueError, TypeError, AttributeError) as exc:
+            return self._failure(payload, [], code="v2_audio_ducking_config_invalid", message=str(exc))
+        if ducking and workflow.audio_mode != "none" and not capabilities.feature_flags.get("audio_ducking", False):
+            return self._failure(payload, [], code="audio_ducking_unavailable", message="Explicit audio ducking requires FFmpeg sidechaincompress.")
         track_orders = {track.track_id: track.order for track in timeline.tracks if track.enabled}
         resolved_clips: list[V2ResolvedTimelineClip] = []
         source_paths: list[Path] = []
@@ -313,7 +321,13 @@ class V2FinalCompositionRenderer:
                 candidate.clip_id,
             ),
         ):
-            if not clip.enabled or clip.clip_type == "subtitle":
+            if not clip.enabled or clip.track_id not in track_orders:
+                continue
+            if clip.clip_type == "subtitle":
+                resolved_clips.append(V2ResolvedTimelineClip(
+                    input_index=-1, clip=clip, track_order=track_orders[clip.track_id],
+                    source_has_audio=False,
+                ))
                 continue
             asset_id = clip.source_asset_id
             version_id = clip.source_version_id
@@ -418,6 +432,7 @@ class V2FinalCompositionRenderer:
                 resolved_clips,
                 timeline_duration_seconds=timeline.duration_seconds,
                 audio_mode=workflow.audio_mode,
+                ducking=timeline.metadata.get("ducking"),
             )
         except ValueError as exc:
             return self._failure(

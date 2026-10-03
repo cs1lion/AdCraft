@@ -152,23 +152,29 @@ export function useNodeWorkbenchDraft({
     setErrorAction(null);
   }, [node]);
 
+  const {
+    acceptAuthoritative, awaitingEcho, hasLocalChanges, lastSavedValue,
+    status: autosaveStatus,
+  } = promptAutosave;
   useEffect(() => {
     const changedNode = draftNodeIdRef.current !== node.node_id;
     const authoritativePrompt = (node.generation_prompt ?? "").trim() || null;
     const waitingForPromptResponse = !changedNode
-      && promptAutosave.lastSavedValue !== authoritativePrompt;
+      && awaitingEcho
+      && lastSavedValue !== authoritativePrompt;
     if (!changedNode && (
       dirty
-      || promptAutosave.status === "dirty"
-      || promptAutosave.status === "saving"
-      || promptAutosave.status === "conflict"
-      || promptAutosave.hasLocalChanges
+      || autosaveStatus === "dirty"
+      || autosaveStatus === "saving"
+      || autosaveStatus === "conflict"
+      || hasLocalChanges
       || waitingForPromptResponse
     )) return;
     draftNodeIdRef.current = node.node_id;
+    acceptAuthoritative(authoritativePrompt);
     restoreFromNode();
     if (changedNode) setDirty(false);
-  }, [dirty, node, promptAutosave.hasLocalChanges, promptAutosave.lastSavedValue, promptAutosave.status, restoreFromNode]);
+  }, [acceptAuthoritative, autosaveStatus, awaitingEcho, dirty, hasLocalChanges, lastSavedValue, node, restoreFromNode]);
 
   useEffect(() => {
     const discardConflictDraft = (event: Event) => {

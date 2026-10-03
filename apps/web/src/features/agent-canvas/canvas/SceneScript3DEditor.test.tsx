@@ -14,17 +14,9 @@ import type { ReactNode } from "react";
 import type { SceneScriptRoot } from "../../../types/scene-script";
 import type { SceneObjectRef } from "./sceneScriptEditModel";
 
-const previewProps: {
-  editMode?: boolean;
-  selectedObject?: SceneObjectRef | null;
-  placementMode?: boolean;
-  onSelect?: (ref: SceneObjectRef | null) => void;
-  onDragCommit?: (ref: SceneObjectRef, position: [number, number, number]) => void;
-  onPlacementCommit?: (placement: {
-    position: [number, number, number];
-    lookAt: [number, number, number];
-  }) => void;
-} = {};
+import type { SceneScript3DPreviewProps } from "./SceneScript3DPreview.tsx";
+
+const previewProps: Partial<SceneScript3DPreviewProps> = {};
 
 vi.mock("./SceneScript3DPreview.tsx", () => ({
   SceneScript3DPreview: (props: Record<string, unknown>) => {
@@ -98,6 +90,15 @@ function inspectorSpinbuttons(): HTMLInputElement[] {
 afterEach(cleanup);
 
 describe("SceneScript3DEditor", () => {
+  it("exposes the draft save boundary and a collapsed, keyboard-accessible guide", () => {
+    renderEditor({ dirty: true });
+    expect(screen.getByRole("status").textContent).toBe("有未保存修改");
+    expect(screen.getByText(/预览渲染使用当前草稿，不会代替保存/)).toBeTruthy();
+    const guide = screen.getByText("操作指南 · 选择、移动与镜头").closest("details");
+    expect(guide?.open).toBe(false);
+    expect(screen.getByRole("button", { name: "放置相机" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "撤销修改" }).title).toContain("丢弃全部未保存修改");
+  });
   it("applies a director command end-to-end: local preview then gate round trip", async () => {
     const { onChange } = renderEditor();
     // The director gate client is mocked so no network call is attempted; the
@@ -277,6 +278,50 @@ describe("SceneScript3DEditor", () => {
     renderEditor({ dirty: true, saving: true, error: "版本冲突" });
     expect(screen.getByText("保存中…")).toBeTruthy();
     expect(screen.getByText("版本冲突")).toBeTruthy();
+  });
+});
+
+describe("SceneScript3DEditor camera interaction modes", () => {
+  it.each([
+    { button: "放置相机", cancel: "onPlacementCancel", mode: "placementMode" },
+    { button: "画运镜", cancel: "onGestureCancel", mode: "gestureMode" },
+  ] as const)("$cancel exits its mode without losing the selected camera", ({ button, cancel, mode }) => {
+    const onSelectionChange = vi.fn();
+    const { onChange } = renderEditor({ onSelectionChange });
+    const camera: SceneObjectRef = { kind: "camera", id: "cam1" };
+    selectObject(camera);
+    onSelectionChange.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    expect(previewProps[mode]).toBe(true);
+    expect(typeof previewProps[cancel]).toBe("function");
+
+    act(() => previewProps[cancel]?.());
+
+    expect(previewProps[mode]).toBe(false);
+    expect(previewProps.selectedObject).toEqual(camera);
+    expect(screen.getByText("注视点 (look_at)")).toBeTruthy();
+    expect(screen.getByRole("button", { name: button }).getAttribute("aria-pressed")).toBe("false");
+    expect(onSelectionChange).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { first: "放置相机", second: "画运镜", active: "gestureMode", inactive: "placementMode", cancel: "取消画运镜" },
+    { first: "画运镜", second: "放置相机", active: "placementMode", inactive: "gestureMode", cancel: "取消放置" },
+  ] as const)("enabling $second exits $first", ({ first, second, active, inactive, cancel }) => {
+    const { onChange } = renderEditor();
+    const camera: SceneObjectRef = { kind: "camera", id: "cam1" };
+    selectObject(camera);
+    fireEvent.click(screen.getByRole("button", { name: first }));
+    expect(previewProps[inactive]).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: second }));
+
+    expect(previewProps[active]).toBe(true);
+    expect(previewProps[inactive]).toBe(false);
+    expect(previewProps.selectedObject).toEqual(camera);
+    expect(screen.getByRole("button", { name: first }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: cancel }).getAttribute("aria-pressed")).toBe("true");
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

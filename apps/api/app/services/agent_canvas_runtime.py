@@ -170,6 +170,23 @@ class AgentCanvasRunService:
         idempotency_key: str,
         expected_revision: int | None = None,
     ) -> CanvasRunAcceptedV2:
+        replay = self._runtime.get_admission(
+            workflow_id=workflow_id,
+            idempotency_key=idempotency_key,
+            request_digest=_fingerprint(request),
+        )
+        if replay is not None:
+            return CanvasRunAcceptedV2(
+                workflow_id=workflow_id,
+                execution_id=replay.execution.execution_id,
+                status=replay.execution.status,
+                accepted_node_ids=replay.accepted_node_ids,
+                joined_node_ids=replay.joined_node_ids,
+                skipped=(),
+                waiting_node_ids=(),
+                events_cursor=self._events.max_seq(workflow_id),
+                run_intent_snapshot_ids=replay.snapshot_ids,
+            )
         workflow = self._workflows.get_workflow(workflow_id)
         if expected_revision is not None and expected_revision != workflow.revision:
             raise _run_error(
@@ -448,13 +465,6 @@ class DynamicCanvasScheduler:
                             continue
                         self._fail_member(current.workflow_id, lease, error)
                         continue
-                    self._runtime.update_member(
-                        lease.execution_id,
-                        lease.node_id,
-                        state="running",
-                        phase="running",
-                        now=self._clock(),
-                    )
                     event_payload: dict[str, object] = {}
                     if context.seedance_input_audit is not None:
                         event_payload["seedance_input_manifest"] = (
@@ -475,15 +485,10 @@ class DynamicCanvasScheduler:
                         event_payload["prompt_assertion_evidence"] = (
                             context.compiled_prompt.assertion_evidence.model_dump(mode="json")
                         )
-                    self._workflows.set_node_runtime_state(
-                        current.workflow_id,
-                        lease.node_id,
-                        status="working",
-                        updated_at=self._clock(),
-                        execution_id=lease.execution_id,
-                        event_type="node_generation_started",
-                        event_payload=event_payload,
-                    )
+                    if not self._runtime.admit_dispatch(
+                        lease, now=self._clock(), event_payload=event_payload,
+                    ):
+                        continue
                     dispatchable_contexts.append((lease, context))
                 for lease, context in dispatchable_contexts:
                     prepared.append(
@@ -1926,6 +1931,9 @@ class DynamicCanvasScheduler:
     ) -> tuple[str, ...]:
         cancelled = []
         now = self._clock()
+        execution = self._runtime.get_execution(execution_id)
+        if execution.status in {"queued", "running", "waiting"} and not execution.cancel_requested:
+            self._runtime.request_cancel(execution_id, now=now)
         for task in self._runtime.list_provider_tasks(
             execution_id=execution_id,
             statuses=("submitted", "waiting", "recovering"),

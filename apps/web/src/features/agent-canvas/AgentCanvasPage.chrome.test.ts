@@ -4,6 +4,35 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("AgentCanvasPage chrome", () => {
+  it("keeps outline run ownership mounted outside the empty-node conditional", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/features/agent-canvas/AgentCanvasPageSurface.tsx"), "utf8");
+    const conditional = source.indexOf('{workflow.nodes.length === 0 ? (');
+    const starter = source.indexOf('<OutlineStarter key={workflow.workflow_id}', conditional);
+    expect(starter).toBeGreaterThan(conditional);
+    expect(source.slice(conditional, starter)).toContain(') : null}');
+    expect(source.slice(starter, starter + 180)).toContain('showEntry={workflow.nodes.length === 0}');
+  });
+  it("offers actionable readable empty-state entries and honest completion", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/features/agent-canvas/AgentCanvasPageSurface.tsx"), "utf8");
+    const css = readFileSync(resolve(process.cwd(), "src/features/agent-canvas/agent-canvas-page.css"), "utf8");
+    expect(source).toContain("打开创作对话 →");
+    expect(source).toContain("选择第一个节点 →");
+    expect(source).toContain("readyNodes === totalNodes");
+    expect(source).not.toContain("ready to run ·");
+    expect(css).toMatch(/\.agent-canvas-empty--guided\s*\{[^}]*pointer-events: auto;/);
+    expect(css).toContain(".agent-canvas-empty__mode:focus-visible");
+  });
+  it("preserves released node ids before finish clears them, then uses that snapshot for snapping", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/features/agent-canvas/AgentCanvasPageSurface.tsx"),
+      "utf8",
+    );
+    const start = source.indexOf("onNodeDragStop=");
+    const handler = source.slice(start, source.indexOf("onNodesDelete=", start));
+    expect(handler.indexOf("const releasedNodeIds = new Set(")).toBeLessThan(handler.indexOf("finishNodeDrag("));
+    expect(handler).toMatch(/applyCanvasDragSnap\(\s*dragResult\.nodes,\s*releasedNodeIds,/);
+    expect(handler).toContain("...changed.map((released) => released.id)");
+  });
   it("hides the React Flow attribution panel", () => {
     const source = readFileSync(
       resolve(process.cwd(), "src/features/agent-canvas/AgentCanvasPageSurface.tsx"),

@@ -20,8 +20,31 @@
  * exactly once, in both directions, so drags land in the axis Blender means.
  */
 
-import { Canvas, useThree } from "@react-three/fiber";
-import { Grid, Html, OrbitControls } from "@react-three/drei";
+import {
+  AmbientLight,
+  BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  ConeGeometry,
+  CylinderGeometry,
+  DirectionalLight,
+  Grid,
+  Group,
+  Html,
+  IcosahedronGeometry,
+  LeanSceneCanvas as Canvas,
+  Line,
+  LineBasicMaterial,
+  LineSegments,
+  Mesh,
+  MeshBasicMaterial,
+  MeshStandardMaterial,
+  OrbitControls,
+  RingGeometry,
+  SphereGeometry,
+  useThree,
+} from "./LeanSceneCanvas";
 import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSceneScriptPlayback } from "./SceneScriptPlaybackContext";
@@ -166,35 +189,35 @@ function LowPolyHuman({
   // The line whose time window covers "now" for THIS speaker.
   const activeLine = activeDialogueLineAtFrame(dialogueLines, character.id, frame, frameRate);
   return (
-    <group position={threePosition} rotation={[0, interpolated.rotationY, 0]}>
+    <Group position={threePosition} rotation={[0, interpolated.rotationY, 0]}>
       {/* Body */}
-      <mesh position={[0, bodyHeight / 2, 0]} castShadow>
-        <boxGeometry args={[height * 0.35 * scale, bodyHeight, height * 0.35 * scale]} />
-        <meshStandardMaterial
+      <Mesh position={[0, bodyHeight / 2, 0]} castShadow>
+        <BoxGeometry args={[height * 0.35 * scale, bodyHeight, height * 0.35 * scale]} />
+        <MeshStandardMaterial
           color={color}
           emissive={handlers.selected ? "#FFD166" : "#000000"}
           emissiveIntensity={handlers.selected ? 0.35 : 0}
         />
-      </mesh>
-      {/* Head: a gesture keyframe tilts the whole head group forward ≈15� */}
-      <group rotation={[headTilt, 0, 0]} position={[0, bodyHeight + headRadius * 0.8, 0]}
+      </Mesh>
+      {/* Head: a gesture keyframe tilts the whole head group forward ~15 deg */}
+      <Group rotation={[headTilt, 0, 0]} position={[0, bodyHeight + headRadius * 0.8, 0]}
         data-gesturing={isGesturing ? "true" : "false"}>
-        <mesh castShadow>
-          <sphereGeometry args={[headRadius, 8, 8]} />
-          <meshStandardMaterial color="#E8D5C4" />
-        </mesh>
-      </group>
+        <Mesh castShadow>
+          <SphereGeometry args={[headRadius, 8, 8]} />
+          <MeshStandardMaterial color="#E8D5C4" />
+        </Mesh>
+      </Group>
       {/* Mouth: opens on the talk keyframes the dialogue pipeline wrote.
           Deterministic from the frame (no animation loop) so the preview,
           the inspector and the Blender render agree. */}
-      <mesh
+      <Mesh
         position={[0, bodyHeight + headRadius * 0.62, headRadius * 0.82]}
         data-testid={`character-mouth-${character.id}`}
         data-speaking={isSpeaking ? "true" : "false"}
       >
-        <boxGeometry args={[headRadius * 0.5, mouthOpen, headRadius * 0.12]} />
-        <meshStandardMaterial color={isSpeaking ? "#3B2F2F" : "#C9A88F"} />
-      </mesh>
+        <BoxGeometry args={[headRadius * 0.5, mouthOpen, headRadius * 0.12]} />
+        <MeshStandardMaterial color={isSpeaking ? "#3B2F2F" : "#C9A88F"} />
+      </Mesh>
       {/* Speech overlay: the current line floats above its speaker.
           DOM (not troika text): the viewport already loads three.js and drei,
           and a canvas-texture sprite would cost a texture upload per line. */}
@@ -206,25 +229,25 @@ function LowPolyHuman({
         </Html>
       )}
       {/* ID label (small cone on top) */}
-      <mesh position={[0, bodyHeight + headRadius * 2 + 0.1, 0]}>
-        <coneGeometry args={[0.08, 0.15, 4]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.3} />
-      </mesh>
+      <Mesh position={[0, bodyHeight + headRadius * 2 + 0.1, 0]}>
+        <ConeGeometry args={[0.08, 0.15, 4]} />
+        <MeshStandardMaterial color={color} emissive={color} emissiveIntensity={0.3} />
+      </Mesh>
       {/* Grab proxy: body/head meshes are small targets, so edit mode adds a
           transparent cylinder covering the whole silhouette. (Invisible meshes
           are NOT raycast by three.js — hence opacity 0, not visible={false}.) */}
       {handlers.editMode && (
-        <mesh
+        <Mesh
           position={[0, height * 0.5 * scale, 0]}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlers.onDragEnd}
         >
-          <cylinderGeometry args={[height * 0.3 * scale, height * 0.3 * scale, height * scale, 8]} />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        </mesh>
+          <CylinderGeometry args={[height * 0.3 * scale, height * 0.3 * scale, height * scale, 8]} />
+          <MeshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </Mesh>
       )}
-    </group>
+    </Group>
   );
 }
 
@@ -246,26 +269,26 @@ function BlockingMarks({
 }) {
   const metres = blockingPathLength(points);
   return (
-    <group>
+    <Group>
       {points.map((point) => (
-        <group key={`mark-${point.frame}`} position={point.threePosition}>
-          <mesh>
-            <sphereGeometry args={[0.06, 8, 8]} />
-            <meshBasicMaterial color="#FFD166" />
-          </mesh>
+        <Group key={`mark-${point.frame}`} position={point.threePosition}>
+          <Mesh>
+            <SphereGeometry args={[0.06, 8, 8]} />
+            <MeshBasicMaterial color="#FFD166" />
+          </Mesh>
           <Html position={[0, 0.3, 0]} center distanceFactor={9}>
             <span className="blocking-mark" data-testid={`blocking-mark-${characterId}`}>
               ◆{point.frame}
             </span>
           </Html>
-        </group>
+        </Group>
       ))}
       <Html position={points[points.length - 1].threePosition} center distanceFactor={9}>
         <span className="blocking-length" data-testid={`blocking-length-${characterId}`}>
           走位 {metres.toFixed(1)}m
         </span>
       </Html>
-    </group>
+    </Group>
   );
 }
 
@@ -303,19 +326,19 @@ function PropMesh({
     // V3 ④ LOD 阶梯：rough tier 只画一个原语占位（白模阶段“有”比“像”重要）。
     if (lodTier === "rough") {
       return (
-        <mesh
+        <Mesh
           position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
           rotation={[0, rotationY, 0]}
           castShadow
           data-testid={`lod-rough-${kind}-${prop.id}`}
         >
-          <boxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
-          <meshStandardMaterial
+          <BoxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
+          <MeshStandardMaterial
             color={PLACEHOLDER_ASSET_COLOR}
             emissive={PLACEHOLDER_ASSET_COLOR}
             emissiveIntensity={0.35}
           />
-        </mesh>
+        </Mesh>
       );
     }
     const build = assetGeometryFor(prop.type);
@@ -327,18 +350,18 @@ function PropMesh({
     // reviewer must be able to tell "missing" from "faithful" at a glance
     // (ADR 0005 §4: queryable degradation, never silent).
     return (
-      <mesh
+      <Mesh
         position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
         rotation={[0, rotationY, 0]}
         castShadow
       >
-        <boxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
-        <meshStandardMaterial
+        <BoxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
+        <MeshStandardMaterial
           color={PLACEHOLDER_ASSET_COLOR}
           emissive={PLACEHOLDER_ASSET_COLOR}
           emissiveIntensity={0.6}
         />
-      </mesh>
+      </Mesh>
     );
   }, [prop.type, lodTier, pos, rotationY, scale]);
 
@@ -347,21 +370,21 @@ function PropMesh({
   return (
     // r3f pointer events bubble up the object graph, so one handler on the
     // group covers every mesh the geometry builder produced.
-    <group onPointerDown={handlePointerDown}>
+    <Group onPointerDown={handlePointerDown}>
       {geometry}
       {handlers.editMode && (
-        <mesh
+        <Mesh
           position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
           onPointerMove={handlePointerMove}
           onPointerUp={handlers.onDragEnd}
         >
-          <boxGeometry
+          <BoxGeometry
             args={[Math.max(0.6, scale), Math.max(0.6, scale), Math.max(0.6, scale)]}
           />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        </mesh>
+          <MeshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </Mesh>
       )}
-    </group>
+    </Group>
   );
 }
 
@@ -418,24 +441,24 @@ function CameraGizmo({
   // so a multi-keyframe camera move is visible instead of frozen at frame 0.
   const bodyColor = handlers.selected ? "#FFD166" : active ? "#00FF00" : "#4444FF";
   return (
-    <group position={position} onPointerDown={handlePointerDown}>
+    <Group position={position} onPointerDown={handlePointerDown}>
       {/* Camera body */}
-      <mesh>
-        <boxGeometry args={[0.3, 0.2, 0.4]} />
-        <meshStandardMaterial color={bodyColor} emissive={bodyColor} emissiveIntensity={0.3} />
-      </mesh>
+      <Mesh>
+        <BoxGeometry args={[0.3, 0.2, 0.4]} />
+        <MeshStandardMaterial color={bodyColor} emissive={bodyColor} emissiveIntensity={0.3} />
+      </Mesh>
       {/* Lens (cone pointing toward look_at) */}
-      <mesh
+      <Mesh
         position={[direction.x * 0.3, direction.y * 0.3, direction.z * 0.3]}
         rotation={[0, Math.atan2(direction.x, direction.z), 0]}
       >
-        <coneGeometry args={[0.12, 0.25, 8]} />
-        <meshStandardMaterial color="#222222" />
-      </mesh>
+        <ConeGeometry args={[0.12, 0.25, 8]} />
+        <MeshStandardMaterial color="#222222" />
+      </Mesh>
       {/* Frustum lines */}
-      <lineSegments>
-        <bufferGeometry>
-          <bufferAttribute
+      <LineSegments>
+        <BufferGeometry>
+          <BufferAttribute
             attach="attributes-position"
             args={[
               new Float32Array([
@@ -445,10 +468,10 @@ function CameraGizmo({
               3,
             ]}
           />
-        </bufferGeometry>
-        <lineBasicMaterial color={bodyColor} opacity={0.4} transparent />
-      </lineSegments>
-    </group>
+        </BufferGeometry>
+        <LineBasicMaterial color={bodyColor} opacity={0.4} transparent />
+      </LineSegments>
+    </Group>
   );
 }
 
@@ -458,10 +481,10 @@ function CameraGizmo({
 
 function SelectionRing({ position }: { position: [number, number, number] }) {
   return (
-    <mesh position={[position[0], 0.02, position[2]]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={999}>
-      <ringGeometry args={[0.45, 0.62, 32]} />
-      <meshBasicMaterial color="#FFD166" transparent opacity={0.95} depthTest={false} />
-    </mesh>
+    <Mesh position={[position[0], 0.02, position[2]]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={999}>
+      <RingGeometry args={[0.45, 0.62, 32]} />
+      <MeshBasicMaterial color="#FFD166" transparent opacity={0.95} depthTest={false} />
+    </Mesh>
   );
 }
 
@@ -487,12 +510,12 @@ function TrajectoryLine({
 
   if (points.length < 2) return null;
   return (
-    <lineSegments>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[flat, 3]} />
-      </bufferGeometry>
-      <lineBasicMaterial color={color} transparent opacity={opacity} />
-    </lineSegments>
+    <LineSegments>
+      <BufferGeometry>
+        <BufferAttribute attach="attributes-position" args={[flat, 3]} />
+      </BufferGeometry>
+      <LineBasicMaterial color={color} transparent opacity={opacity} />
+    </LineSegments>
   );
 }
 
@@ -561,7 +584,10 @@ function CameraGestureLayer({
       if (points && points.length > 1) onCommit(points);
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel?.();
+      if (event.key === "Escape" && onCancel) {
+        event.preventDefault();
+        onCancel();
+      }
     };
     window.addEventListener("pointerdown", handleDown);
     window.addEventListener("pointermove", handleMove);
@@ -577,9 +603,9 @@ function CameraGestureLayer({
 
   if (!drawing || drawing.length < 2) return null;
   return (
-    <line>
-      <bufferGeometry>
-        <bufferAttribute
+    <Line>
+      <BufferGeometry>
+        <BufferAttribute
           attach="attributes-position"
           args={[
             new Float32Array(
@@ -591,9 +617,9 @@ function CameraGestureLayer({
             3,
           ]}
         />
-      </bufferGeometry>
-      <lineBasicMaterial color="#FFD166" linewidth={2} />
-    </line>
+      </BufferGeometry>
+      <LineBasicMaterial color="#FFD166" linewidth={2} />
+    </Line>
   );
 }
 
@@ -758,7 +784,10 @@ function CameraPlacementLayer({ onCommit, onCancel }: CameraPlacementProps) {
       setCursor(null);
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel?.();
+      if (event.key === "Escape" && onCancel) {
+        event.preventDefault();
+        onCancel();
+      }
     };
     window.addEventListener("pointermove", handleMove);
     window.addEventListener("pointerdown", handleDown);
@@ -780,22 +809,22 @@ function CameraPlacementLayer({ onCommit, onCancel }: CameraPlacementProps) {
   }, [anchorThree, cursor]);
 
   return (
-    <group>
+    <Group>
       {anchorThree && (
-        <mesh position={anchorThree}>
-          <boxGeometry args={[0.3, 0.2, 0.4]} />
-          <meshStandardMaterial color="#FFD166" emissive="#FFD166" emissiveIntensity={0.5} />
-        </mesh>
+        <Mesh position={anchorThree}>
+          <BoxGeometry args={[0.3, 0.2, 0.4]} />
+          <MeshStandardMaterial color="#FFD166" emissive="#FFD166" emissiveIntensity={0.5} />
+        </Mesh>
       )}
       {linePoints && (
-        <lineSegments>
-          <bufferGeometry>
-            <bufferAttribute attach="attributes-position" args={[linePoints, 3]} />
-          </bufferGeometry>
-          <lineBasicMaterial color="#FFD166" transparent opacity={0.8} />
-        </lineSegments>
+        <LineSegments>
+          <BufferGeometry>
+            <BufferAttribute attach="attributes-position" args={[linePoints, 3]} />
+          </BufferGeometry>
+          <LineBasicMaterial color="#FFD166" transparent opacity={0.8} />
+        </LineSegments>
       )}
-    </group>
+    </Group>
   );
 }
 
@@ -817,9 +846,13 @@ export interface SceneScript3DPreviewProps {
   /** Camera placement mode: first click sets position, second sets look-at. */
   placementMode?: boolean;
   onPlacementCommit?: (placement: { position: SceneVec3; lookAt: SceneVec3 }) => void;
+  /** Exit placement without changing the selected object. */
+  onPlacementCancel?: () => void;
   /** Draw-a-path camera motion (V0.2 §8.3): drag a trajectory on the ground. */
   gestureMode?: boolean;
   onGestureCommit?: (points: SceneVec3[]) => void;
+  /** Exit drawing without changing the selected object. */
+  onGestureCancel?: () => void;
   /**
    * Animatic audio (V0.2 §7/§14.9): the scene's speech track plays with the
    * playhead so the author can judge rhythm and performance, not just see the
@@ -858,7 +891,9 @@ export function SceneScript3DPreview({
   gestureMode = false,
   speechAudioUrl = null,
   onPlacementCommit,
+  onPlacementCancel,
   onGestureCommit,
+  onGestureCancel,
 }: SceneScript3DPreviewProps) {
   const { currentFrame, isPlaying, totalFrames, toggle, seekToFrame, pause } =
     useSceneScriptPlayback();
@@ -869,7 +904,11 @@ export function SceneScript3DPreview({
   const [audioEnabled, setAudioEnabled] = useState(true);
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !speechAudioUrl || !audioEnabled) return;
+    if (!audio) return;
+    if (!speechAudioUrl || !audioEnabled) {
+      audio.pause();
+      return;
+    }
     const target = audioTimeForFrame(currentFrame, sceneScript.scene.frame_rate);
     if (isPlaying) {
       if (shouldSeekAudio(currentFrame, sceneScript.scene.frame_rate, audio.currentTime)) {
@@ -953,10 +992,10 @@ export function SceneScript3DPreview({
           onSelect?.(null);
         }}
       >
-        <color attach="background" args={["#1a1a2e"]} />
-        <ambientLight intensity={0.4} />
-        <directionalLight position={[5, -5, 8]} intensity={1.0} castShadow shadow-mapSize={[1024, 1024]} />
-        <directionalLight position={[-5, -3, 5]} intensity={0.3} />
+        <Color attach="background" args={["#1a1a2e"]} />
+        <AmbientLight intensity={0.4} />
+        <DirectionalLight position={[5, -5, 8]} intensity={1.0} castShadow shadow-mapSize={[1024, 1024]} />
+        <DirectionalLight position={[-5, -3, 5]} intensity={0.3} />
 
         {/* Ground grid */}
         <Grid
@@ -1116,11 +1155,11 @@ export function SceneScript3DPreview({
                 {placementMode && onPlacementCommit && (
                   <CameraPlacementLayer
                     onCommit={onPlacementCommit}
-                    onCancel={() => onSelect?.(null)}
+                    onCancel={onPlacementCancel}
                   />
                 )}
                 {gestureMode && onGestureCommit && (
-                  <CameraGestureLayer onCommit={onGestureCommit} />
+                  <CameraGestureLayer onCommit={onGestureCommit} onCancel={onGestureCancel} />
                 )}
 
                 <OrbitControls
@@ -1189,7 +1228,9 @@ export function SceneScript3DPreview({
         }}
       >
         <button
+          type="button"
           onClick={toggle}
+          aria-label={isPlaying ? "暂停场景预览" : "播放场景预览"}
           style={{
             background: "none",
             border: "1px solid #666",
@@ -1204,6 +1245,8 @@ export function SceneScript3DPreview({
         </button>
         <input
           type="range"
+          aria-label="场景预览时间轴"
+          aria-valuetext={`第 ${currentFrame + 1} 帧，共 ${totalFrames} 帧`}
           min={0}
           max={totalFrames - 1}
           value={currentFrame}
@@ -1215,6 +1258,8 @@ export function SceneScript3DPreview({
         />
         {speechAudioUrl && (
           <button
+            type="button"
+            aria-label={audioEnabled ? "关闭台词音频" : "开启台词音频"}
             onClick={() => setAudioEnabled((current) => !current)}
             aria-pressed={audioEnabled}
             title={audioEnabled ? "关闭台词音频" : "开启台词音频（动画审片）"}

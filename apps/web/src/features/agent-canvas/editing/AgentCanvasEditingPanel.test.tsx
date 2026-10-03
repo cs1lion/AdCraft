@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -67,6 +67,49 @@ describe("AgentCanvasEditingPanel", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it.each(["download", "add"] as const)("scopes and single-flights external %s promises", async (kind) => {
+    let rejectOld!: (error: Error) => void;
+    let resolveNew!: () => void;
+    const action = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectOld = reject; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveNew = resolve; }));
+    const editing = node("editing-actions", "editing", "export-asset");
+    editing.structured_content = {
+      manifest: {
+        video_entries: [], bgm: null,
+        output: { resolution: null, aspect_ratio: null, fps: null, video_codec: "h264", audio_codec: "aac", container: "mp4" },
+        manifest_revision: 1,
+      },
+      dirty: false,
+      preview: { clips: [], bgm_binding_id: null, bgm_node_id: null, bgm_asset_id: null, estimated_duration_seconds: 0, warnings: [] },
+      active_export: null,
+      last_successful_export: { export_id: "export-done", status: "completed", manifest_revision: 1, fingerprint: "export", skipped_inputs: [], output_asset_id: "export-asset", error: null },
+    };
+    const workflow: AgentCanvasWorkflowV2 = {
+      workflow_id: "workflow-actions", project_id: "project-actions", workflow_schema_version: 2,
+      canvas_model: "agent_canvas_v1", revision: 1, layout_revision: 1, nodes: [editing], bindings: [], assets: [asset("export-asset", "video")],
+    };
+    const props = {
+      workflow, node: editing, patchNode: vi.fn().mockResolvedValue(undefined), onClose: vi.fn(),
+      ...(kind === "download" ? { onDownloadExport: action } : { onAddExportToCanvas: action }),
+    };
+    const view = render(<AgentCanvasEditingPanel {...props} />);
+    const label = kind === "download" ? "Download exported video" : "Add exported video to canvas";
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+      fireEvent.click(screen.getByRole("button", { name: label }));
+    });
+    expect(action).toHaveBeenCalledTimes(1);
+    view.rerender(<AgentCanvasEditingPanel {...props} node={{ ...editing, node_id: "editing-new" }} />);
+    expect(screen.getByRole("button", { name: label }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    await act(async () => { rejectOld(new Error("old action failed")); });
+    expect(screen.queryByText("old action failed")).toBeNull();
+    expect(screen.getByRole("button", { name: label }).hasAttribute("disabled")).toBe(true);
+    await act(async () => { resolveNew(); });
+    expect(screen.getByRole("button", { name: label }).hasAttribute("disabled")).toBe(false);
   });
 
   it("shows nodes omitted by the backend composition plan without adding controls", () => {
@@ -213,6 +256,18 @@ describe("AgentCanvasEditingPanel", () => {
 
     expect(screen.getByRole("button", { name: "Play preview" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Export" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByText(/Export uses Ready inputs only/)).toBeNull();
+    cleanup();
+    render(
+      <AgentCanvasEditingPanel
+        workflow={{ ...workflow, assets: [{ ...workflow.assets[0]!, status: "failed" }] }}
+        node={editing}
+        patchNode={vi.fn().mockResolvedValue(undefined)}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/1 enabled video input is unavailable and will be omitted/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Export" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("renders the final per-track and BGM authoring controls", async () => {

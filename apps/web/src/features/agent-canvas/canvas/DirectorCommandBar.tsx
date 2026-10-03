@@ -19,7 +19,7 @@
  *   check that a batch is legal to persist.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SceneScriptRoot } from "../../../types/scene-script";
 import type { SceneVec3 } from "./sceneScriptAxes.ts";
 import { CAMERA_MOTION_PRESETS } from "./cameraMotionPresets.ts";
@@ -79,6 +79,16 @@ export function DirectorCommandBar({
   disabled,
 
 }: DirectorCommandBarProps) {
+
+  const latestScriptRef = useRef(sceneScript);
+  latestScriptRef.current = sceneScript;
+  const requestGenerationRef = useRef(0);
+  useEffect(() => () => { requestGenerationRef.current += 1; }, []);
+  const beginGate = (expected: SceneScriptRoot) => {
+    const generation = ++requestGenerationRef.current;
+    return () => generation === requestGenerationRef.current
+      && JSON.stringify(latestScriptRef.current) === JSON.stringify(expected);
+  };
 
   const [targetId, setTargetId] = useState<string>("");
 
@@ -190,8 +200,10 @@ export function DirectorCommandBar({
       thenOps: [],
       thenFrame: frame + thenFrame,
     };
+    const isCurrent = beginGate(sceneScript);
     try {
       const gate = await applyTriggerEvent(sceneScript, request);
+      if (!isCurrent()) return;
       if (gate.ok && gate.appliedSceneScript) {
         onApply(gate.appliedSceneScript);
         setStatus({ ok: true, message: `触发事件已过闸门：${trigger} @ frame ${frame}` });
@@ -199,6 +211,7 @@ export function DirectorCommandBar({
         setStatus({ ok: false, message: `触发事件未过闸门：${gate.error ?? "未知"}` });
       }
     } catch (error) {
+      if (!isCurrent()) return;
       setStatus({ ok: false, message: error instanceof Error ? error.message : String(error) });
     }
   };
@@ -279,6 +292,7 @@ export function DirectorCommandBar({
     // missing from the script; the preset then falls back to its default.
 
     const characterTarget = targetPosition ?? undefined;
+    let isCurrent = () => true;
 
     try {
 
@@ -306,9 +320,12 @@ export function DirectorCommandBar({
 
       // rejection keep the optimistic preview and surface the reason.
 
+      isCurrent = beginGate(command.previewScript);
+      latestScriptRef.current = command.previewScript;
       onApply(command.previewScript);
 
       const gate = await applyDirectorMotion(sceneScript, command.request);
+      if (!isCurrent()) return;
 
       if (gate.ok && gate.appliedSceneScript) {
 
@@ -335,6 +352,7 @@ export function DirectorCommandBar({
       }
 
     } catch (error) {
+      if (!isCurrent()) return;
 
       setStatus({
 

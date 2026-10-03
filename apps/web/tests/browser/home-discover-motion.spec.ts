@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const fixture = "/tests/browser/home-discover-motion-mock.html";
-const cardSelector = ".discover-orbit__card";
+const cardSelector = ".orbit__card";
 
 async function openGallery(page: Page, width = 1280) {
   await page.setViewportSize({ width, height: 720 });
@@ -10,7 +10,7 @@ async function openGallery(page: Page, width = 1280) {
 }
 
 async function showGallery(page: Page) {
-  await page.locator(".discover-orbit").evaluate((root) => {
+  await page.locator(".orbit").evaluate((root) => {
     window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY - 100);
   });
   await page.waitForTimeout(150); // Let IO/scroll settle before sampling motion.
@@ -54,7 +54,7 @@ test("offscreen gallery does no continuous work and resumes with the same cards"
   await page.waitForTimeout(150);
   expect(await sampleMotion(page)).toEqual({ writes: 0, frames: 0 });
   await showGallery(page);
-  expect(await firstCard!.evaluate((card) => card === document.querySelector(".discover-orbit__card"))).toBe(true);
+  expect(await firstCard!.evaluate((card) => card === document.querySelector(".orbit__card"))).toBe(true);
   expect((await sampleMotion(page)).writes).toBeGreaterThan(0);
 });
 
@@ -109,7 +109,7 @@ test("820/821 breakpoint stops and restarts motion without rebuilding cards", as
   await page.setViewportSize({ width: 821, height: 720 });
   await showGallery(page);
   expect((await sampleMotion(page)).writes).toBeGreaterThan(0);
-  expect(await firstCard!.evaluate((card) => card === document.querySelector(".discover-orbit__card"))).toBe(true);
+  expect(await firstCard!.evaluate((card) => card === document.querySelector(".orbit__card"))).toBe(true);
 });
 
 test("desktop drag and arrow-key browsing retain their existing motion", async ({ page }) => {

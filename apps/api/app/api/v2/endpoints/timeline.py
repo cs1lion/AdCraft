@@ -7,6 +7,7 @@ time-axis, and how clips are trimmed / transitioned / mixed.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path as FilePath
 from typing import Annotated, Literal
@@ -61,6 +62,20 @@ def get_timeline_repository(
         raise
     finally:
         session.close()
+
+
+@contextmanager
+def _timeline_write_errors():
+    """Hide missing and foreign-workflow IDs behind the same HTTP 404."""
+    try:
+        yield
+    except V2PersistenceError as exc:
+        if exc.code in {"timeline_track_not_found", "timeline_clip_not_found"}:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        raise
 
 
 # --- Timeline ---
@@ -141,14 +156,16 @@ def update_track(
     payload: TimelineTrackUpdateV1,
     repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
 ) -> TimelineTrackV1:
-    return repo.update_track(
-        track_id,
-        name=payload.name,
-        muted=payload.muted,
-        volume=payload.volume,
-        locked=payload.locked,
-        display_order=payload.display_order,
-    )
+    with _timeline_write_errors():
+        return repo.update_track(
+            track_id,
+            workflow_id=workflow_id,
+            name=payload.name,
+            muted=payload.muted,
+            volume=payload.volume,
+            locked=payload.locked,
+            display_order=payload.display_order,
+        )
 
 
 # --- Clips ---
@@ -165,23 +182,25 @@ def create_clip(
     payload: TimelineClipCreateV1,
     repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
 ) -> TimelineClipV1:
-    return repo.add_clip(
-        track_id=payload.track_id,
-        start_time=payload.start_time,
-        duration=payload.duration,
-        asset_id=payload.asset_id,
-        asset_version_id=payload.asset_version_id,
-        source_node_id=payload.source_node_id,
-        source_start=payload.source_start,
-        source_duration=payload.source_duration,
-        fade_in=payload.fade_in,
-        fade_out=payload.fade_out,
-        volume_keyframes=payload.volume_keyframes,
-        label=payload.label,
-        color=payload.color,
-        subtitle_text=payload.subtitle_text,
-        subtitle_style=payload.subtitle_style,
-    )
+    with _timeline_write_errors():
+        return repo.add_clip(
+            workflow_id=workflow_id,
+            track_id=payload.track_id,
+            start_time=payload.start_time,
+            duration=payload.duration,
+            asset_id=payload.asset_id,
+            asset_version_id=payload.asset_version_id,
+            source_node_id=payload.source_node_id,
+            source_start=payload.source_start,
+            source_duration=payload.source_duration,
+            fade_in=payload.fade_in,
+            fade_out=payload.fade_out,
+            volume_keyframes=payload.volume_keyframes,
+            label=payload.label,
+            color=payload.color,
+            subtitle_text=payload.subtitle_text,
+            subtitle_style=payload.subtitle_style,
+        )
 
 
 @router.patch(
@@ -222,7 +241,8 @@ def update_clip(
     ):
         if nullable_field in payload.model_fields_set:
             updates[nullable_field] = getattr(payload, nullable_field)
-    return repo.update_clip(clip_id, **updates)
+    with _timeline_write_errors():
+        return repo.update_clip(clip_id, workflow_id=workflow_id, **updates)
 
 
 @router.post(
@@ -237,19 +257,13 @@ def move_clip(
     payload: TimelineClipMoveV1,
     repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
 ) -> TimelineClipV1:
-    try:
+    with _timeline_write_errors():
         return repo.move_clip(
             clip_id,
+            workflow_id=workflow_id,
             new_track_id=payload.track_id,
             new_start_time=payload.start_time,
         )
-    except V2PersistenceError as exc:
-        if exc.code == "timeline_track_not_found":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": exc.code, "message": str(exc)},
-            ) from exc
-        raise
 
 
 @router.delete(
@@ -262,7 +276,8 @@ def delete_clip(
     clip_id: Annotated[str, Path(min_length=1)],
     repo: Annotated[TimelineRepository, Depends(get_timeline_repository)],
 ) -> None:
-    repo.delete_clip(clip_id)
+    with _timeline_write_errors():
+        repo.delete_clip(clip_id, workflow_id=workflow_id)
 
 
 # --- Subtitle export ---

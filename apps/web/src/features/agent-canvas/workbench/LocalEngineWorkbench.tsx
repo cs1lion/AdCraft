@@ -15,7 +15,7 @@
  * (V0.2 §12 的核心问题 / ADR 0005: queryable, never silent).
  */
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { SendIcon } from "../../../icons.tsx";
@@ -58,6 +58,7 @@ import {
 import type { AlignedLine } from "../canvas/DialogueAlignmentPanel.tsx";
 import type { AlignedSpeechSegment } from "../timeline/dialogueSubtitleCues.ts";
 import type { PatchNode } from "./workbenchTypes.ts";
+import { scene3dDraftSignature } from "./scene3dDraftEquality.ts";
 import "./scene-3d-workbench.css";
 import "./audio-bed-workbench.css";
 
@@ -539,7 +540,7 @@ function Scene3DEditSection({
   const [restoredDraft, setRestoredDraft] = useState<boolean>(() => {
     if (!persisted || !node.workflow_id) return false;
     const stored = readScene3dDraft(node.workflow_id, node.node_id);
-    return stored != null && JSON.stringify(stored) !== JSON.stringify(persisted);
+    return stored != null && scene3dDraftSignature(stored) !== scene3dDraftSignature(persisted);
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -549,12 +550,14 @@ function Scene3DEditSection({
   const draftHistory = useScene3dDraftHistory(draftScript, setDraftScript);
   // Re-sync from the node when its content changes upstream (rerun/replace),
   // unless there are unsaved local edits — never clobber the author's work.
+  const draftBaselineRef = useRef(persisted);
   useEffect(() => {
+    const previous = draftBaselineRef.current;
+    draftBaselineRef.current = persisted;
     setDraftScript((current) =>
-      current === persisted ||
-      (current !== null && JSON.stringify(current) !== JSON.stringify(persisted))
-        ? current
-        : persisted,
+      current === null || scene3dDraftSignature(current) === scene3dDraftSignature(previous)
+        ? persisted
+        : current,
     );
   }, [persisted]);
 
@@ -562,7 +565,7 @@ function Scene3DEditSection({
   // node (explicit save/revert) so a reload restores only real, unsaved edits.
   useEffect(() => {
     if (!node.workflow_id || !draftScript || !persisted) return;
-    if (JSON.stringify(draftScript) === JSON.stringify(persisted)) {
+    if (scene3dDraftSignature(draftScript) === scene3dDraftSignature(persisted)) {
       clearScene3dDraft(node.workflow_id, node.node_id);
     } else {
       writeScene3dDraft(node.workflow_id, node.node_id, draftScript);
@@ -572,7 +575,7 @@ function Scene3DEditSection({
   const draftDirty =
     draftScript !== null &&
     persisted !== null &&
-    JSON.stringify(draftScript) !== JSON.stringify(persisted);
+    scene3dDraftSignature(draftScript) !== scene3dDraftSignature(persisted);
 
   // D6: guard navigation/refresh only while there are unsaved edits (repeatable, honest).
   useEffect(() => {
@@ -714,11 +717,17 @@ function Scene3DEditSection({
 
   useEffect(() => {
     if (!fullscreen) return;
+    let mounted = true;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setFullscreen(false);
+      if (event.key !== "Escape") return;
+      // Let the active placement/drawing tool consume Escape first, regardless
+      // of window-listener registration order. A second Escape exits fullscreen.
+      window.queueMicrotask(() => {
+        if (mounted && !event.defaultPrevented) setFullscreen(false);
+      });
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => { mounted = false; window.removeEventListener("keydown", onKeyDown); };
   }, [fullscreen]);
 
   if (!patchNode) return null;
@@ -730,7 +739,7 @@ function Scene3DEditSection({
     );
   }
 
-  const dirty = JSON.stringify(draftScript) !== JSON.stringify(persisted);
+  const dirty = scene3dDraftSignature(draftScript) !== scene3dDraftSignature(persisted);
   const save = async () => {
     setSaving(true);
     setError(null);

@@ -11,8 +11,8 @@
   border: 1px solid #454545;
   border-radius: 12px;
   box-shadow: 0 26px 60px rgb(0 0 0 / 42%);
-  backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .agent-node-workbench__footer button,

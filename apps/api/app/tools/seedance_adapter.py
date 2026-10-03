@@ -63,7 +63,9 @@ def _is_agnes_flash_model(model_id: str | None) -> bool:
     return "flash" in (model_id or "").lower()
 
 
-def _video_generation_task_url(endpoint: str, task_id: str) -> str:
+def _video_generation_task_url(
+    endpoint: str, task_id: str, model_id: str | None = None
+) -> str:
     """Derive the task query URL from the configured submit endpoint.
 
     Agnes hosts task lookup on a dedicated sibling path (``/agnesapi``)
@@ -74,9 +76,10 @@ def _video_generation_task_url(endpoint: str, task_id: str) -> str:
     safe_task_id = quote(task_id.strip(), safe="")
     parsed = urlparse(endpoint)
     if parsed.netloc and parsed.netloc.endswith("agnes-ai.cn"):
+        model_query = f"&model_name={quote(model_id.strip(), safe='')}" if model_id else ""
         return (
             f"{parsed.scheme}://{parsed.netloc}/agnesapi"
-            f"?video_id={safe_task_id}"
+            f"?video_id={safe_task_id}{model_query}"
         )
     return f"{endpoint.rstrip('/')}/{safe_task_id}"
 
@@ -190,6 +193,7 @@ class VolcengineSeedanceAdapter:
         return _video_generation_task_url(
             self._settings.video_generation_endpoint or "",
             task_id,
+            self._settings.video_generation_model,
         )
 
 

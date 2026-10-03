@@ -76,6 +76,7 @@ import { AgentCanvasContextMenu } from "./canvas/AgentCanvasContextMenu.tsx";
 import { AgentCanvasLayoutConfirmation } from "./canvas/AgentCanvasLayoutConfirmation.tsx";
 import { AgentCanvasNodePicker } from "./canvas/AgentCanvasNodePicker.tsx";
 import { OutlineStarter } from "./OutlineStarter.tsx";
+import { canvasProgressModel } from "./canvas/canvasProgressModel.ts";
 import { AgentCanvasPointerBackgrounds } from "./canvas/AgentCanvasPointerBackgrounds.tsx";
 import { AgentCanvasConnectionLine } from "./canvas/AgentCanvasConnectionLine.tsx";
 import { AgentCanvasEdge } from "./canvas/AgentCanvasEdge.tsx";
@@ -396,6 +397,7 @@ export function AgentCanvasPage() {
   const installedViewportWorkflowIdRef = useRef<string | null>(null);
   const viewportInstallFrameRef = useRef<number | null>(null);
   const layoutButtonRef = useRef<HTMLButtonElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
   const activeDraggedNodeIdsRef = useRef(new Set<string>());
   const canvasInteractionReasonsRef = useRef(new Set<CanvasInteractionReason>());
   const dragCancellationPendingRef = useRef(false);
@@ -417,18 +419,24 @@ export function AgentCanvasPage() {
   const referenceUploadInputRef = useRef<HTMLInputElement>(null);
   activeWorkflowIdRef.current = workflow?.workflow_id ?? "no-workflow";
 
-  // Poll server progress when nodes are working or failed
+  const progressWorkflowId = workflow?.workflow_id;
   useEffect(() => {
-    if (!workflow?.workflow_id) return;
-    const hasActiveNodes = workflow.nodes.some((n) => n.status === "working" || n.status === "failed");
-    if (!hasActiveNodes) {
+    setCreationFlowAssessment(null);
+    setCreationFlowOpen(false);
+  }, [progressWorkflowId]);
+  const hasActiveProgressNodes = workflow?.nodes.some((n) => n.status === "working" || n.status === "failed") ?? false;
+  // Poll server progress when nodes are working or failed.
+  useEffect(() => {
+    setServerProgress(null);
+    if (!progressWorkflowId) return;
+    if (!hasActiveProgressNodes) {
       setServerProgress(null);
       return;
     }
     let cancelled = false;
     const fetchProgress = async () => {
       try {
-        const progress = await agentCanvasApi.getWorkflowProgress(workflow.workflow_id);
+        const progress = await agentCanvasApi.getWorkflowProgress(progressWorkflowId);
         if (!cancelled) setServerProgress(progress);
       } catch {
         // Silent fail - fall back to local computation
@@ -440,7 +448,7 @@ export function AgentCanvasPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [workflow?.workflow_id, workflow?.nodes.some((n) => n.status === "working" || n.status === "failed")]);
+  }, [progressWorkflowId, hasActiveProgressNodes]);
   workflowNodesRef.current = workflow?.nodes ?? [];
   useEffect(() => {
     flowNodesRef.current = nodes;
@@ -875,6 +883,7 @@ export function AgentCanvasPage() {
     onRetry: (nodeId) => runNodeById(nodeId, true),
     onExport: openEditing,
     onOpenEditing: openEditing,
+    onOpenAssets: () => setAssetsOpen(true),
     onOpenVideoPreview: openNodeVideoPreview,
     renderWorkbench,
     onOpenConnectedNodeMenu: (nodeId, direction, point) => {
@@ -1771,6 +1780,12 @@ export function AgentCanvasPage() {
               return;
             }
             const changed = draggedNodes.length ? draggedNodes : [node];
+            // finishNodeDrag clears the live interaction set. Preserve all
+            // released ids before finishing so snapping sees the actual drag.
+            const releasedNodeIds = new Set([
+              ...activeDraggedNodeIdsRef.current,
+              ...changed.map((released) => released.id),
+            ]);
             const dragResult = finishNodeDrag(
               pendingPresentedNodesRef.current ?? latestPresentedNodesRef.current,
               flowNodesRef.current,
@@ -1785,7 +1800,7 @@ export function AgentCanvasPage() {
             // it would overlap, so alignment can never stack cards.
             const snapped = applyCanvasDragSnap(
               dragResult.nodes,
-              activeDraggedNodeIdsRef.current,
+              releasedNodeIds,
               workflow.assets,
             );
             flowNodesRef.current = snapped.nodes;
@@ -1847,7 +1862,7 @@ export function AgentCanvasPage() {
             aria-expanded={creationFlowOpen}
             aria-controls="agent-canvas-creation-flow-panel"
             title={creationFlowOpen ? "Hide creation flow" : "Show creation flow"}
-            onClick={() => setCreationFlowOpen((current) => !current)}
+            onClick={() => { setCreationFlowAssessment(null); setCreationFlowOpen((current) => !current); }}
           >
             <span aria-hidden="true">🎬</span>
             Creation flow
@@ -1883,9 +1898,11 @@ export function AgentCanvasPage() {
           <div className="agent-canvas-toolbar__add">
             <button
               type="button"
+              ref={addButtonRef}
               className={addMenuOpen ? "is-active" : ""}
               aria-label="Add node"
-              title="Add node"
+              aria-expanded={addMenuOpen}
+              title="添加节点：图片、视频、音频或 3D 场景"
               onClick={() => setAddMenuOpen((current) => !current)}
             >
               <PlusIcon />
@@ -1968,7 +1985,8 @@ export function AgentCanvasPage() {
             </button>
           ) : null}
           {workflow.nodes.length > 0 ? (() => {
-            const totalNodes = serverProgress?.total_nodes ?? workflow.nodes.length;
+            const localProgress = canvasProgressModel(workflow.nodes);
+            const totalNodes = serverProgress?.total_nodes ?? localProgress.total;
             const workingNodes = serverProgress?.working_count ?? workflow.nodes.filter((n) => n.status === "working").length;
             const readyNodes = serverProgress?.ready_count ?? workflow.nodes.filter((n) => n.status === "ready").length;
             const failedNodes = serverProgress?.failed_count ?? workflow.nodes.filter((n) => n.status === "failed").length;
@@ -2006,16 +2024,17 @@ export function AgentCanvasPage() {
                     {failedNodes} failed · {readyNodes}/{totalNodes} complete{blockedHint ? ` · ${blockedHint}` : ""}
                     <span style={{ marginLeft: 6, fontSize: 10 }}>{diagnosticOpen ? "▲" : "▼"}</span>
                   </span>
-                ) : draftNodes > 0 ? (
-                  <span className="agent-canvas-toolbar__progress-label is-draft">
-                    {draftNodes} ready to run · {readyNodes}/{totalNodes} complete
-                  </span>
-                ) : (
+                ) : readyNodes === totalNodes ? (
                   <span className="agent-canvas-toolbar__progress-label is-complete">
                     All {totalNodes} nodes complete ✓
                   </span>
+                ) : (
+                  <span className="agent-canvas-toolbar__progress-label is-draft">
+                    {hasRunnableDraft ? "草稿已就绪，可开始生成" : "选择待完成节点，补充内容或检查依赖"}
+                    {` · ${readyNodes}/${totalNodes} 已完成`}
+                  </span>
                 )}
-                <div className="agent-canvas-toolbar__progress-bar" role="progressbar" aria-valuenow={progressPercent} aria-valuemin={0} aria-valuemax={100}>
+                <div className="agent-canvas-toolbar__progress-bar" role="progressbar" aria-label="节点生成完成比例" aria-valuenow={progressPercent} aria-valuemin={0} aria-valuemax={100}>
                   <div className="agent-canvas-toolbar__progress-fill" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
@@ -2023,7 +2042,7 @@ export function AgentCanvasPage() {
                 <div className="agent-canvas-diagnostic-panel" role="region" aria-label="Node diagnostic">
                   <div className="agent-canvas-diagnostic-panel__header">
                     <strong>Diagnostic —{failedNodes} failed node(s)</strong>
-                    <button type="button" onClick={() => setDiagnosticOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>✕</button>
+                    <button type="button" aria-label="关闭节点诊断" onClick={() => setDiagnosticOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>✕</button>
                   </div>
                   <div className="agent-canvas-diagnostic-panel__stats">
                     <span className="agent-canvas-diagnostic-panel__stat">
@@ -2056,7 +2075,7 @@ export function AgentCanvasPage() {
                         </span>
                         {(node as { next_action?: string }).next_action ? (
                           <span className="agent-canvas-diagnostic-panel__next-action">
-                            鈫?{(node as { next_action?: string }).next_action}
+                            → {(node as { next_action?: string }).next_action}
                           </span>
                         ) : null}
                         <button
@@ -2082,30 +2101,44 @@ export function AgentCanvasPage() {
           </span>
         </div>
 
+        <div className={workflow.nodes.length === 0 ? "agent-canvas-empty agent-canvas-empty--guided" : "agent-canvas-outline-progress"}>
         {workflow.nodes.length === 0 ? (
-          <div className="agent-canvas-empty agent-canvas-empty--guided">
-            <strong>Two ways to start —use either or both</strong>
+          <div>
+            <strong>选择一种方式开始创作</strong>
             <div className="agent-canvas-empty__modes">
-              <div className="agent-canvas-empty__mode">
-                <span className="agent-canvas-empty__mode-icon">💬</span>
-                <div>
-                  <b>Chat-guided</b>
-                  <p>Describe your idea in the chat panel and AI builds the full workflow automatically.</p>
-                </div>
-              </div>
-              <div className="agent-canvas-empty__mode">
-                <span className="agent-canvas-empty__mode-icon">✦</span>
-                <div>
-                  <b>Free-form</b>
-                  <p>Use the + button on the left to add nodes manually, arrange them your way.</p>
-                </div>
-              </div>
+              <button type="button" className="agent-canvas-empty__mode" onClick={() => {
+                setChatCollapsed(false);
+                window.requestAnimationFrame(() => {
+                  const input = document.querySelector<HTMLTextAreaElement>(".agent-canvas-page .agent-chat__composer textarea");
+                  input?.focus();
+                });
+              }}>
+                <span className="agent-canvas-empty__mode-icon" aria-hidden="true">💬</span>
+                <span>
+                  <b>对话引导</b>
+                  <span className="agent-canvas-empty__mode-description">告诉创作助手你的目标，逐步确认脚本、素材与镜头。</span>
+                  <span className="agent-canvas-empty__mode-action">打开创作对话 →</span>
+                </span>
+              </button>
+              <button type="button" className="agent-canvas-empty__mode" onClick={() => {
+                setAddMenuOpen(true);
+                window.requestAnimationFrame(() => addButtonRef.current?.focus());
+              }}>
+                <span className="agent-canvas-empty__mode-icon" aria-hidden="true">✦</span>
+                <span>
+                  <b>自由搭建</b>
+                  <span className="agent-canvas-empty__mode-description">添加节点、连接参考素材，再填写内容并生成。</span>
+                  <span className="agent-canvas-empty__mode-action">选择第一个节点 →</span>
+                </span>
+              </button>
             </div>
             {/* 从一句话开始（2026-09-29 简约好用分支）：纲领 → 展开分镜 → 一键生成 */}
-            {workflow.workflow_id ? <OutlineStarter workflowId={workflow.workflow_id} /> : null}
-            <p className="agent-canvas-empty-hint">You can switch between them anytime —they don't limit each other.</p>
+            <p className="agent-canvas-empty-hint">随时在对话和画布间切换；先确认分镜，再开始素材生成。</p>
           </div>
         ) : null}
+
+        {workflow.workflow_id ? <OutlineStarter key={workflow.workflow_id} workflowId={workflow.workflow_id} showEntry={workflow.nodes.length === 0} /> : null}
+        </div>
 
         {(surfaceError || session.state.authoringError || live.state.runtimeError) ? (
           <div className="agent-canvas-notice agent-canvas-notice--with-action" role="alert">

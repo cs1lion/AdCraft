@@ -11,9 +11,9 @@ function declarationBlock(selector: string) {
 
 describe("Discover orbit vertical clearance", () => {
   it("keeps horizontal masking on the root and reserves room for card glow", () => {
-    const orbit = declarationBlock("\\.discover-orbit");
-    const interactiveOrbit = declarationBlock("\\.discover-orbit--interactive");
-    const track = declarationBlock("\\.discover-orbit__track");
+    const orbit = declarationBlock("\\.orbit");
+    const interactiveOrbit = declarationBlock("\\.orbit--interactive");
+    const track = declarationBlock("\\.orbit__track");
 
     expect(orbit).toContain("--discover-card-glow-space: 72px");
     expect(orbit).toContain("min-height: clamp(920px, 62vw, 1040px)");
@@ -22,12 +22,12 @@ describe("Discover orbit vertical clearance", () => {
   });
 
   it("keeps the Discover interaction glow locally purple", () => {
-    const orbit = declarationBlock("\\.discover-orbit");
-    const orbitFocus = declarationBlock("\\.discover-orbit:focus-visible");
+    const orbit = declarationBlock("\\.orbit");
+    const orbitFocus = declarationBlock("\\.orbit:focus-visible");
     const selected = declarationBlock(
-      "\\.discover-orbit__card:is\\(:hover, :focus-visible, \\.is-selected\\)",
+      "\\.orbit__card:is\\(:hover, :focus-visible, \\.is-selected\\)",
     );
-    const focused = declarationBlock("\\.discover-orbit__card:focus-visible");
+    const focused = declarationBlock("\\.orbit__card:focus-visible");
 
     expect(orbit).toContain("--discover-selection-glow: rgba(171, 143, 247, 0.22)");
     expect(orbit).toContain("--discover-selection-shadow: rgba(49, 35, 92, 0.32)");

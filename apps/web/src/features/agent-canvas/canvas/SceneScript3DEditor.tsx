@@ -656,6 +656,33 @@ function SceneScript3DEditorContent({
 
   return (
     <div className="scene-script-3d-editor scene-script-3d-editor--with-tray">
+      <header className="scene-script-3d-editor__draft-header">
+        <div>
+          <strong>3D 场景草稿</strong>
+          <span role="status" aria-live="polite" className={`scene-script-3d-editor__dirty${dirty ? " is-dirty" : ""}`}>
+            {saving ? "保存中…" : dirty ? "有未保存修改" : "已保存"}
+          </span>
+          <p>编辑先在草稿中预览；保存场景才会更新节点。预览渲染使用当前草稿，不会代替保存。</p>
+        </div>
+        <div className="scene-script-3d-editor__draft-actions">
+          <button type="button" onClick={onRevert} disabled={!dirty || saving} title="丢弃全部未保存修改，恢复节点中已保存的场景">
+            撤销修改
+          </button>
+          <button type="button" className="scene-script-3d-editor__save" onClick={onSave} disabled={!dirty || saving}>
+            {saving ? "正在保存场景…" : "保存场景"}
+          </button>
+        </div>
+        {error && <p role="alert" className="scene-script-3d-editor__error">{error}</p>}
+      </header>
+      <details className="scene-script-3d-editor__quick-guide">
+        <summary>操作指南 · 选择、移动与镜头</summary>
+        <ol>
+          <li>点击人物、道具或相机选中对象，在右侧检查器调整参数；地面拖动改变位置。</li>
+          <li>先暂停并定位时间轴，再捕获关键帧。导演口令与微调作用于当前草稿。</li>
+          <li>放置相机：点击地面设机位，再点击设注视点；Esc 取消。画运镜前先选中相机。</li>
+          <li>满意后保存场景；预览渲染需要本机 Blender，声音开关只影响视口试听。</li>
+        </ol>
+      </details>
       <SceneAssetTray onAddEnvironment={addEnvironment} onAddProp={addProp} disabled={saving} />
       {issues.length > 0 && (
         <ul className="scene-script-3d-editor__consistency" aria-label="场景一致性提示">
@@ -701,7 +728,12 @@ function SceneScript3DEditorContent({
         <button
           type="button"
           className={placementMode ? "is-active" : undefined}
-          onClick={() => setPlacementMode((current) => !current)}
+          onClick={() => {
+            setPlacementMode((current) => !current);
+            setGestureMode(false);
+            setGestureError(null);
+          }}
+          aria-pressed={placementMode}
           title="第一次点击设机位，第二次点击设注视点，Esc 取消"
         >
           {placementMode ? "取消放置" : "放置相机"}
@@ -729,8 +761,10 @@ function SceneScript3DEditorContent({
           className={gestureMode ? "is-active" : undefined}
           onClick={() => {
             setGestureMode((current) => !current);
+            setPlacementMode(false);
             setGestureError(null);
           }}
+          aria-pressed={gestureMode}
           title="在地面拖出一条轨迹，系统按常速采样成相机关键帧（V0.2 §8.3）"
         >
           {gestureMode ? "取消画运镜" : "画运镜"}
@@ -904,8 +938,13 @@ function SceneScript3DEditorContent({
           onDragCommit={handleDragCommit}
           placementMode={placementMode}
           onPlacementCommit={handlePlacementCommit}
+          onPlacementCancel={() => setPlacementMode(false)}
           gestureMode={gestureMode}
           onGestureCommit={handleGestureCommit}
+          onGestureCancel={() => {
+            setGestureMode(false);
+            setGestureError(null);
+          }}
         />
       </div>
       {/* V0.2 §12: a declared reading must be revocable. Without this the
@@ -993,23 +1032,7 @@ function SceneScript3DEditorContent({
           initialEngagedIds={initialEngagedIds}
           autoFetchShotId={focusShotId}
         />
-        <footer className="scene-script-3d-editor__footer">
-          <span className={`scene-script-3d-editor__dirty${dirty ? " is-dirty" : ""}`}>
-            {dirty ? "有未保存修改" : "已保存"}
-          </span>
-          <button type="button" onClick={onRevert} disabled={!dirty || saving}>
-            撤销修改
-          </button>
-          <button
-            type="button"
-            className="scene-script-3d-editor__save"
-            onClick={onSave}
-            disabled={!dirty || saving}
-          >
-            {saving ? "保存中…" : "保存场景"}
-          </button>
-        </footer>
-        {error && <p className="scene-script-3d-editor__error">{error}</p>}
+
       </aside>
     </div>
   );

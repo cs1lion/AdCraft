@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GlobalTimelinePanel } from "./GlobalTimelinePanel.tsx";
@@ -177,6 +178,13 @@ describe("GlobalTimelinePanel — audio track controls", () => {
 
   afterEach(cleanup);
 
+  it("uses the authored short program duration instead of a ten-second ruler minimum", async () => {
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ duration_seconds: 8 }));
+    renderPanel();
+    expect(await screen.findByText(/8\.0s · 30fps · 0 clips/)).toBeTruthy();
+    expect(screen.queryByText(/10\.0s · 30fps · 0 clips/)).toBeNull();
+  });
+
   it("PATCHes muted when the voice-track mute button is clicked", async () => {
     renderPanel();
 
@@ -244,6 +252,106 @@ describe("GlobalTimelinePanel — selected clip inspector", () => {
   });
 
   afterEach(cleanup);
+
+  it("preserves dirty edits through refresh and requires deliberate reload for a changed clip", async () => {
+    const view = render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={0} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    const label = screen.getByLabelText("Clip label") as HTMLInputElement;
+    fireEvent.change(label, { target: { value: "Unsaved label" } });
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ tracks: [{
+      ...videoTrack, clips: [{ ...videoTrack.clips[0], duration: 4 }],
+    }] }));
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={1} />);
+    await screen.findByTestId("timeline-inspector-stale");
+    expect(label.value).toBe("Unsaved label");
+    expect((screen.getByTestId("timeline-inspector-save") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Reload clip (discard unsaved edits)" }));
+    expect(label.value).toBe("Video clip 1");
+    expect((screen.getByLabelText("Clip duration in seconds") as HTMLInputElement).value).toBe("4");
+    expect(screen.queryByTestId("timeline-inspector-stale")).toBeNull();
+  });
+
+  it("retains rejected save draft and error through an unchanged refresh, then retries", async () => {
+    vi.mocked(updateClip).mockRejectedValueOnce(new Error("Clip save rejected"));
+    const view = render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={0} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    fireEvent.change(screen.getByLabelText("Clip label"), { target: { value: "Retry label" } });
+    fireEvent.click(screen.getByTestId("timeline-inspector-save"));
+    await screen.findByText("Clip save rejected");
+    expect(getTimeline).toHaveBeenCalledTimes(1);
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={1} />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalledTimes(2));
+    expect((screen.getByLabelText("Clip label") as HTMLInputElement).value).toBe("Retry label");
+    expect(screen.getByText("Clip save rejected")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("timeline-inspector-save"));
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Clip save rejected")).toBeNull());
+  });
+
+  it.each(["resolve", "reject"] as const)("ignores late %s inspector save after a workflow change", async (outcome) => {
+    let resolve!: (clip: TimelineClipV1) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(updateClip).mockReturnValueOnce(new Promise((yes, no) => { resolve = yes; reject = no; }));
+    const view = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    fireEvent.change(screen.getByLabelText("Clip label"), { target: { value: "Old project draft" } });
+    fireEvent.click(screen.getByTestId("timeline-inspector-save"));
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({
+      workflow_id: "wf-other", tracks: [{ ...videoTrack, clips: [{ ...videoTrack.clips[0], label: "New project clip" }] }],
+    }));
+    view.rerender(<GlobalTimelinePanel workflowId="wf-other" />);
+    fireEvent.click(await screen.findByRole("button", { name: "New project clip" }));
+    await act(async () => {
+      if (outcome === "resolve") resolve({ ...videoTrack.clips[0], label: "Old project draft" });
+      else reject(new Error("Old project failure"));
+    });
+    await waitFor(() => expect((screen.getByTestId("timeline-inspector-save") as HTMLButtonElement).disabled).toBe(false));
+    expect((screen.getByLabelText("Clip label") as HTMLInputElement).value).toBe("New project clip");
+    expect(screen.queryByText("Old project failure")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Old project draft" })).toBeNull();
+  });
+
+  it("establishes a clean baseline after successful save so later refresh hydrates", async () => {
+    vi.mocked(updateClip).mockResolvedValueOnce({ ...videoTrack.clips[0], label: "Saved label" });
+    const view = render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={0} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    fireEvent.change(screen.getByLabelText("Clip label"), { target: { value: "Saved label" } });
+    fireEvent.click(screen.getByTestId("timeline-inspector-save"));
+    await screen.findByRole("button", { name: "Saved label" });
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ tracks: [{
+      ...videoTrack, clips: [{ ...videoTrack.clips[0], label: "Refreshed after save" }],
+    }] }));
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={1} />);
+    await waitFor(() => expect((screen.getByLabelText("Clip label") as HTMLInputElement).value).toBe("Refreshed after save"));
+    expect(screen.queryByTestId("timeline-inspector-stale")).toBeNull();
+  });
+
+  it("ignores a late external refresh after switching workflow", async () => {
+    let resolve!: (timeline: TimelineV1) => void;
+    const view = render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={0} />);
+    await screen.findByRole("button", { name: "Video clip 1" });
+    vi.mocked(getTimeline).mockReturnValueOnce(new Promise((yes) => { resolve = yes; }));
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={1} />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalledTimes(2));
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ workflow_id: "wf-other", tracks: [voiceTrack] }));
+    view.rerender(<GlobalTimelinePanel workflowId="wf-other" externalRefreshNonce={1} />);
+    await screen.findByRole("button", { name: "Voice line 1" });
+    await act(async () => { resolve(makeTimeline({ tracks: [videoTrack] })); });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Video clip 1" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Voice line 1" })).toBeTruthy();
+  });
+
+  it("discards the old draft on selection change and closes when the selected clip is removed", async () => {
+    const view = render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={0} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    fireEvent.change(screen.getByLabelText("Clip label"), { target: { value: "Discarded" } });
+    fireEvent.click(screen.getByRole("button", { name: "Voice line 1" }));
+    expect((screen.getByLabelText("Clip label") as HTMLInputElement).value).toBe("Voice line 1");
+    vi.mocked(getTimeline).mockResolvedValue(makeTimeline({ tracks: [videoTrack] }));
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} externalRefreshNonce={1} />);
+    await waitFor(() => expect(screen.queryByTestId("timeline-clip-inspector")).toBeNull());
+    expect(screen.queryByText("Discarded")).toBeNull();
+  });
 
   it("saves precise timing, trim and fade edits for an audio clip (empty clears to null)", async () => {
     renderPanel();
@@ -852,6 +960,142 @@ describe("GlobalTimelinePanel — cross-track drag & edge snapping", () => {
       { start_time: 2.5, duration: 2 },
     ]);
     expect(moveClip).not.toHaveBeenCalled();
+  });
+
+  it("merges the server's canonical clip after a successful trim so the source window stays current", async () => {
+    const canonical = makeClip({
+      clip_id: "clip_video_1",
+      track_id: "track_video",
+      label: "Video clip 1",
+      start_time: 3,
+      duration: 1,
+      source_start: 2,
+      source_duration: 1,
+    });
+    vi.mocked(updateClip).mockResolvedValue(canonical);
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Video clip 1" });
+
+    fireEvent.mouseDown(within(clip).getByTitle("Trim start"), { clientX: 200, clientY: 48 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 240,
+      clientY: 48,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 240,
+      clientY: 48,
+    });
+
+    await waitFor(() => expect(updateClip).toHaveBeenCalledTimes(1));
+    // The first click after a drag is consumed by the click-after-drag
+    // guard; a second click selects the clip and opens the inspector.
+    const clipAfterDrag = await screen.findByRole("button", { name: "Video clip 1" });
+    fireEvent.click(clipAfterDrag);
+    fireEvent.click(clipAfterDrag);
+    const inspector = await screen.findByTestId("timeline-clip-inspector");
+    const sourceIn = within(inspector).getByLabelText(
+      "Source trim in-point in seconds",
+    ) as HTMLInputElement;
+    const sourceLength = within(inspector).getByLabelText(
+      "Source trim length in seconds",
+    ) as HTMLInputElement;
+    expect(sourceIn.value).toBe("2");
+    expect(sourceLength.value).toBe("1");
+  });
+
+  it("resyncs a rejected drag after StrictMode replays effect setup", async () => {
+    vi.mocked(updateClip).mockRejectedValueOnce(new Error("StrictMode rejection"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<StrictMode><GlobalTimelinePanel workflowId={WORKFLOW_ID} /></StrictMode>);
+    const clip = await screen.findByRole("button", { name: "Video clip 1" });
+    const calls = vi.mocked(getTimeline).mock.calls.length;
+    fireEvent.mouseDown(within(clip).getByTitle("Trim end"), { clientX: 200, clientY: 48 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), { clientX: 240, clientY: 48 });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"));
+    await waitFor(() => expect(getTimeline).toHaveBeenCalledTimes(calls + 1));
+    expect(screen.getByTestId("timeline-operation-error")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Video clip 1" }).style.width).toBe("80px");
+    errorSpy.mockRestore();
+  });
+
+  it("surfaces a visible error and resyncs when a clip write is rejected", async () => {
+    vi.mocked(updateClip).mockRejectedValueOnce(new Error("rejection"));
+    vi.mocked(getTimeline)
+      .mockResolvedValueOnce(makeTimeline({ tracks: [videoTrack] }))
+      .mockImplementation(() =>
+        Promise.resolve(makeTimeline({ tracks: [videoTrack] })),
+      );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Video clip 1" });
+
+    fireEvent.mouseDown(clip, { clientX: 200, clientY: 48 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 300,
+      clientY: 48,
+    });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"), {
+      clientX: 300,
+      clientY: 48,
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Couldn't save the clip change/),
+      ).toBeTruthy(),
+    );
+    await waitFor(() => expect(getTimeline).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Video clip 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss timeline error" }));
+    expect(screen.queryByTestId("timeline-operation-error")).toBeNull();
+    expect(screen.getByTestId("timeline-scroll-container")).toBeTruthy();
+    errorSpy.mockRestore();
+  });
+
+
+  it.each(["resolve", "reject"])("ignores late %s drag completion across A → B → A", async (outcome) => {
+    let resolve!: (clip: TimelineClipV1) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(updateClip).mockReturnValueOnce(new Promise((yes, no) => { resolve = yes; reject = no; }));
+    const view = renderPanel();
+    const clip = await screen.findByRole("button", { name: "Video clip 1" });
+    fireEvent.mouseDown(within(clip).getByTitle("Trim end"), { clientX: 200, clientY: 48 });
+    fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), { clientX: 240, clientY: 48 });
+    fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"));
+    expect(updateClip).toHaveBeenCalledTimes(1);
+    vi.mocked(getTimeline).mockResolvedValueOnce(makeTimeline({ workflow_id: "B", tracks: [videoTrack] }));
+    view.rerender(<GlobalTimelinePanel workflowId="B" />);
+    await screen.findByRole("button", { name: "Video clip 1" });
+    vi.mocked(getTimeline).mockResolvedValueOnce(makeTimeline({ tracks: [videoTrack] }));
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} />);
+    const fresh = await screen.findByRole("button", { name: "Video clip 1" });
+    const calls = vi.mocked(getTimeline).mock.calls.length;
+    await act(async () => {
+      if (outcome === "resolve") resolve(makeClip({ clip_id: "clip_video_1", track_id: "track_video", label: "Stale canonical", duration: 9 }));
+      else reject(new Error("Old drag failure"));
+    });
+    expect(screen.queryByRole("button", { name: "Stale canonical" })).toBeNull();
+    expect(screen.queryByTestId("timeline-operation-error")).toBeNull();
+    expect(getTimeline).toHaveBeenCalledTimes(calls);
+    expect(fresh.style.width).toBe("80px");
+  });
+
+  it("keeps drag writes single-flight until the canonical trim has merged", async () => {
+    let resolve!: (clip: TimelineClipV1) => void;
+    vi.mocked(updateClip).mockReturnValueOnce(new Promise((yes) => { resolve = yes; }));
+    renderPanel();
+    const clip = await screen.findByRole("button", { name: "Video clip 1" });
+    const drag = () => {
+      fireEvent.mouseDown(within(clip).getByTitle("Trim end"), { clientX: 200, clientY: 48 });
+      fireEvent.mouseMove(screen.getByTestId("timeline-scroll-container"), { clientX: 240, clientY: 48 });
+      fireEvent.mouseUp(screen.getByTestId("timeline-scroll-container"));
+    };
+    drag(); drag();
+    expect(updateClip).toHaveBeenCalledTimes(1);
+    expect(clip.style.width).toBe("120px");
+    await act(async () => resolve(makeClip({ ...videoTrack.clips[0], duration: 3, source_duration: 3 })));
+    drag();
+    expect(updateClip).toHaveBeenCalledTimes(2);
   });
 
   it("quantizes same-track drags to the selected 1s snap grid", async () => {
@@ -2442,5 +2686,90 @@ describe("GlobalTimelinePanel — director shot intent summary", () => {
     fireEvent.click(screen.getByRole("button", { name: "导演态" }));
     const summary = await screen.findByTestId("timeline-clip-director-summary");
     expect(summary.textContent).toContain("台词音频驱动 3D 唇形关键帧");
+  });
+});
+
+
+describe("GlobalTimelinePanel — workflow operation isolation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getTimeline).mockImplementation(async (workflowId) => makeTimeline({ workflow_id: workflowId, tracks: [videoTrack, voiceTrack, bgmTrack] }));
+    vi.mocked(getMediaToolchainCapabilities).mockResolvedValue({ status: "ready", feature_flags: { audio_ducking: true } });
+    vi.mocked(listLatestAudioDegradations).mockResolvedValue([]);
+  });
+  afterEach(cleanup);
+
+  it.each(["track", "burn-in", "ducking"])("does not let old %s rejection/finally release a new operation after A → B → A", async (kind) => {
+    let rejectOld!: (error: Error) => void;
+    let resolveNew!: () => void;
+    const old = new Promise<never>((_, no) => { rejectOld = no; });
+    const next = new Promise<never>((yes) => { resolveNew = () => yes(undefined as never); });
+    if (kind === "track") vi.mocked(updateTrack).mockReturnValueOnce(old).mockReturnValueOnce(next);
+    else vi.mocked(updateTimeline).mockReturnValueOnce(old).mockReturnValueOnce(next);
+    const trigger = () => {
+      if (kind === "track") fireEvent.click(screen.getByRole("button", { name: "Mute Voice" }));
+      else if (kind === "burn-in") fireEvent.click(within(screen.getByTestId("timeline-subtitle-burn-in")).getByRole("checkbox"));
+      else {
+        fireEvent.click(screen.getByTitle("Auto-ducking settings (lower BGM while voice plays)"));
+        fireEvent.click(screen.getByTestId("timeline-ducking-save"));
+      }
+    };
+    const view = renderPanel();
+    await screen.findByRole("button", { name: "Video clip 1" });
+    trigger();
+    view.rerender(<GlobalTimelinePanel workflowId="B" />);
+    await screen.findByRole("button", { name: "Video clip 1" });
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} />);
+    await screen.findByRole("button", { name: "Video clip 1" });
+    trigger();
+    const calls = vi.mocked(getTimeline).mock.calls.length;
+    await act(async () => rejectOld(new Error("Stale operation")));
+    expect(screen.queryByText("Stale operation")).toBeNull();
+    expect(getTimeline).toHaveBeenCalledTimes(calls);
+    const busy = kind === "track" ? screen.getByRole("button", { name: "Unmute Voice" })
+      : kind === "burn-in" ? within(screen.getByTestId("timeline-subtitle-burn-in")).getByRole("checkbox")
+      : screen.getByTestId("timeline-ducking-save");
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    // Unmount invalidates the new operation before settling its fixture promise.
+    view.unmount();
+    await act(async () => resolveNew());
+  });
+
+
+  it("ignores a beat rejection after selecting away and back without clearing the newer loading state", async () => {
+    let rejectOld!: (error: Error) => void;
+    let rejectNew!: (error: Error) => void;
+    vi.mocked(getClipBeats)
+      .mockReturnValueOnce(new Promise((_, no) => { rejectOld = no; }))
+      .mockReturnValueOnce(new Promise((_, no) => { rejectNew = no; }));
+    const view = renderPanel();
+    const bgm = await screen.findByRole("button", { name: "Clip from 0.00 seconds, 8.00 seconds long" });
+    fireEvent.click(bgm);
+    fireEvent.click(screen.getByTestId("timeline-detect-beats"));
+    fireEvent.click(screen.getByRole("button", { name: "Video clip 1" }));
+    fireEvent.click(bgm);
+    fireEvent.click(screen.getByTestId("timeline-detect-beats"));
+    expect(getClipBeats).toHaveBeenCalledTimes(2);
+    await act(async () => rejectOld(new Error("Old beat failure")));
+    expect(screen.queryByText("Old beat failure")).toBeNull();
+    expect((screen.getByTestId("timeline-detect-beats") as HTMLButtonElement).disabled).toBe(true);
+    view.unmount();
+    await act(async () => rejectNew(new Error("Unmounted analysis")));
+  });
+
+  it("does not link an old promoted node into a re-entered workflow", async () => {
+    let resolve!: (id: string) => void;
+    const create = vi.fn(() => new Promise<string>((yes) => { resolve = yes; }));
+    const view = render(<GlobalTimelinePanel workflowId={WORKFLOW_ID} onCreateVideoNode={create} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Video clip 1" }));
+    fireEvent.click(screen.getByTestId("timeline-create-video-node"));
+    view.rerender(<GlobalTimelinePanel workflowId="B" onCreateVideoNode={create} />);
+    await screen.findByRole("button", { name: "Video clip 1" });
+    view.rerender(<GlobalTimelinePanel workflowId={WORKFLOW_ID} onCreateVideoNode={create} />);
+    await screen.findByRole("button", { name: "Video clip 1" });
+    await act(async () => resolve("old-node"));
+    expect(updateClip).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Failed to create/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Video clip 1" })).toBeTruthy();
   });
 });

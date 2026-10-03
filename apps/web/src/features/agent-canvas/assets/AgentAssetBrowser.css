@@ -115,8 +115,8 @@
   min-height: 34px;
   padding: 0 13px;
   flex-shrink: 0;
-  // 品牌亮底（与同族 __add / 画布 run 同语言）：暗色反色文字走 token，
-  // 不再硬编码色值（此前漂成 #292929 暗底，两个并列主操作一明一暗）
+  /* 品牌亮底（与同族 __add / 画布 run 同语言）：暗色反色文字走 token，
+     不再硬编码色值（此前漂成 #292929 暗底，两个并列主操作一明一暗） */
   color: var(--text-inverse);
   font-size: 13px;
   font-weight: 600;

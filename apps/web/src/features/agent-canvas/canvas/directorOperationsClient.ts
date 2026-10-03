@@ -325,6 +325,8 @@ export interface Scene3DRenderJobStatus {
     frame_count?: number;
     video_path?: string | null;
     animatic_video_path?: string | null;
+    video_url?: string | null;
+    animatic_video_url?: string | null;
     audio_muxed?: boolean;
     duration_seconds?: number;
     blender_version?: string | null;

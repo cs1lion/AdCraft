@@ -474,9 +474,9 @@ export function DiscoverOrbit({ items, interactive, onSelect }: DiscoverOrbitPro
   };
 
   const rootClassName = [
-    "discover-orbit",
-    interactive ? "discover-orbit--interactive" : "discover-orbit--static",
-    reducedMotion ? "discover-orbit--reduced-motion" : "",
+    "orbit",
+    interactive ? "orbit--interactive" : "orbit--static",
+    reducedMotion ? "orbit--reduced-motion" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -492,13 +492,13 @@ export function DiscoverOrbit({ items, interactive, onSelect }: DiscoverOrbitPro
       style={{ "--home-reveal-delay": "170ms" } as CSSProperties}
     >
       {TRACKS.map((track) => (
-        <div className={`discover-orbit__track discover-orbit__track--${track.id}`} data-discover-track={track.id} key={track.id}>
+        <div className={`orbit__track orbit__track--${track.id}`} data-discover-track={track.id} key={track.id}>
           {items.map((item, index) => {
             const isActive = activeIndexes[track.id] === index;
             const isSelected = selectedIndexes[track.id] === index;
             const commonProps = {
               ref: (node: HTMLElement | null) => { cardRefs.current[track.id][index] = node; },
-              className: `discover-orbit__card ${isActive ? "is-active" : ""} ${isSelected ? "is-selected" : ""}`,
+              className: `orbit__card ${isActive ? "is-active" : ""} ${isSelected ? "is-selected" : ""}`,
               "data-index": index,
               "aria-current": isActive ? "true" as const : "false" as const,
             };
@@ -531,10 +531,10 @@ export function DiscoverOrbit({ items, interactive, onSelect }: DiscoverOrbitPro
 
 function DiscoverTrackCard({ item }: { item: DiscoverOrbitItem }) {
   return (
-    <span className="discover-orbit__card-frame">
-      <img className="discover-orbit__image" src={item.image} alt="" loading="lazy" decoding="async" />
-      <span className="discover-orbit__glass" aria-hidden="true" />
-      <span className="discover-orbit__title" data-home-typography-region="cardTitle">{item.title}</span>
+    <span className="orbit__frame">
+      <img className="orbit__image" src={item.image} alt="" loading="lazy" decoding="async" />
+      <span className="orbit__glass" aria-hidden="true" />
+      <span className="orbit__title" data-home-typography-region="cardTitle">{item.title}</span>
     </span>
   );
 }

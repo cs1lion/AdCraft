@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+import math
 
 from app.schemas.workflow_v2 import WorkflowV2TimelineClip
 
@@ -132,6 +133,7 @@ def build_audio_filter_graph(
     *,
     timeline_duration_seconds: float,
     audio_mode: Literal["none", "bgm_only", "full"],
+    ducking: dict[str, Any] | None = None,
 ) -> V2FilterGraph:
     """Compile audio mixing controls while excluding unavailable source-audio streams."""
 
@@ -139,6 +141,8 @@ def build_audio_filter_graph(
         return V2FilterGraph(filter_complex="", audio_label=None)
     fragments: list[str] = []
     labels: list[str] = []
+    buses: dict[str, list[str]] = {"voice": [], "bgm": [], "other": []}
+    config = validated_ducking_config(ducking)
     loop_input_indices: list[int] = []
     for index, resolved in enumerate(_ordered_enabled(clips, kinds={"video", "audio"})):
         clip = resolved.clip
@@ -146,7 +150,7 @@ def build_audio_filter_graph(
             continue
         if clip.clip_type == "video" and not resolved.source_has_audio:
             continue
-        if audio_mode == "bgm_only" and clip.clip_type == "audio" and not _is_bgm(clip):
+        if audio_mode == "bgm_only" and not _is_bgm(clip):
             continue
         if (
             _is_bgm(clip)
@@ -157,16 +161,33 @@ def build_audio_filter_graph(
         output = f"audio{index}"
         fragments.append(f"[{resolved.input_index}:a]{_audio_filters(clip)}[{output}]")
         labels.append(f"[{output}]")
+        role = audio_role(clip)
+        buses[role if role in {"voice", "bgm"} else "other"].append(f"[{output}]")
     if not labels:
         return V2FilterGraph(
             filter_complex=";".join(fragments),
             audio_label=None,
             loop_input_indices=tuple(loop_input_indices),
         )
+    if config and buses["voice"] and buses["bgm"]:
+        for role in ("voice", "bgm"):
+            fragments.append(
+                "".join(buses[role])
+                + f"amix=inputs={len(buses[role])}:duration=longest:dropout_transition=0:normalize=0,"
+                f"apad,atrim=duration={timeline_duration_seconds:.3f}[{role}bus]"
+            )
+        fragments.append("[voicebus]asplit=2[voiceout][voiceside]")
+        threshold = 10 ** (config["threshold_db"] / 20)
+        fragments.append(
+            "[bgmbus][voiceside]sidechaincompress="
+            f"threshold={threshold:.8f}:ratio={config['ratio']}:"
+            f"attack={config['attack_ms']}:release={config['release_ms']}:makeup=1[duckedbgm]"
+        )
+        labels = ["[voiceout]", "[duckedbgm]", *buses["other"]]
     fragments.append(
         "".join(labels)
-        + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0,"
-        + f"alimiter,atrim=duration={timeline_duration_seconds:.3f}[aout]"
+        + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,"
+        + f"alimiter=level=false,apad,atrim=duration={timeline_duration_seconds:.3f}[aout]"
     )
     return V2FilterGraph(
         filter_complex=";".join(fragments),
@@ -322,11 +343,7 @@ def _subtitle_filter(clip: WorkflowV2TimelineClip, canvas: V2CompositionCanvas) 
     # 裁切）分离，写在 clip metadata 上；没有可见窗元数据的时间线（编辑器
     # 手排的旧 clip）回落 clip 窗——行为不变。
     visible_start = float(clip.metadata.get("visible_start_seconds", clip.start_time))
-    visible_end = float(
-        clip.metadata.get(
-            "visible_end_seconds", clip.start_time + clip.duration
-        )
-    )
+    visible_end = float(clip.metadata.get("visible_end_seconds", clip.start_time + clip.duration))
     return (
         f"drawtext=fontfile='{escaped_font}':text='{escaped_text}':"
         f"fontcolor={style.color}:fontsize={style.font_size}:x=(w-text_w)/2:y={y}:"
@@ -348,5 +365,39 @@ def _escape_drawtext(value: str) -> str:
     )
 
 
+def audio_role(clip: WorkflowV2TimelineClip) -> str:
+    """Controlled metadata roles; unknown values never acquire voice sidechain power."""
+    role = clip.metadata.get(
+        "audio_role", clip.metadata.get("source_role", clip.metadata.get("role"))
+    )
+    if not isinstance(role, str):
+        return "bgm" if clip.metadata.get("is_bgm") is True else "other"
+    if role in {"voice", "voiceover", "voice_over", "narration", "dialogue"}:
+        return "voice"
+    if role in {"bgm", "music"} or clip.metadata.get("is_bgm") is True:
+        return "bgm"
+    return "other"
+
+
+def validated_ducking_config(value: dict[str, Any] | None) -> dict[str, float] | None:
+    if not value or value.get("enabled") is not True:
+        return None
+    defaults = {"threshold_db": -30.0, "ratio": 12.0, "attack_ms": 50.0, "release_ms": 250.0}
+    limits = {
+        "threshold_db": (-60, 0),
+        "ratio": (1, 20),
+        "attack_ms": (0.01, 2000),
+        "release_ms": (0.01, 9000),
+    }
+    for key, default in defaults.items():
+        raw = value.get(key, default)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            raise ValueError(f"Invalid ducking {key}")
+        if not limits[key][0] <= raw <= limits[key][1]:
+            raise ValueError(f"Invalid ducking {key}")
+        defaults[key] = float(raw)
+    return defaults
+
+
 def _is_bgm(clip: WorkflowV2TimelineClip) -> bool:
-    return clip.metadata.get("role") == "bgm" or clip.metadata.get("is_bgm") is True
+    return audio_role(clip) == "bgm"

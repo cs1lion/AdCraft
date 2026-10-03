@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 apps/*/node_modules/
 
@@ -123,6 +123,12 @@ apps/api/scripts/replicate_*.py
 
 # Runtime uploads (user-generated media) stay local
 apps/api/uploads/
+uploads/
+
+# Playwright artifacts: the root run is covered above; a run started from
+# apps/web writes its screenshots/traces next to the playwright config.
+apps/web/e2e_output/
+apps/web/projectmyAdcraftappswebe2e_output/
 
 # Local agent-tool runtime artifacts (run journals, telemetry, scratch)
 .stepcode/
@@ -141,3 +147,4 @@ demo-materials/outputs/
 test-materials/fixtures/
 test-materials/units/**/*.mp4
 test-materials/units/**/*.png
+test-materials/real_corpus/

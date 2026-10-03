@@ -17,6 +17,7 @@ import {
 } from "./replicaRenderStore.ts";
 
 import { useApp } from "../../../AppContextValue.ts";
+import { bumpTimelineMutationRefresh } from "../timeline/timelineMutationRefresh.ts";
 import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
 import { finalRenderCancelPath, finalRenderStatePath } from "../../../api/finalRenderPaths.ts";
 import type {
@@ -26,10 +27,12 @@ import type {
   ReplicaSlotV2,
 } from "../../../types-v2.ts";
 import { ReplicaSourceEditor } from "./ReplicaSourceEditor.tsx";
+import "./ReplicaBlueprintPanel.css";
 
 export interface ReplicaBlueprintPanelProps {
   node: CanvasNodeV2;
   height?: number;
+  onOpenAssets?: () => void;
 }
 
 type TabKey = "slots" | "anchors" | "shots" | "source";
@@ -117,15 +120,73 @@ export function describeReplicaError(status: number, detail: unknown): string[] 
   return [fallback];
 }
 
-export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPanelProps) {
+export function ReplicaBlueprintPanel({ node, height = 380, onOpenAssets }: ReplicaBlueprintPanelProps) {
   const blueprint = useMemo(() => parseBlueprint(node), [node]);
-  const { setAgentCanvasWorkflow } = useApp();
+  const { setAgentCanvasWorkflow, agentCanvasWorkflow } = useApp();
+  const hasCaptionText = blueprint.shots.some((shot) => shot.on_screen_text.trim());
+  const [includeCaptions, setIncludeCaptions] = useState(hasCaptionText);
+  const [ducking, setDucking] = useState(true);
+  const [audioSelection, setAudioSelection] = useState<Record<"voice" | "bgm" | "sfx", string>>({ voice: "", bgm: "", sfx: "" });
+  const [compositionWarnings, setCompositionWarnings] = useState<string[]>([]);
+  const [captionTiming, setCaptionTiming] = useState<string | null>(null);
+  const projectAudioAssets = useMemo(() => (agentCanvasWorkflow?.workflow_id === node.workflow_id ? agentCanvasWorkflow.assets : [])?.filter(
+    (asset) => asset.media_type === "audio",
+  ) ?? [], [agentCanvasWorkflow, node.workflow_id]);
+  const audioAssets = useMemo(() => projectAudioAssets.filter(
+    (asset) => asset.status !== "unavailable" && asset.version_id && Number.isFinite(asset.duration_seconds) && (asset.duration_seconds ?? 0) > 0,
+  ), [projectAudioAssets]);
+  const existingReadyShots = useMemo(() => {
+    const candidates = (agentCanvasWorkflow?.workflow_id === node.workflow_id ? agentCanvasWorkflow.nodes : [])?.filter(
+      (candidate) => candidate.node_type === "video" && candidate.parameters?.replica_node_id === node.node_id,
+    ) ?? [];
+    // The backend reuses shots by canonical title, not structured_content.shot_index.
+    // Ready ownership alone is insufficient: partial or stale sets are not a film.
+    const expectedTitles = blueprint.shots.map((shot) => `复刻镜头${shot.index}`);
+    return expectedTitles.length > 0 && candidates.length === expectedTitles.length
+      && new Set(expectedTitles).size === expectedTitles.length
+      && expectedTitles.every((title) => candidates.filter((candidate) => candidate.title === title && candidate.status === "ready").length === 1)
+      ? expectedTitles.map((title) => candidates.find((candidate) => candidate.title === title)!)
+      : [];
+  }, [agentCanvasWorkflow, node.workflow_id, node.node_id, blueprint.shots]);
 
   const [tab, setTab] = useState<TabKey>("slots");
   // 一键复刻成片（2026-09-29 简约好用分支）：选好槽位 → 一个按钮 → 每镜一个
   // video 节点 + 一次 run。script 节点 / 蓝图词汇 / instantiate 都是内部实现。
   const [filmBusy, setFilmBusy] = useState(false);
+  const [filmStage, setFilmStage] = useState<"idle" | "submitting" | "shots" | "assembling">("idle");
+  const scopeKey = `${node.workflow_id}:${node.node_id}`;
+  const activeScopeRef = useRef(scopeKey);
+  activeScopeRef.current = scopeKey;
+  const renderBusyRef = useRef(false);
+  const renderScopeRef = useRef(scopeKey);
+  const [cancelPending, setCancelPending] = useState(false);
+  const filmGenerationRef = useRef(0);
+  const filmInFlightRef = useRef(false);
+  const initialCaptionChoiceRef = useRef(hasCaptionText);
+  initialCaptionChoiceRef.current = hasCaptionText;
+  useEffect(() => {
+    filmGenerationRef.current += 1;
+    filmInFlightRef.current = false;
+    setFilmBusy(false);
+    setFilmStage("idle");
+    setFilmError(null);
+    setFilmErrorStage("generation");
+    assemblyRetryShotsRef.current = [];
+    setFilmShots([]);
+    setShotStatus({});
+    setIncludeCaptions(initialCaptionChoiceRef.current);
+    setDucking(true);
+    setAudioSelection({ voice: "", bgm: "", sfx: "" });
+    setCompositionWarnings([]);
+    setCaptionTiming(null);
+    return () => {
+      filmGenerationRef.current += 1;
+      filmInFlightRef.current = false;
+    };
+  }, [node.workflow_id, node.node_id]);
   const [filmError, setFilmError] = useState<string | null>(null);
+  const [filmErrorStage, setFilmErrorStage] = useState<"generation" | "assembly">("generation");
+  const assemblyRetryShotsRef = useRef<Array<{ node_id: string; title: string }>>([]);
   const [filmShots, setFilmShots] = useState<Array<{ node_id: string; title: string }>>([]);
   const [shotStatus, setShotStatus] = useState<Record<string, string>>({});
   // 概念断奶（2026-09-29）：锚点/镜头表/源码是高级入口，默认收起——
@@ -151,8 +212,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // 协同 patch、刷新）时必须跟上，否则面板显示过期蓝图。用内容签名判断：
   // 内容没变（仅对象引用变了）不重置，避免打字途中被无关渲染清掉编辑。
   const contentSignature = useMemo(
-    () => JSON.stringify([blueprint.slots, blueprint.anchor_events]),
-    [blueprint.slots, blueprint.anchor_events],
+    () => JSON.stringify([scopeKey, blueprint.slots, blueprint.anchor_events]),
+    [scopeKey, blueprint.slots, blueprint.anchor_events],
   );
   const syncedSignature = useRef(contentSignature);
   useEffect(() => {
@@ -517,9 +578,78 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // 3) 渲染是 detached 的：拿到 render_id 后轮询 v2 渲染状态端点。
   // 一键复刻成片：当前槽位 → 后端编排（每镜一个 video 节点 + 一次 run）→
   // 逐镜轮询直到终态。作者只按一个按钮，其余都是内部实现。
+  const assembleReadyShots = useCallback(async (readyIds: string[], isCurrent: () => boolean) => {
+    setFilmStage("assembling");
+    setCompositionWarnings([]);
+    const readyNodes = (agentCanvasWorkflow?.workflow_id === node.workflow_id ? agentCanvasWorkflow.nodes : [])?.filter((candidate) => readyIds.includes(candidate.node_id)) ?? [];
+    const programDuration = readyNodes.length === readyIds.length ? readyNodes.reduce((sum, candidate) => {
+      const content = candidate.structured_content ?? {};
+      const segment = content.segment && typeof content.segment === "object" ? content.segment as Record<string, unknown> : content;
+      const raw = Number(segment.duration_seconds || 5);
+      return sum + (Number.isFinite(raw) ? Math.max(0.5, raw) : 5);
+    }, 0) : null;
+    const audioClips = (["voice", "bgm", "sfx"] as const).flatMap((role) => {
+      const selected = audioSelection[role];
+      if (!selected) return [];
+      const asset = audioAssets.find((candidate) => `${candidate.asset_id}:${candidate.version_id}` === selected);
+      if (!asset?.version_id || !asset.duration_seconds) throw new Error("所选音频版本已不可用，请重新选择素材。");
+      if (!programDuration) throw new Error("镜头时长尚未同步，请刷新画布后重新合成，避免音频超出节目范围。");
+      return [{ role, asset_id: asset.asset_id, asset_version_id: asset.version_id,
+        start_seconds: 0, duration_seconds: Math.min(asset.duration_seconds, programDuration), volume: role === "bgm" ? 0.3 : 1 }];
+    });
+    const asm = await fetch("/api/v1/creation/assemble-film", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow_id: node.workflow_id, node_ids: readyIds,
+        replica_node_id: node.node_id, include_captions: includeCaptions,
+        audio_clips: audioClips, source_audio_policy: "mute", ducking: ducking && audioClips.some((clip) => clip.role === "voice") && audioClips.some((clip) => clip.role === "bgm") }),
+    });
+    const body = await asm.json().catch(() => null) as {
+      success?: boolean; clip_count?: number; render_id?: string; error?: string;
+      detail?: unknown; warnings?: string[]; caption_timing_quality?: string | null;
+    } | null;
+    if (!isCurrent()) return;
+    if (!asm.ok || !body || body.success === false) throw new Error(body?.error || describeReplicaError(asm.status, body?.detail).join("；"));
+    setCompositionWarnings(body.warnings ?? []);
+    setCaptionTiming(body.caption_timing_quality ?? null);
+    bumpTimelineMutationRefresh();
+    if (body.render_id) {
+      setShotStatus((prev) => ({ ...prev, __film: `render:${body.render_id}` }));
+      setRenderVideoUrl(null); setRenderFailure(null); setRenderProgress(null);
+      renderBusyRef.current = true;
+      setRenderId(body.render_id); setRenderPhase("polling");
+      writeReplicaRender(node.workflow_id, node.node_id, { renderId: body.render_id, renderPhase: "polling" });
+    } else if (body.clip_count) setShotStatus((prev) => ({ ...prev, __film: `timeline:${body.clip_count}` }));
+    if (body.error) setFilmError(body.error);
+  }, [node.workflow_id, node.node_id, includeCaptions, ducking, audioSelection, audioAssets, agentCanvasWorkflow]);
+
+  const reassembleFilm = useCallback(async () => {
+    const readyShots = filmErrorStage === "assembly" && assemblyRetryShotsRef.current.length
+      ? assemblyRetryShotsRef.current : existingReadyShots;
+    if (filmInFlightRef.current || renderBusyRef.current || !readyShots.length) return;
+    filmInFlightRef.current = true;
+    setFilmErrorStage("assembly");
+    assemblyRetryShotsRef.current = readyShots;
+    const generation = ++filmGenerationRef.current;
+    const isCurrent = () => generation === filmGenerationRef.current && activeScopeRef.current === scopeKey;
+    setFilmBusy(true); setFilmError(null);
+    setFilmShots(readyShots.map((candidate) => ({ node_id: candidate.node_id, title: candidate.title })));
+    setShotStatus(Object.fromEntries(readyShots.map((candidate) => [candidate.node_id, "ready"])));
+    try { await assembleReadyShots(readyShots.map((candidate) => candidate.node_id), isCurrent); }
+    catch (err) { if (isCurrent()) setFilmError(err instanceof Error ? err.message : "重新合成失败"); }
+    finally { if (isCurrent()) { filmInFlightRef.current = false; setFilmBusy(false); setFilmStage("idle"); } }
+  }, [existingReadyShots, assembleReadyShots, scopeKey, filmErrorStage]);
+
   const generateFilm = useCallback(async () => {
+    if (filmInFlightRef.current || renderBusyRef.current) return;
+    filmInFlightRef.current = true;
+    const generation = ++filmGenerationRef.current;
+    const isCurrent = () => generation === filmGenerationRef.current && activeScopeRef.current === scopeKey;
     setFilmBusy(true);
+    setFilmStage("submitting");
     setFilmError(null);
+    setFilmErrorStage("generation");
+    assemblyRetryShotsRef.current = [];
+    let failureStage: "generation" | "assembly" = "generation";
     try {
       const slotUpdates: Record<string, string> = {};
       for (const slot of slots) slotUpdates[slot.kind] = slot.replace_with;
@@ -542,19 +672,25 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         const message = typeof detail === "string" ? detail : detail?.error;
         throw new Error(message || `生成失败 (HTTP ${response.status})`);
       }
+      if (!isCurrent()) return;
       const shots = body.shots ?? [];
+      if (!shots.length) throw new Error("生成响应没有镜头，无法跟踪或合成；请重试。");
+      let latestStatuses: Record<string, string> = {};
       setFilmShots(shots);
+      setFilmStage("shots");
       setShotStatus(Object.fromEntries(shots.map((shot) => [shot.node_id, "排队中"])));
       // 逐镜轮询直到终态（4s 一拍；video 生成通常 1–3 分钟/镜）
       const deadline = Date.now() + 30 * 60 * 1000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 4000));
+        if (!isCurrent()) return;
         const statuses = await Promise.all(
           shots.map(async (shot) => {
             try {
               const res = await fetch(
                 `/api/v2/workflows/${node.workflow_id}/nodes/${shot.node_id}`,
               );
+              if (!res.ok) throw new Error(`镜头查询失败 (HTTP ${res.status})`);
               const data = (await res.json()) as { status?: string };
               return [shot.node_id, data.status ?? "unknown"] as const;
             } catch {
@@ -562,45 +698,48 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
             }
           }),
         );
-        setShotStatus(Object.fromEntries(statuses));
+        if (!isCurrent()) return;
+        latestStatuses = Object.fromEntries(statuses);
+        setShotStatus(latestStatuses);
         if (statuses.every(([, status]) => status === "ready" || status === "failed")) break;
       }
-      // S8：镜头齐了 → 铺到时间线（合成）；v2 渲染栈对 canvas 工作流不可达
-      // （2026-09-29 实证的架构缺口），失败如实带码上屏，不假装成片。
+      if (!shots.every((shot) => latestStatuses[shot.node_id] === "ready")) {
+        const failed = shots.filter((shot) => latestStatuses[shot.node_id] === "failed").length;
+        throw new Error(failed > 0
+          ? `${failed} 个镜头生成失败，未自动合成不完整影片；请重试。`
+          : "镜头生成查询超时，后台任务可能仍在运行；请稍后重试。");
+      }
+      // Assemble from the final poll result, never the state captured when
+      // this async callback started. All shots must be ready before export.
       const readyIds = shots
-        .filter((shot) => (shotStatus[shot.node_id] ?? "") === "ready")
+        .filter((shot) => latestStatuses[shot.node_id] === "ready")
         .map((shot) => shot.node_id);
       if (readyIds.length > 0) {
-        const asm = await fetch("/api/v1/creation/assemble-film", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workflow_id: node.workflow_id, node_ids: readyIds }),
-        });
-        const asmBody = (await asm.json().catch(() => null)) as {
-          clip_count?: number;
-          render_id?: string;
-          error?: string;
-        } | null;
-        if (asmBody?.render_id) {
-          setShotStatus((prev) => ({ ...prev, __film: `render:${asmBody.render_id}` }));
-        } else if (asmBody?.clip_count) {
-          setShotStatus((prev) => ({
-            ...prev,
-            __film: `timeline:${asmBody.clip_count}`,
-          }));
-        }
-        if (asmBody?.error) setFilmError(asmBody.error);
+        failureStage = "assembly";
+        setFilmErrorStage("assembly");
+        assemblyRetryShotsRef.current = shots;
+        await assembleReadyShots(readyIds, isCurrent);
       }
     } catch (err) {
-      setFilmError(err instanceof Error ? err.message : "生成失败");
+      if (isCurrent()) {
+        setFilmErrorStage(failureStage);
+        setFilmError(err instanceof Error ? err.message : failureStage === "assembly" ? "合成失败" : "生成失败");
+      }
     } finally {
-      setFilmBusy(false);
+      if (isCurrent()) {
+        filmInFlightRef.current = false;
+        setFilmBusy(false);
+        setFilmStage("idle");
+      }
     }
-  }, [node.workflow_id, node.node_id, slots]);
+  }, [node.workflow_id, node.node_id, slots, scopeKey, assembleReadyShots]);
 
   const startDirectRender = useCallback(async () => {
     // D7 idempotency guard: never fire a second direct-execute while one is in flight.
-    if (renderPhase === "starting" || renderPhase === "polling") return;
+    if (renderBusyRef.current || filmInFlightRef.current) return;
+    renderBusyRef.current = true;
+    const requestScope = scopeKey;
+    const isCurrent = () => activeScopeRef.current === requestScope;
     setRenderPhase("starting");
     setRenderFailure(null);
     setRenderBlockers([]);
@@ -619,6 +758,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         node.node_id,
         { structured_content: content as unknown as Record<string, unknown> },
       );
+      if (!isCurrent()) return;
       setAgentCanvasWorkflow(patchResponse.value.workflow);
 
       const response = await fetch("/api/v1/replica/blueprint/direct-execute/render", {
@@ -641,6 +781,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         }),
       });
       const body = await response.json().catch(() => null);
+      if (!isCurrent()) return;
       if (response.status !== 200 || !body) {
         const detail = body?.detail;
         const errorType =
@@ -718,21 +859,25 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         renderPhase: "polling",
       });
     } catch (err) {
+      if (!isCurrent()) return;
       setRenderFailure(err instanceof Error ? err.message : "直出失败");
       setRenderPhase("failed");
     }
-  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe, renderPhase, libraryResolutions]);
+  }, [buildContent, node, setAgentCanvasWorkflow, selectedRecipe, libraryResolutions, scopeKey]);
   // 轮询渲染状态（组件卸载自动停；超过 ~5 分钟未终态则明确失败，不无限轮）
   useEffect(() => {
-    if (renderPhase !== "polling" || !renderId) return;
+    if (renderPhase !== "polling" || !renderId || renderScopeRef.current !== scopeKey) return;
     let cancelled = false;
+    let polling = false;
     let attempts = 0;
     const tick = async () => {
+      if (cancelled || polling || activeScopeRef.current !== scopeKey) return;
+      polling = true;
       attempts += 1;
       try {
         const response = await fetch(finalRenderStatePath(node.workflow_id, renderId));
         const body = await response.json().catch(() => null);
-        if (cancelled) return;
+        if (cancelled || activeScopeRef.current !== scopeKey) return;
         if (response.status !== 200 || !body) {
           setRenderFailure(`渲染状态查询失败 (HTTP ${response.status})`);
           setRenderPhase("failed");
@@ -740,6 +885,9 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         }
         if (typeof body.progress_percent === "number") {
           setRenderProgress(body.progress_percent);
+        }
+        if (["completed", "failed", "cancelled"].includes(body.status)) {
+          clearReplicaRender(node.workflow_id, node.node_id);
         }
         if (body.status === "completed") {
           setRenderVideoUrl(typeof body.output_url === "string" ? body.output_url : null);
@@ -758,6 +906,8 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         if (cancelled) return;
         setRenderFailure(err instanceof Error ? err.message : "渲染状态查询失败");
         setRenderPhase("failed");
+      } finally {
+        polling = false;
       }
     };
     void tick();
@@ -766,23 +916,34 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [renderPhase, renderId, node.workflow_id]);
+  }, [renderPhase, renderId, node.workflow_id, node.node_id, scopeKey]);
 
   // D7: re-attach to an in-flight render after a refresh (render_id survived in storage).
   useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    renderScopeRef.current = scopeKey;
     const snapshot = readReplicaRender(node.workflow_id, node.node_id);
-    if (snapshot) {
-      setRenderId(snapshot.renderId);
-      setRenderPhase("polling");
-    }
-  }, [node.workflow_id, node.node_id]);
+    renderBusyRef.current = Boolean(snapshot);
+    setRenderId(snapshot?.renderId ?? null);
+    setRenderPhase(snapshot ? "polling" : "idle");
+    setRenderVideoUrl(null);
+    setRenderFailure(null);
+    setRenderProgress(null);
+    setCancelPending(false);
+    setNotice(null);
+    setError(null);
+    setSelectedRecipe(null);
+    setLibraryResolutions([]);
+    setRenderBlockers([]);
+    setRenderErrorItems([]);
+    setRenderNotes([]);
+    return () => { renderBusyRef.current = false; renderScopeRef.current = ""; activeScopeRef.current = ""; };
+  }, [node.workflow_id, node.node_id, scopeKey]);
 
   // D7: once the render reaches a terminal state, drop the resumable snapshot.
   useEffect(() => {
-    if (renderPhase === "completed" || renderPhase === "failed") {
-      clearReplicaRender(node.workflow_id, node.node_id);
-    }
-  }, [renderPhase, node.workflow_id, node.node_id]);
+    renderBusyRef.current = renderPhase === "starting" || renderPhase === "polling";
+  }, [renderPhase]);
 
   // D7: count elapsed seconds while a render is starting/polling.
   useEffect(() => {
@@ -797,14 +958,14 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   // job and stops the process; pretending to cancel by clearing UI state is
   // what made the old "取消" dishonest).
   const cancelDirectRender = useCallback(async () => {
+    if (cancelPending) return;
+    const requestScope = scopeKey;
+    setCancelPending(true);
     const currentRenderId = renderId;
-    clearReplicaRender(node.workflow_id, node.node_id);
-    setRenderId(null);
-    setRenderProgress(null);
-    setRenderElapsed(0);
-    setRenderPhase("idle");
     if (!currentRenderId) {
-      setNotice("已停止跟踪本次直出渲染。");
+      setRenderPhase("idle");
+      setNotice("已停止跟踪本次渲染。");
+      setCancelPending(false);
       return;
     }
     try {
@@ -812,24 +973,35 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
         method: "POST",
       });
       const body = await response.json().catch(() => null);
+      if (activeScopeRef.current !== requestScope) return;
       if (response.status !== 200) {
         setNotice(
-          `已停止跟踪；取消请求未被接受 (HTTP ${response.status})——渲染可能仍在后台进行，可到工作流的 final-composition 面板查看。`,
+          `取消请求未被接受 (HTTP ${response.status})——仍在跟踪后台渲染，可稍后重试取消。`,
         );
         return;
       }
       const status = typeof body?.status === "string" ? body.status : "";
+      if (status === "cancelled") {
+        clearReplicaRender(node.workflow_id, node.node_id);
+        renderBusyRef.current = false;
+        setRenderPhase("idle");
+        setRenderId(null);
+        setRenderProgress(null);
+      }
       setNotice(
         status === "cancelled"
           ? "✓ 已取消该直出渲染（后端已停止任务）。"
           : `已请求取消（后端状态：${status || "处理中"}）——渲染可能仍在收尾，可到 final-composition 面板查看。`,
       );
     } catch {
+      if (activeScopeRef.current !== requestScope) return;
       setNotice(
-        "已停止跟踪；取消请求发送失败——渲染可能仍在后台进行，可到 final-composition 面板查看。",
+        "取消请求发送失败——仍在跟踪后台渲染，可稍后重试取消。",
       );
+    } finally {
+      if (activeScopeRef.current === requestScope) setCancelPending(false);
     }
-  }, [node.workflow_id, node.node_id, renderId]);
+  }, [node.workflow_id, node.node_id, renderId, cancelPending, scopeKey]);
 
   if (!hasBlueprint) {
     return (
@@ -853,16 +1025,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
   const styleSlotIndex = slots.findIndex((slot) => slot.kind === "style");
 
   return (
-    <div
-      style={{
-        padding: 10,
-        overflow: "auto",
-        height: "100%",
-        color: "#ccc",
-        fontSize: 11,
-        fontFamily: "monospace",
-      }}
-    >
+    <div className="replica-workbench" aria-label="复刻创作工作台">
       {error && (
         <div
           style={{
@@ -898,6 +1061,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ color: "#fc8", fontSize: 12, fontWeight: 600 }}>🎬 导演台</span>
         <button
+          aria-expanded={showAdvanced}
           onClick={() => {
             if (showAdvanced) {
               setShowAdvanced(false);
@@ -950,8 +1114,13 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
           {!showAdvanced && (
             <div style={{ color: "#fc8", fontSize: 11, marginBottom: 4 }}>槽位替换</div>
           )}
+          <p className="replica-workbench__intro">先填写要替换的人物、商品或台词，再生成复刻成片。留空会保留原片设定；生成可能使用模型额度。</p>
+          <ol className="replica-workbench__steps" aria-label="复刻创作步骤">
+            <li>1 · 调整替换内容</li><li>2 · 生成全部镜头</li><li>3 · 合成并预览成片</li>
+          </ol>
           {/* 一键复刻成片：作者唯一需要按的按钮 */}
           <div
+            className="replica-workbench__production"
             style={{
               background: "#141428",
               border: "1px solid #2a2a4a",
@@ -960,9 +1129,47 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
               marginBottom: 8,
             }}
           >
+            <details key={scopeKey} className="replica-workbench__composition-details">
+              <summary>字幕与声音 <span aria-live="polite">{includeCaptions ? "字幕开启" : "字幕关闭"} · 旁白：{audioAssets.find((asset) => `${asset.asset_id}:${asset.version_id}` === audioSelection.voice)?.display_name ?? (audioSelection.voice ? "所选版本已不可用" : "不添加")} · 配乐：{audioAssets.find((asset) => `${asset.asset_id}:${asset.version_id}` === audioSelection.bgm)?.display_name ?? (audioSelection.bgm ? "所选版本已不可用" : "不添加")}</span></summary>
+            <fieldset className="replica-workbench__composition" disabled={filmBusy || renderPhase === "starting" || renderPhase === "polling" || cancelPending}>
+              <legend>字幕与声音</legend>
+              <label><input type="checkbox" checked={includeCaptions} onChange={(event) => setIncludeCaptions(event.target.checked)} /> 添加行级字幕 / 屏上文字</label>
+              <p>字幕按镜头节目时间编排，不沿用参考片的词级时间；原视频声音默认静音。</p>
+              {audioAssets.length === 0 && <p>当前项目还没有可用的声音素材。可以先不添加声音，或选择、上传旁白与配乐后再合成。</p>}
+              {projectAudioAssets.length > audioAssets.length && <p role="status">部分声音素材不可用：素材已不可用、缺少固定版本或有效时长，暂不列入选择。</p>}
+              {onOpenAssets && <>
+                <button type="button" className="replica-workbench__secondary" disabled={filmBusy || renderPhase === "starting" || renderPhase === "polling" || cancelPending} onClick={(event) => { event.stopPropagation(); onOpenAssets(); }}>
+                  {audioAssets.length === 0 ? "选择或上传声音素材" : "管理声音素材"}
+                </button>
+                <p>在素材库的 Project Assets 中切换到 Audio，或上传音频；返回后在下方选择素材，不会自动生成声音。</p>
+              </>}
+              {(["voice", "bgm"] as const).map((role) => (
+                <label key={role} htmlFor={`replica-audio-${node.node_id}-${role}`}>
+                  {role === "voice" ? "旁白素材" : "配乐素材"}
+                  <select id={`replica-audio-${node.node_id}-${role}`} value={audioSelection[role]} onChange={(event) => setAudioSelection((current) => ({ ...current, [role]: event.target.value }))}>
+                    <option value="">不添加</option>
+                    {audioAssets.map((asset) => <option key={`${asset.asset_id}:${asset.version_id}`} value={`${asset.asset_id}:${asset.version_id}`}>{asset.display_name} · {asset.duration_seconds?.toFixed(1)}s</option>)}
+                  </select>
+                </label>
+              ))}
+              {audioSelection.voice && audioSelection.bgm && <label><input type="checkbox" checked={ducking} onChange={(event) => setDucking(event.target.checked)} /> 旁白时自动压低配乐</label>}
+              <details className="replica-workbench__audio-advanced">
+                <summary>更多声音选项 · 音效{audioSelection.sfx ? "已选择" : "不添加"}</summary>
+                <label htmlFor={`replica-audio-${node.node_id}-sfx`}>音效素材
+                  <select id={`replica-audio-${node.node_id}-sfx`} value={audioSelection.sfx} onChange={(event) => setAudioSelection((current) => ({ ...current, sfx: event.target.value }))}>
+                    <option value="">不添加</option>
+                    {audioAssets.map((asset) => <option key={`${asset.asset_id}:${asset.version_id}`} value={`${asset.asset_id}:${asset.version_id}`}>{asset.display_name} · {asset.duration_seconds?.toFixed(1)}s</option>)}
+                  </select>
+                </label>
+              </details>
+              <p>只使用当前项目已有音频版本，不会自动生成声音。音频从片头开始，只取节目时长范围内的素材；精细位置可在时间线调整。</p>
+            </fieldset>
+            </details>
+            {existingReadyShots.length > 0 && <button type="button" className="replica-workbench__primary" onClick={() => void reassembleFilm()} disabled={filmBusy || renderPhase === "starting" || renderPhase === "polling" || cancelPending}>重新合成现有镜头（不调用视频模型）</button>}
             <button
               onClick={() => void generateFilm()}
-              disabled={filmBusy}
+              disabled={filmBusy || renderPhase === "starting" || renderPhase === "polling" || cancelPending}
+              className={existingReadyShots.length ? "replica-workbench__secondary" : "replica-workbench__primary"}
               title="按当前槽位生成全部镜头（重复点击会复用已生成的镜头）"
               style={{
                 background: filmBusy ? "#2a2a4a" : "#2a6a3a",
@@ -975,11 +1182,18 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                 fontFamily: "monospace",
               }}
             >
-              {filmBusy ? "⏳ 生成中…" : "🎬 生成复刻成片"}
+              {filmBusy ? filmStage === "assembling" ? "⏳ 合成中…" : "⏳ 生成中…" : "🎬 生成复刻成片"}
             </button>
+            <div className="replica-workbench__stage" role="status" aria-live="polite">
+              {filmStage === "submitting" ? "正在提交镜头生成请求…" : filmStage === "shots" ? `镜头生成中 · ${filmShots.filter((shot) => shotStatus[shot.node_id] === "ready").length}/${filmShots.length} 已就绪` : filmStage === "assembling" ? "全部镜头就绪，正在合成时间线…" : renderPhase === "starting" ? "正在提交渲染…" : renderPhase === "polling" ? `成片渲染中 · 已等待 ${renderElapsed} 秒` : renderPhase === "completed" ? "成片已就绪，可以预览或保存" : existingReadyShots.length > 0 ? "全部现有镜头已就绪，可直接合成；生成镜头可能使用模型额度。" : "填写替换内容后开始生成"}
+            </div>
+            {captionTiming && <p role="status">字幕时间质量：{captionTiming === "authored_shot" ? "镜头级编排（非词级对齐）" : captionTiming}</p>}
+            {compositionWarnings.length > 0 && <div className="replica-workbench__error" role="status"><strong>编排提示</strong><ul>{compositionWarnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning === "captions_authored_shot_timing_not_word_aligned" ? "字幕按镜头时间显示，尚未与新旁白逐词对齐。" : warning}</li>)}</ul></div>}
             {filmError && (
-              <div style={{ color: "#f88", fontSize: 9, marginTop: 4 }}>
-                生成失败：{filmError}
+              <div className="replica-workbench__error" role="alert">
+                {filmErrorStage === "assembly" ? "合成失败：" : "生成失败："}{filmError}
+                <button onClick={() => void (filmErrorStage === "assembly" ? reassembleFilm() : generateFilm())} disabled={filmBusy || renderPhase === "starting" || renderPhase === "polling" || cancelPending}>{filmErrorStage === "assembly" ? "重试合成" : "重试生成"}</button>
+                <p>{filmErrorStage === "assembly" ? "镜头已就绪，重试只合成现有镜头，不调用视频模型。" : "重试会复用已生成的镜头，不必重新填写替换内容。"}</p>
               </div>
             )}
             {filmShots.map((shot) => {
@@ -1003,9 +1217,34 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                 ✓ 已铺上时间线（{shotStatus.__film.slice("timeline:".length)} 镜）——在时间线编辑器里可见
               </div>
             )}
+            {(renderId || renderPhase !== "idle") && (
+              <section className="replica-workbench__render" aria-label="成片渲染状态">
+                {renderPhase === "polling" && <>
+                  <progress aria-label="成片渲染进度" max={100} value={renderProgress ?? undefined} />
+                  <span>{renderProgress === null ? "正在查询进度…" : `${renderProgress}%`}</span>
+                  <button onClick={() => void cancelDirectRender()} disabled={cancelPending}>取消成片渲染</button>
+                </>}
+                {renderPhase === "failed" && <div role="alert">
+                  {renderFailure || "本次渲染未完成。可展开高级查看原因或重新生成。"}
+                  {renderId && <button onClick={() => { renderBusyRef.current = true; setRenderFailure(null); setRenderPhase("polling"); }}>重新查询状态</button>}
+                </div>}
+                {renderPhase === "completed" && renderVideoUrl && <>
+                  <video aria-label="复刻成片预览" controls preload="metadata" src={renderVideoUrl} />
+                  <div className="replica-workbench__actions">
+                    <a href={renderVideoUrl} target="_blank" rel="noopener noreferrer">打开成片</a>
+                    <a href={renderVideoUrl} download>下载成片</a>
+                  </div>
+                  <p>跨域素材若未直接下载，可在打开的播放器中保存视频。</p>
+                </>}
+              </section>
+            )}
             {shotStatus.__film?.startsWith("render:") && (
               <div style={{ fontSize: 9, marginTop: 2, color: "#8f8" }}>
-                ✓ 成片渲染中（{shotStatus.__film.slice("render:".length)}）
+                {renderPhase === "completed" ? "✓ 成片渲染完成" : renderPhase === "failed" ? "✗ 成片渲染失败" : "⏳ 成片渲染中"}
+                （{shotStatus.__film.slice("render:".length)}）
+                {renderPhase === "polling" && renderProgress !== null && ` ${renderProgress}%`}
+                {renderPhase === "failed" && renderFailure && <div style={{ color: "#f88" }}>{renderFailure}</div>}
+
               </div>
             )}
           </div>
@@ -1013,14 +1252,16 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
             槽位 = 复刻时要替换的成分（留空 = 保留原片值）
           </div>
           {slots.map((slot, index) => (
-            <div key={slot.kind} style={{ marginBottom: 8 }}>
-              <div style={{ color: "#fc8", marginBottom: 3 }}>
+            <div key={slot.kind} className="replica-workbench__slot">
+              <label htmlFor={`replica-slot-${node.node_id}-${index}`}>
                 【{slot.label}】
                 {slot.source_value ? (
                   <span style={{ color: "#666" }}> 原片值：{slot.source_value}</span>
                 ) : null}
-              </div>
+              </label>
               <input
+                id={`replica-slot-${node.node_id}-${index}`}
+                disabled={filmBusy || renderPhase === "starting" || renderPhase === "polling"}
                 value={slot.replace_with}
                 onChange={(event) => {
                   const next = [...slots];
@@ -1353,7 +1594,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
             />
             <button
               onClick={() => void startDirectRender()}
-              disabled={renderPhase === "starting" || renderPhase === "polling"}
+              disabled={filmBusy || cancelPending || renderPhase === "starting" || renderPhase === "polling"}
               style={{
                 background:
                   renderPhase === "starting" || renderPhase === "polling" ? "#2a2a4a" : "#3a5a8a",
@@ -1573,7 +1814,7 @@ export function ReplicaBlueprintPanel({ node, height = 380 }: ReplicaBlueprintPa
                   <button
                     type="button"
                     onClick={() => void startDirectRender()}
-                    disabled={renderPhase === "starting" || renderPhase === "polling"}
+                    disabled={filmBusy || cancelPending || renderPhase === "starting" || renderPhase === "polling"}
                     style={{
                       marginTop: 5,
                       background:

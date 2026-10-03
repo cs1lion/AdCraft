@@ -40,6 +40,7 @@ from app.schemas.workflow_v2 import (
     WorkflowV2TimelineRenderStartResponse,
     WorkflowV2TimelineUpdateRequest,
 )
+from app.services.replica.recipe import ReplicaRecipeV2
 from app.services.replica.direct_execute import DirectExecutePlan, plan_direct_execute
 from app.services.replica.direct_execute_render import (
     UNRESOLVED_LIBRARY_ASSET_ID,
@@ -131,6 +132,7 @@ def render_replica_blueprint(
     workflow_id: str,
     blueprint: ReplicaBlueprintContentV2,
     *,
+    recipe: ReplicaRecipeV2 | None = None,
     library_resolutions: tuple[ReplicaLibraryResolution, ...] = (),
     timeline_service: Any,
     render_service: Any,
@@ -144,7 +146,7 @@ def render_replica_blueprint(
     if not gate.feasible:
         raise ReplicaRenderNotFeasible(gate.blockers + gate.generation_steps)
 
-    render_plan = plan_direct_execute_render(blueprint, gate)
+    render_plan = plan_direct_execute_render(blueprint, gate, recipe=recipe)
     if not render_plan.feasible:  # 双重防线：门与编译层结论不一致时拒绝
         raise ReplicaRenderNotFeasible(render_plan.rejected)
 

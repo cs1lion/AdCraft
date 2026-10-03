@@ -41,7 +41,13 @@ export function FourLinePromptEditor({
       if (reachedBoundary) return;
 
       event.preventDefault();
-      const nextScrollTop = editor.scrollTop + (event.deltaY > 0 ? FOUR_LINE_HEIGHT : -FOUR_LINE_HEIGHT);
+      // Respect trackpad distance; normalize line/page-based mouse wheels.
+      const delta = event.deltaMode === 1
+        ? event.deltaY * (FOUR_LINE_HEIGHT / 4)
+        : event.deltaMode === 2
+          ? event.deltaY * editor.clientHeight
+          : event.deltaY;
+      const nextScrollTop = editor.scrollTop + delta;
       editor.scrollTop = Math.max(0, Math.min(maximumScroll, nextScrollTop));
     };
 

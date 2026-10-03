@@ -1492,6 +1492,9 @@ class V2ProviderExecutor:
                 media_type=media_type,
                 provider_payload=provider_payload,
                 error_code=error_code,
+                error_message=_bounded_provider_error_message(str(error), ()),
+                raw_body=str(error),
+                provider_error=error,
                 reference_asset_ids=reference_asset_ids,
             )
         except Exception as error:  # noqa: BLE001 - native transport failures become results.
@@ -1504,6 +1507,7 @@ class V2ProviderExecutor:
                 # 503 body sits before the redaction cap today, but nothing
                 # guarantees that for every provider's field order.
                 raw_body=str(error),
+                provider_error=error,
                 reference_asset_ids=reference_asset_ids,
             )
 
@@ -1594,6 +1598,9 @@ class V2ProviderExecutor:
                 media_type=media_type,
                 provider_payload=provider_payload,
                 error_code=error_code,
+                error_message=_bounded_provider_error_message(str(error), ()),
+                raw_body=str(error),
+                provider_error=error,
                 audit=audit,
                 reference_asset_ids=_native_reference_asset_ids(provider_payload),
             )
@@ -1603,6 +1610,8 @@ class V2ProviderExecutor:
                 provider_payload=provider_payload,
                 error_code="provider_generation_failed",
                 error_message=_bounded_provider_error_message(str(error), ()),
+                raw_body=str(error),
+                provider_error=error,
                 audit=audit,
                 reference_asset_ids=_native_reference_asset_ids(provider_payload),
             )
@@ -2925,6 +2934,7 @@ def _native_provider_failure(
     audit: Mapping[str, object] | None = None,
     reference_asset_ids: list[str] | None = None,
     raw_body: str | None = None,
+    provider_error: Exception | None = None,
 ) -> V2ProviderResult:
     safe_audit = dict(audit or {})
     metadata: dict[str, Any] = (
@@ -2938,9 +2948,15 @@ def _native_provider_failure(
     # the very same response as transient.  Classify here so the native path and
     # the request path share one verdict.
     if error_code == "provider_generation_failed":
+        error_metadata = provider_error.metadata if isinstance(provider_error, MediaApiError) else {}
+        http_status = error_metadata.get("status")
+        body = error_metadata.get("response_body")
         transient_code, retryable = classify_provider_error(
-            response_body=raw_body or message
+            status_code=http_status if isinstance(http_status, int) else None,
+            response_body=body if isinstance(body, str) else raw_body or message,
         )
+        if isinstance(http_status, int):
+            metadata["provider_http_status"] = http_status
         if retryable and transient_code is not None:
             metadata["retryable"] = True
             metadata["native_error_code"] = error_code

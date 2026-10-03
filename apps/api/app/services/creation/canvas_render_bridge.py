@@ -7,7 +7,7 @@ shot_video_segment slot 带选中资产 + final-composition 节点），写入
 authoring 存储——此后标准的 get_timeline / start_render 全部够得着，
 不建第二执行链（ADR 0010），渲染仍走 v2 渲染服务。
 
-幂等：已桥接过的工作流（read_model 能 assemble）不重复创建。
+投影刷新：已桥接工作流按最新镜头重建；最终时间线保留用户编辑策略。
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ def build_canvas_film_workflow(
     project_id: str | None,
     name: str,
     shots: list[BridgeShotV1],
+    composition_plan_hash: str | None = None,
+    audio_mode: str = "none",
 ) -> WorkflowV2:
     now = datetime.now(timezone.utc).isoformat()
     shot_items = tuple(
@@ -51,6 +53,7 @@ def build_canvas_film_workflow(
             display_name=f"镜头 {shot.index}",
             shot_id=f"shot_{shot.index}",
             shot_index=shot.index,
+            duration_seconds=shot.duration_seconds,
             slots=(
                 WorkflowSlotV2(
                     slot_id=f"shot_video_segment_{shot.index}",
@@ -88,7 +91,10 @@ def build_canvas_film_workflow(
         name=name,
         description="拉片复刻一键成片（canvas → authoring 桥接投影）",
         prompt="拉片复刻一键成片",
-        audio_mode="none",
+        audio_mode=audio_mode,
+        metadata={"replica_composition_plan_hash": composition_plan_hash}
+        if composition_plan_hash
+        else {},
         created_at=now,
         updated_at=now,
         nodes=(
@@ -201,7 +207,16 @@ def _already_bridged(runtime, workflow_id: str) -> bool:
         return False
 
 
-def bridge_canvas_workflow(settings, workflow_id: str, project_id: str | None, name: str, shots: list[BridgeShotV1]) -> bool:
+def bridge_canvas_workflow(
+    settings,
+    workflow_id: str,
+    project_id: str | None,
+    name: str,
+    shots: list[BridgeShotV1],
+    *,
+    composition_plan_hash: str | None = None,
+    audio_mode: str = "none",
+) -> bool:
     """把画布工作流投影进 authoring 存储。返回是否新建了投影。
 
     投影挂在**专属桥接项目**（proj_film_*）下而不是画布自己的 project：
@@ -222,15 +237,15 @@ def bridge_canvas_workflow(settings, workflow_id: str, project_id: str | None, n
         project_id=bridge_project_id,
         name=name,
         shots=shots,
+        composition_plan_hash=composition_plan_hash,
+        audio_mode=audio_mode,
     )
     runtime.service.create_planned_workflow(workflow)
     try:
-        ProjectRepository(runtime.database).update_status(
+        ProjectRepository(runtime.database).update(
             bridge_project_id,
             expected_version=1,
-            expected_status="active",
-            status="archived",
-            deleted=False,
+            changes={"status": "archived"},
         )
     except Exception as exc:  # noqa: BLE001 - 归档是 best-effort，失败不挡渲染
         # 归档失败不挡渲染：项目列表里多一条投影可见，但片子出得来说得上。

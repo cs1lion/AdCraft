@@ -88,7 +88,7 @@ describe("HomeShowcase", () => {
         productVideoUrl="/assets/home-product-film.mp4"
       />,
     );
-    const media = view.container.querySelector<HTMLElement>(".home-product-film");
+    const media = view.container.querySelector<HTMLElement>(".hero__film");
 
     expect(media?.querySelector("video")).toBeNull();
     expect(media?.querySelector("img")?.getAttribute("src")).toBe("/assets/card1.webp");

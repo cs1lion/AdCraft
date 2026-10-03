@@ -13,6 +13,7 @@ previs videos. The video model (e.g. Agnes Video V2.0) can consume either:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 MAX_FILE_SIZE_MB = 100
+MAX_REFERENCE_FRAMES = 12
+"""Bound extraction work and per-frame paid analysis calls to 1..12 frames."""
 # 60s 与拉片拆解（replica teardown）的时长上界对齐：参考片上传是拉片复刻的
 # 共用入口，15-30s 的广告片必须传得上来；3D 读片成本由抽帧数决定而非时长。
 MAX_DURATION_SECONDS = 60
@@ -124,7 +127,7 @@ def extract_metadata(file_path: Path) -> VideoMetadata:
     frame_rate_str = video_stream.get("r_frame_rate", "30/1")
     if "/" in frame_rate_str:
         num, den = frame_rate_str.split("/")
-        frame_rate = float(num) / float(den) if float(den) != 0 else 30.0
+        frame_rate = float(num) / float(den) if float(den) != 0 else 0.0
     else:
         frame_rate = float(frame_rate_str)
 
@@ -135,10 +138,15 @@ def extract_metadata(file_path: Path) -> VideoMetadata:
     else:
         duration = float(video_stream.get("duration", 0))
 
-    # Frame count
-    frame_count = int(video_stream.get("nb_frames", 0))
-    if frame_count == 0 and duration > 0 and frame_rate > 0:
-        frame_count = int(duration * frame_rate)
+    # FFprobe commonly reports unknown frame counts as "N/A".
+    raw_frame_count = video_stream.get("nb_frames")
+    if raw_frame_count in (None, "", "N/A"):
+        frame_count = 0
+    else:
+        frame_count = int(raw_frame_count)
+    estimated_count = duration * frame_rate
+    if frame_count == 0 and math.isfinite(estimated_count) and estimated_count > 0:
+        frame_count = int(estimated_count)
 
     file_size = file_path.stat().st_size
 
@@ -156,6 +164,15 @@ def extract_metadata(file_path: Path) -> VideoMetadata:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+def validate_frame_count(count: int) -> None:
+    """Bound reference extraction work, including non-HTTP callers."""
+    if type(count) is not int or not 1 <= count <= MAX_REFERENCE_FRAMES:
+        raise UploadError(
+            f"Frame count must be an integer from 1 to {MAX_REFERENCE_FRAMES}",
+            error_type="invalid_frame_count",
+        )
+
 
 def validate_upload(
     file_name: str,
@@ -182,7 +199,7 @@ def validate_upload(
         )
 
     # Check file size
-    if file_size == 0:
+    if file_size <= 0:
         raise UploadError("File is empty", error_type="invalid_size")
 
     if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
@@ -197,6 +214,13 @@ def validate_metadata(metadata: VideoMetadata) -> None:
 
     Raises UploadError if the video doesn't meet requirements.
     """
+    if not math.isfinite(metadata.duration_seconds):
+        raise UploadError("Invalid video duration", error_type="invalid_duration")
+    if not math.isfinite(metadata.frame_rate) or metadata.frame_rate <= 0:
+        raise UploadError("Invalid video frame rate", error_type="invalid_frame_rate")
+    if not math.isfinite(metadata.frame_count) or metadata.frame_count < 0:
+        raise UploadError("Invalid video frame count", error_type="invalid_frame_count")
+
     if metadata.duration_seconds < MIN_DURATION_SECONDS:
         raise UploadError(
             f"Video too short: {metadata.duration_seconds:.2f}s. Minimum: {MIN_DURATION_SECONDS}s",
@@ -209,7 +233,10 @@ def validate_metadata(metadata: VideoMetadata) -> None:
             error_type="invalid_duration",
         )
 
-    if metadata.width == 0 or metadata.height == 0:
+    if (
+        not math.isfinite(metadata.width) or not math.isfinite(metadata.height)
+        or metadata.width <= 0 or metadata.height <= 0
+    ):
         raise UploadError(
             "Invalid video dimensions",
             error_type="invalid_dimensions",
@@ -235,11 +262,12 @@ def extract_keyframes_from_video(
 
     Returns a list of output file paths.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Get video duration
+    validate_frame_count(num_keyframes)
+    validate_upload(video_path.name, video_path.stat().st_size)
     metadata = extract_metadata(video_path)
+    validate_metadata(metadata)
     duration = metadata.duration_seconds
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     keyframe_paths = []
     for i in range(num_keyframes):
@@ -295,7 +323,8 @@ def save_reference_video(
     Raises:
         UploadError: If validation or processing fails.
     """
-    # Validate upload
+    # Validate before creating any persisted assets, even if extraction is disabled.
+    validate_frame_count(num_keyframes)
     validate_upload(file_name, len(file_bytes), content_type)
 
     # Setup output directory

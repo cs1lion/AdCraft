@@ -3,6 +3,82 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { V2ApiError } from "../../../api/v2Client.ts";
 import { useNodePromptAutosave } from "./useNodePromptAutosave.ts";
+import { useNodeWorkbenchDraft } from "./useNodeWorkbenchDraft.ts";
+import type { AgentCanvasWorkflowV2, CanvasNodeV2 } from "../../../types-v2.ts";
+
+function draftNode(prompt: string | null): CanvasNodeV2 {
+  return {
+    node_id: "node-1", workflow_id: "workflow-1", node_type: "image",
+    creative_role: "general_image", title: "Image", status: "draft",
+    generation_prompt: prompt, structured_content: {}, parameters: {},
+    model_ref: null, model_selection_mode: "default",
+  } as CanvasNodeV2;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe("workbench authoritative prompt reconciliation", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function renderDraft(initialPrompt: string | null, patchNode = vi.fn().mockResolvedValue(undefined)) {
+    const hook = renderHook(({ node }) => useNodeWorkbenchDraft({
+      workflow: { workflow_id: "workflow-1" } as AgentCanvasWorkflowV2,
+      node, patchNode, onRun: vi.fn(), onSaveImageToLibrary: vi.fn(),
+    }), { initialProps: { node: draftNode(initialPrompt) } });
+    return { ...hook, patchNode };
+  }
+
+  it("adopts null-to-prepared and subsequent clean server prompts without PATCHing them", async () => {
+    const { result, rerender, patchNode, unmount } = renderDraft(null);
+    rerender({ node: draftNode("Prepared by server") });
+    expect(result.current.prompt).toBe("Prepared by server");
+    rerender({ node: draftNode("Updated by server") });
+    expect(result.current.prompt).toBe("Updated by server");
+    await act(async () => { expect(await result.current.flushPrompt()).toBe(true); });
+    unmount();
+    expect(patchNode).not.toHaveBeenCalled();
+  });
+
+  it("preserves dirty and saving text, guards stale PATCH echoes, then adopts clean server replacements", async () => {
+    const pending = deferred<void>();
+    const patchNode = vi.fn().mockReturnValue(pending.promise);
+    const { result, rerender } = renderDraft("Original", patchNode);
+    act(() => result.current.setPrompt("Local"));
+    rerender({ node: draftNode("External while dirty") });
+    expect(result.current.prompt).toBe("Local");
+    let flush!: Promise<boolean>;
+    act(() => { flush = result.current.flushPrompt(); });
+    rerender({ node: draftNode("Original") });
+    expect(result.current.prompt).toBe("Local");
+    await act(async () => { pending.resolve(); await flush; });
+    rerender({ node: { ...draftNode("Original"), revision: 2 } });
+    expect(result.current.prompt).toBe("Local");
+    rerender({ node: draftNode("Local") });
+    rerender({ node: draftNode("New clean server value") });
+    expect(result.current.prompt).toBe("New clean server value");
+    act(() => result.current.setPrompt("Unsent local"));
+    rerender({ node: draftNode("Another server value") });
+    expect(result.current.prompt).toBe("Unsent local");
+  });
+
+  it("keeps conflict text across authoritative refresh", async () => {
+    const patchNode = vi.fn().mockRejectedValue(new V2ApiError({
+      status: 412, code: "workflow_state_conflict", message: "Conflict",
+      details: {}, violations: [], suggestedActions: [], payload: null,
+    }));
+    const { result, rerender } = renderDraft("Original", patchNode);
+    act(() => result.current.setPrompt("Local conflict"));
+    await act(async () => { await result.current.flushPrompt(); });
+    rerender({ node: draftNode("Server conflict") });
+    expect(result.current.prompt).toBe("Local conflict");
+    expect(result.current.promptSaveStatus).toBe("conflict");
+  });
+});
 
 describe("useNodePromptAutosave", () => {
   beforeEach(() => vi.useFakeTimers());

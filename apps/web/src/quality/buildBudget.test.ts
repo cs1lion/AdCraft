@@ -3,12 +3,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { transform } from "lightningcss";
 
 const budgetScriptPath = join(process.cwd(), "scripts/perf/check-build-budget.mjs");
 const temporaryDirectories: string[] = [];
@@ -24,6 +26,74 @@ afterEach(() => {
 });
 
 describe("build budget", () => {
+  test("keeps standard backdrop-filter after equivalent prefixed fallbacks across route styles", () => {
+    const visit = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(directory, entry.name);
+      return entry.isDirectory() ? visit(path) : entry.name.endsWith(".css") ? [path] : [];
+    });
+    for (const path of visit(join(process.cwd(), "src"))) {
+      const css = readFileSync(path, "utf8");
+      expect(css, path).not.toMatch(/(?<!-)backdrop-filter:\s*([^;]+);\s*-webkit-backdrop-filter:\s*\1;/);
+    }
+  });
+  test("preserves the standard Discover backdrop filter in production CSS", () => {
+    const source = readFileSync(join(process.cwd(), "src/pages/home.css"), "utf8").replace(/\r\n/g, "\n");
+    const match = source.match(/\.orbit__card\s*\{([^}]*)\}/);
+    expect(match).not.toBeNull();
+    const rule = `.orbit__card {${match![1]}}`;
+    const compress = (css: string) => transform({
+      filename: "home.css", code: Buffer.from(css), minify: true,
+      targets: { chrome: 107 << 16, edge: 107 << 16, firefox: 104 << 16, safari: 16 << 16 },
+    }).code.toString();
+    // With Lightning CSS 1.33.0, the prefix must precede the standard property:
+    // the reversed order drops the standard declaration and breaks Chromium.
+    expect(compress(rule)).toMatch(/(?:^|[;{])backdrop-filter:blur\(16px\)saturate\(1\.08\)/);
+    const mutated = rule.replace(
+      "-webkit-backdrop-filter: blur(16px) saturate(1.08);\n  backdrop-filter: blur(16px) saturate(1.08);",
+      "backdrop-filter: blur(16px) saturate(1.08);\n  -webkit-backdrop-filter: blur(16px) saturate(1.08);",
+    );
+    expect(mutated).not.toBe(rule);
+    expect(compress(mutated)).not.toMatch(/(?:^|[;{])backdrop-filter:/);
+  });
+  test("counts lazy 3D chunks toward core JS instead of hiding growth behind code splitting", () => {
+    const distDirectory = mkdtempSync(join(tmpdir(), "adcraft-build-budget-"));
+    temporaryDirectories.push(distDirectory);
+    const assetsDirectory = join(distDirectory, "assets");
+    const manifestDirectory = join(distDirectory, ".vite");
+    mkdirSync(assetsDirectory);
+    mkdirSync(manifestDirectory);
+    writeAsset(assetsDirectory, "index-fixture.js", 1);
+    for (const name of ["WorkflowPage-fixture.js", "WorkflowPage-fixture.css", "vendor-react-flow-fixture.js", "vendor-react-flow-fixture.css", "AgentCanvasChatPanel-fixture.js", "CanonicalAssetViewer-fixture.js", "home-fixture.css"]) {
+      writeAsset(assetsDirectory, name);
+    }
+    writeAsset(assetsDirectory, "SceneScript3DPreview-fixture.js", 1281 * 1024);
+    writeFileSync(join(manifestDirectory, "manifest.json"), JSON.stringify({
+      "index.html": {
+        file: "assets/index-fixture.js",
+        dynamicImports: ["src/features/agent-canvas/canvas/SceneScript3DPreview.tsx"],
+      },
+      "src/features/agent-canvas/canvas/SceneScript3DPreview.tsx": {
+        file: "assets/SceneScript3DPreview-fixture.js",
+      },
+      "src/pages/HomePage.tsx": {
+        file: "assets/index-fixture.js", css: ["assets/home-fixture.css"],
+      },
+      "src/pages/WorkflowPage.tsx": {
+        name: "WorkflowPage", file: "assets/WorkflowPage-fixture.js", imports: ["_vendor-react-flow.js"],
+      },
+      "_vendor-react-flow.js": { file: "assets/vendor-react-flow-fixture.js" },
+    }));
+    const run = () => spawnSync(process.execPath, [budgetScriptPath, "--dist", distDirectory], { encoding: "utf8" });
+    const oversized = run();
+    expect(oversized.status).toBe(1);
+    expect(oversized.stderr).toContain("core JS is");
+    // Mutate only payload size: a genuinely smaller lazy chunk passes without
+    // changing the budget, its classification, or its loading strategy.
+    writeAsset(assetsDirectory, "SceneScript3DPreview-fixture.js", 1281 * 1024 - 1);
+    const withinBudget = run();
+    expect(withinBudget.status).toBe(0);
+    expect(withinBudget.stderr).not.toContain("core JS is");
+  });
   test("selects the JavaScript Workflow route entry when CSS has the same chunk name", () => {
     const distDirectory = mkdtempSync(join(tmpdir(), "adcraft-build-budget-"));
     temporaryDirectories.push(distDirectory);

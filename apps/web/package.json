@@ -49,6 +49,7 @@
     "@xyflow/react": "^12.11.0",
     "@xzdarcy/react-timeline-editor": "^1.0.0",
     "generative-loaders": "file:vendor/generative-loaders-0.1.2.tgz",
+    "its-fine": "2.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.18.0",
@@ -71,6 +72,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "jsdom": "^29.1.1",
+    "lightningcss": "1.33.0",
     "tsx": "^4.22.5",
     "typescript-eslint": "^8.62.1",
     "vitest": "^4.1.10"

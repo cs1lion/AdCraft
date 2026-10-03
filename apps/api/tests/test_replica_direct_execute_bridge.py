@@ -502,3 +502,39 @@ def test_render_bridge_endpoint_maps_timeline_error(bridge_client) -> None:
     assert response.status_code == 404, response.text
     assert response.json()["detail"]["code"] == "workflow_not_found"
     assert render_service.calls == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("font_size,color", [(40, "#FFC658"), (56, "#123456")])
+def test_actual_render_accepts_recipe_and_matches_preview(bridge_client, font_size, color):
+    """Locks HTTP recipe propagation all the way to the saved canonical timeline."""
+    from app.services.replica.direct_execute import plan_direct_execute
+    from app.services.replica.direct_execute_render import plan_direct_execute_render
+    from app.services.replica.recipe import ReplicaRecipeV2
+
+    client, timeline_service, _render = bridge_client
+    blueprint = _feasible_blueprint(systems_music="", systems_sfx=[])
+    recipe = ReplicaRecipeV2.model_validate({
+        "recipe_id": "review-recipe", "name": "review",
+        "subtitle": {"font_size": font_size, "color": color},
+    })
+    preview = plan_direct_execute_render(blueprint, plan_direct_execute(blueprint), recipe=recipe)
+    response = client.post("/replica/blueprint/direct-execute/render", json={
+        "workflow_id": "wf_bridge", "blueprint": blueprint.model_dump(mode="json"),
+        "recipe": recipe.model_dump(mode="json"),
+    })
+    assert response.status_code == 200, response.text
+    assert timeline_service.saved is not None
+    assert timeline_service.saved.timeline.clips == preview.timeline.clips
+
+
+@pytest.mark.integration
+def test_actual_render_rejects_bad_recipe_before_saving(bridge_client):
+    client, timeline_service, render_service = bridge_client
+    response = client.post("/replica/blueprint/direct-execute/render", json={
+        "workflow_id": "wf_bridge", "blueprint": _feasible_blueprint().model_dump(mode="json"),
+        "recipe": {"recipe_id": "bad", "name": "bad", "subtitle": {"font_size": 200}},
+    })
+    assert response.status_code == 422
+    assert timeline_service.saved is None
+    assert render_service.calls == []
