@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 3D 分镜预演参考片段节点（ADR 0017）：导演台按镜头发布 animatic 片段上画布，与分镜片段连线并打通 flash 关键帧降级通道
+
+- **问题**：导演口令 3D 功能让 scene-3d 节点成为导演台（SceneScript/镜头表/take/全场景 animatic），但"分镜预演参考片段"不是画布节点——分镜片段（storyboard_video）生成无法以镜头粒度引用预演；且 agnes-video-2.5-flash 拒绝 `videos` 参数（catalog video:0），预演视频参考在 flash 下被静默 withhold，连线形同虚设。
+- **设计**（`docs/adr/0017-previs-clip-node.md`）：预演片段 = `video` 节点类型 + 新创作角色 `scene_3d_previs_clip`（复用 video 的预览/播放/资产/时间线管线，与 storyboard_video 同模式）；三层关系——① 导演台发布（scene-3d → clip 的 video_reference 绑定，血缘双向：clip 内容记录来源节点/镜头/帧区间，scene-3d 内容记录 published_previs_clips）；② clip → 分镜片段 video_reference 连线（既有策略，零改动）；③ flash 降级通道（ADR 0005 §4a 落地）。
+- **改动（后端）**：`CanvasCreativeRoleV2`/`AdMediaSemanticRoleV2` 加 `scene_3d_previs_clip` + `PrevisClipContentV2`（血缘+5 关键帧+previs_control_level）注册进角色注册表；新增 `scene3d/previs_clip_media.py`（ffmpeg 重编码裁切镜头帧区间保留台词床音、抽 5 关键帧）与 `scene3d/previs_clip_publisher.py`（发布编排：裁切→派生资产→建节点+绑定→scene-3d 回写血缘，每类拒绝都有具名错误码 `scene3d_animatic_missing`/`previs_clip_shot_not_found` 等）；`POST /api/v2/workflows/{id}/scene-3d-nodes/{node_id}/previs-clips`（Idempotency-Key 必填，发布 node_id 按键+内容哈希确定化→资产级幂等）；`require_node_runnable` 拒绝预演片段进生成调度（`previs_clip_publish_only`——片段内容来自渲染管线，不烧视频额度）；flash 降级：`substitute_previs_keyframes_for_videoless_models` 在参考限流前把 video:0 模型下的预演片段引用替换为其已发布关键帧图片（binding_metadata 带 `previs_control_level: "images_only"`，原 video 绑定记 `previs_clip_keyframes_substituted`——可查询，绝不静默），关键帧数量按模型图片余量均匀预裁。
+- **改动（前端）**：`types-v2.ts` 角色与 `PrevisClipContentV2`/`PublishedPrevisClipEntryV2`/发布响应类型；`v2Client.ts` `publishPrevisClip`（发布类操作豁免 If-Match，与 /assets/upload 同族，防重复靠 Idempotency-Key）+ 收进 `agentCanvasApi` 能力边界；分镜面板每镜「发布预演片段」按钮 + ✓已发布 + 已发布片段血缘列表（本地乐观 + 节点内容合并去重）；预演片段卡带血缘行（↳ 来自哪个 3D 场景哪一镜多少秒）；`creativeRoleDisplayName` 覆盖 "3D Previs Clip"。
+- **验证**：api `ruff` ✓；pytest 全量 `-m "not e2e and not slow"` **2669 passed / 1 flaky**（`test_v2_parallel_scheduler` 并行时序项，单独重跑通过——既有抖动）；新增 **20 测**（media 真 ffmpeg 裁切/关键帧、发布编排、降级纯函数含 mutation 对照、运行守卫）。web `check:quality`（typecheck+lint+**2972/2973**，1 项负载抖动单独复跑通过）✓；`check:agent-canvas-contract` ✓；`npm run check` 的 bundle 预算仍报 HEAD 既有技术债（core JS 1795→1798 KiB，本特性净增 +3 KiB，其余为 8888eecd 已登记的 526 KiB three.js 超限）。
+
+### Changed — 前端构建预算：自建 three 桥接替换 R3F，Core JS 削减 375.6 KiB（剩余 514.0 KiB 超限登记为技术债）
+
+- **问题**：`perf:bundle` 长期失败（仓库级既有状态，非本次引入）。接手时 core JS 2,222,681 B 对 1,311,744 B 上限，超 910,937 B。`docs/agents/engineering-standards.md` §8 规定"UI 增量要么论证、要么在别处减掉"，§1 把 `perf:bundle` 纳入 `apps/web` 的自证阶梯，因此这是门禁而非建议。
+- **归因（探针实测，非推断）**：三个自执行探针隔离构建，得到 3D 预览 chunk 的构成——three 实际使用子集 517.1 KiB、react/react-dom 191.6 KiB、**@react-three/fiber 367.7 KiB**、drei 的 Grid/Html/OrbitControls 26.6 KiB。预览只是 finite 的声明式场景图，用不上 reconciler，这 394.3 KiB 是真实冗余。
+- **改动（前端）**：新增 `apps/web/src/features/agent-canvas/canvas/LeanSceneCanvas.tsx`（1311 行）——React→three.js 桥接，**零 react-reconciler / scheduler**：自带 WebGLRenderer/scene/camera/Raycaster/rAF 循环与**非 StrictMode 的二级 React 根**（与 R3F 同构，故 StrictMode 重放渲染而不重放 effect）；`its-fine` 的 `FiberProvider`/`useContextBridge` 把作者包在 `<Canvas>` 外的 context 桥进二级根；R3F 风格 `ErrorBoundary`/`Block` 中继把场景内错误与 suspense 透传给外层边界；`Grid`/`Html`/`OrbitControls` 本地重写（Grid 保留 drei 同款 GLSL 与 uniforms，观感不变）。`SceneScript3DPreview`/`sceneScriptGeometry` 改走该桥接，src 中 R3F/drei 归零。
+- **踩过的坑（记录以免重犯）**：内建元素**必须**大写导出（`<Mesh>`/`<BoxGeometry>`）。小写标签在运行时是 DOM host element，只有 R3F 的自定义 reconciler 能拦截；`declare module "react"` 的 JSX 增强只满足类型检查、运行期无效——首版即因此把 `<mesh>` 渲染成未知 DOM 节点（`triangles: 0`），由真实 WebGL 浏览器回归抓出。
+- **改动（前端/CSS）**：`home.css` 删除 3 处 CSS 初始值冗余声明（`@font-face` 的 `font-style: normal`、`.hero__char`/`.hero__accent` 的 `transform: none`），均无任何来源覆盖、无测试锁定，行为可证明不变。
+- **结果（实测）**：3D 预览 chunk 952.3 → **557.4 KiB**；core JS 2,222,681 → **1,838,043 B**（超额 910,937 → **526,299 B**，收窄 42%）；Home route CSS 16,425 → **16,377 B 转正**；core CSS 15,969 B 通过。
+- **剩余超限已穷尽（六项独立测量）**：① 仅导入 `Vector3` 得 33.3 KiB，证明摇树正常；② 应用精确的 28 个 three 构造器集合 = 529,529 B，与产物 three-core chunk（530,290 B）一致，**零死代码**；③ `treeshake.moduleSideEffects:false` 零变化；④ 全 src 扫描 302 个未引用导出，抽样 7 个中 5 个已不在产物中（Rollup 已消除）；⑤ PBR→Phong 仅省 10,684 B 且改观感；⑥ 去掉 `WebGLRenderer` 后 three 仅 152.1 KiB，即自写渲染器理论上限 365.0 KiB，仍差约 173 KiB。
+- **决定性算术**：非 3D 代码 1,267,241 B，**低于上限 44,503 B**。整个 526,299 B 超限额 100% 来自懒加载的 `SceneScript3DPreview` chunk 内 three.js 核心（530,290 B）；即便删光自建桥接代码仍超 486 KiB。
+- **豁免路径被明确禁止（已实证）**：`src/quality/buildBudget.test.ts` 有一条名为 **"counts lazy 3D chunks toward core JS instead of hiding growth behind code splitting"** 的测试，fixture 正是 `SceneScript3DPreview`，其注释写明唯一被认可的解法是"只改载荷大小……不改它的 classification 或 loading strategy"。实测把 `SceneScript3DPreview-` 加入 `featureJsAssets` 即使该测试转红（1 failed / 7 passed），已还原。故不再走豁免，按决定 2 接受超限并登记为技术债。
+- **验证**：`typecheck` ✓；`lint` 0 errors（40 既有 warning）✓；全量 **2967/2967**（276 文件）✓；`build` ✓；真实 WebGL 浏览器回归 `lean-scene-canvas.spec.ts` **7/7** ✓（真实几何有限名录、Grid/Html、context 与 StrictMode 存活、选中/pointer missed/orbit/物体拖拽互不干扰、resize/嵌套滚动/快速重挂不丢上下文、生产预览与播放 context、基线 vs 精简 StrictMode 语义一致、错误边界、suspense 回落与恢复）。`perf:bundle` 仍只有 `core JS is 1795 KiB, expected <= 1281 KiB` 一条失败。
+- **范围**：与 3D 导演台 / Agent Canvas / 多轨复刻链路的既有改动一并整体提交（`8888eecd`，141 files / +17,014 / −5,655）。`.gitignore` 另排除 4 个已跟踪代码无引用的运行时产物目录（`uploads/` 159MB、`apps/web/e2e_output/` 31MB、`test-materials/real_corpus/` 11MB、误建项目名目录 1MB）。
+
 ### Added — 变体渲染计划审片入口（`/variant-render-plans` 第一次有 UI；E5 边界闭合）
 
 - **问题**：`/variant-render-plans` 对 Top-N 变体各编译一份 direct-execute 渲染计划（只出计划不渲染，低成本审片），也是**结构漂移守护唯一会触发的端点**——但前端零调用：审片没有入口，E5 承诺的"故意触发结构漂移 → 看到逐条可行动的说明"因此没有实机路径（E5 提交中已如实标注该边界）。
@@ -1489,3 +1511,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 口型同步为音节级估算，非音素级（低保真预演阶段已足够）
 - 时间线与EditingTimeline的双向同步暂未实现（两者管理不同内容，价值有限）
 - 片尾字幕渲染需要 `FINAL_COMPOSITION_SUBTITLE_FONT_PATH` 指向一个存在的字体文件（部署配置，非代码缺陷）：为空时媒体工具链报告 `subtitle_font_unavailable`，`subtitles`/`subtitle_burn_in` 关闭，其他能力不受影响
+- **前端 core JS 超预算 526,299 B（514.0 KiB，登记为技术债，决定 2）**：`perf:bundle` 只有 `core JS is 1795 KiB, expected <= 1281 KiB` 一条失败。实测证明超限额 100% 来自懒加载 `SceneScript3DPreview` chunk 内的 three.js 核心（530,290 B），非 3D 代码反而低于上限 44,503 B；该 chunk 经 manifest 核实为 `isDynamicEntry`、不在 index.html 静态链、仅由 `AgentCanvasPageSurface` 动态导入。**不得**用改分类/加载策略消化（`buildBudget.test.ts` 的 "counts lazy 3D chunks toward core JS…" 测试点名禁止，且有注释说明唯一认可路径是"只改载荷大小"）。已做：R3F→自建桥接，core JS −375.6 KiB（超额收窄 42%）。真正达标需人工决策：豁免需连带修改该测试，或重写预览渲染层（仍差约 173 KiB），或让 3D 预览不进 dist。详见 `[Unreleased]` 的 Changed 条目

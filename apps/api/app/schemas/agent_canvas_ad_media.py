@@ -29,6 +29,7 @@ AdMediaSemanticRoleV2 = Literal[
     "general_audio",
     "editing",
     "scene_3d_previs",
+    "scene_3d_previs_clip",
     "voice_cast",
     "replica_blueprint",
 ]
@@ -236,6 +237,45 @@ class VideoSegmentContentV2(_AdMediaModel):
     action_effects: str = Field(default="", max_length=4_096)
     negative_constraints: str = Field(default="", max_length=8_192)
     background_music: Literal[False] = False
+
+
+class PrevisClipKeyframeV2(_AdMediaModel):
+    """One keyframe image extracted from a published previs clip (ADR 0017).
+
+    Published at clip publish time and carried in the clip node's structured
+    content so the flash degradation channel can substitute these images for
+    the un-deliverable video reference without touching ffmpeg at run time.
+    """
+
+    asset_id: str = Field(min_length=1, max_length=160)
+    asset_version_id: str = Field(min_length=1, max_length=160)
+    checksum: str = Field(min_length=8, max_length=128)
+    offset_seconds: float = Field(ge=0)
+    reference_instruction: str = Field(min_length=1, max_length=512)
+
+
+class PrevisClipContentV2(_AdMediaModel):
+    """分镜预演参考片段（ADR 0017）：scene-3d 节点按镜头裁切的预演视频。
+
+    血缘是内容的一半：``scene_3d_node_id`` + ``shot_id`` 说明这段预演拍的是
+    哪个 3D 场景的哪一镜，``source_asset_id`` 指回裁切源 animatic。关键帧
+    （``previs_keyframes``）是发布时抽好的降级通道燃料——flash 档视频模型
+    不吃视频参考时，吃的是它们。
+    """
+
+    previs_clip_version: Literal["previs-clip-v1"] = "previs-clip-v1"
+    scene_3d_node_id: str = Field(min_length=1, max_length=160)
+    scene_3d_node_title: str = Field(default="", max_length=512)
+    shot_id: str = Field(min_length=1, max_length=160)
+    shot_label: str = Field(default="", max_length=512)
+    take_id: str | None = Field(default=None, max_length=160)
+    source_asset_id: str = Field(min_length=1, max_length=160)
+    clip_asset_id: str = Field(min_length=1, max_length=160)
+    clip_asset_version_id: str = Field(min_length=1, max_length=160)
+    frame_range: tuple[int, int] = Field(default=(0, 0))
+    duration_seconds: float = Field(gt=0, le=3_600)
+    previs_keyframes: tuple[PrevisClipKeyframeV2, ...] = Field(default=(), max_length=8)
+    previs_control_level: Literal["video", "images_only", "none"] = "video"
 
 
 class BgmContentV2(_AdMediaModel):

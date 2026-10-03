@@ -1532,3 +1532,10 @@
 .scene-language-builder__ai:hover {
   border-color: #4a4a8a;
 }
+
+/* ADR 0017: 预演片段发布状态标记 */
+.scene-script-3d-editor__storyboard-published {
+  font-size: 11px;
+  color: #15803d;
+  white-space: nowrap;
+}

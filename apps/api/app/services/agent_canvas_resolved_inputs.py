@@ -236,6 +236,149 @@ class AgentCanvasResolvedInputCompiler:
         )
 
 
+def substitute_previs_keyframes_for_videoless_models(
+    manifest: ResolvedNodeInputManifestV2,
+    model_resolution: ResolvedModelExecutionV1,
+) -> ResolvedNodeInputManifestV2:
+    """Swap un-deliverable previs video references for their published keyframes.
+
+    ADR 0017 closing ADR 0005 §4a's loop for models like ``agnes-video-2.5-flash``
+    whose catalog row declares ``video: 0``: without this, binding a previs clip
+    to a shot under flash degrades to a log warning and the reference simply
+    vanishes — the connection exists on the canvas but contributes nothing.
+    The clip's published keyframes ride the image channel instead, the original
+    video binding is recorded as
+    ``previs_clip_keyframes_substituted`` (queryable, never silent), and each
+    substituted image carries ``previs_control_level: "images_only"`` in its
+    binding metadata. Models that accept video references are untouched.
+
+    Runs *before* ``apply_provider_reference_limits``: the keyframes enter the
+    image budget like any other image reference, so composition policy (grid
+    grounding first, design references, then these) still decides what survives.
+    Keyframe count is pre-trimmed to the model's image headroom so the limits
+    pass is not left to silently drop the tail.
+    """
+
+    metadata = model_resolution.capability_metadata
+    raw_limits = metadata.get("reference_limits")
+    limits = raw_limits if isinstance(raw_limits, dict) else {}
+    video_limit = limits.get("video")
+    image_limit = limits.get("image")
+    if not (isinstance(video_limit, int) and not isinstance(video_limit, bool) and video_limit == 0):
+        return manifest
+    image_headroom: int | None = (
+        image_limit
+        if isinstance(image_limit, int) and not isinstance(image_limit, bool) and image_limit > 0
+        else None
+    )
+    if image_headroom is None:
+        return manifest
+
+    substituted: list[tuple[ResolvedMediaBindingInputV2, list[dict[str, object]]]] = []
+    omitted = list(manifest.omitted_optional_inputs)
+    kept: list[ResolvedMediaBindingInputV2] = []
+    for item in manifest.media_inputs:
+        keyframes = _previs_keyframes(item)
+        if item.media_type != "video" or keyframes is None:
+            kept.append(item)
+            continue
+        omitted.append(
+            OmittedOptionalInputV2(
+                binding_id=item.binding_id,
+                source_node_id=item.source_node_id,
+                reason_code="previs_clip_keyframes_substituted",
+                asset_id=item.asset_id,
+                asset_version_id=item.asset_version_id,
+                media_type=item.media_type,
+                checksum=item.checksum,
+            )
+        )
+        substituted.append((item, keyframes))
+    if not substituted:
+        return manifest
+
+    image_count = sum(1 for item in kept if item.media_type == "image")
+    headroom = max(image_headroom - image_count, 0)
+    for item, keyframes in substituted:
+        if not headroom:
+            continue
+        for index, keyframe in enumerate(_even_subset(keyframes, headroom)):
+            metadata_kv: dict[str, object] = {
+                "previs_control_level": "images_only",
+                "derived_from_binding_id": item.binding_id,
+                "derived_from_asset_id": item.asset_id,
+                "offset_seconds": keyframe.get("offset_seconds"),
+            }
+            instruction = keyframe.get("reference_instruction")
+            if isinstance(instruction, str) and instruction.strip():
+                metadata_kv["reference_instruction"] = instruction.strip()
+            kept.append(
+                ResolvedMediaBindingInputV2(
+                    binding_id=f"{item.binding_id}:previs_kf{index}",
+                    source_kind="image_asset",
+                    source_node_id=item.source_node_id,
+                    source_node_revision=item.source_node_revision,
+                    input_role="image_reference",
+                    source_semantic_role=item.source_semantic_role,
+                    binding_metadata=metadata_kv,
+                    source_structured_content=item.source_structured_content,
+                    display_order=item.display_order,
+                    asset_id=str(keyframe["asset_id"]),
+                    asset_version_id=(
+                        str(keyframe["asset_version_id"])
+                        if keyframe.get("asset_version_id")
+                        else None
+                    ),
+                    media_type="image",
+                    checksum=str(keyframe.get("checksum") or keyframe["asset_id"]),
+                )
+            )
+            headroom -= 1
+    return manifest.model_copy(
+        update={
+            "media_inputs": tuple(kept),
+            "omitted_optional_inputs": tuple(omitted),
+        }
+    )
+
+
+def _previs_keyframes(item: ResolvedMediaBindingInputV2) -> list[dict[str, object]] | None:
+    """The published keyframes of a previs clip binding, or None if it isn't one.
+
+    Both marks are required: the source semantic role alone would also catch
+    role-bearing nodes whose content predates keyframe publication, and an
+    empty keyframe list would silently turn the reference into nothing.
+    """
+
+    if item.source_semantic_role != "scene_3d_previs_clip":
+        return None
+    content = item.source_structured_content
+    if not isinstance(content, dict) or content.get("previs_clip_version") != "previs-clip-v1":
+        return None
+    raw = content.get("previs_keyframes")
+    if not isinstance(raw, list) or not raw:
+        return None
+    valid = [
+        entry
+        for entry in raw
+        if isinstance(entry, dict)
+        and isinstance(entry.get("asset_id"), str)
+        and entry["asset_id"]
+    ]
+    return valid or None
+
+
+def _even_subset(entries: list[dict[str, object]], count: int) -> list[dict[str, object]]:
+    """Evenly sample ``count`` keyframes, preserving their temporal order."""
+
+    if len(entries) <= count:
+        return list(entries)
+    picked_indexes = sorted(
+        {round(index * (len(entries) - 1) / (count - 1)) for index in range(count)}
+    )
+    return [entries[index] for index in picked_indexes]
+
+
 def apply_provider_reference_limits(
     manifest: ResolvedNodeInputManifestV2,
     model_resolution: ResolvedModelExecutionV1,

@@ -378,6 +378,39 @@ function NodeSurface({
   if (node.node_type === "editing") {
     return <EditingNodeSurface onOpenEditing={onOpenEditing ? () => onOpenEditing(node.node_id) : undefined} />;
   }
+  if (node.creative_role === "scene_3d_previs_clip") {
+    // ADR 0017: the clip plays like any video node (MediaSurface), but its
+    // identity is the lineage — a shot cut out of a director-console scene.
+    // Hiding the source would let a faithful previs read as a generated shot.
+    const content = node.structured_content as {
+      shot_id?: string;
+      scene_3d_node_title?: string;
+      duration_seconds?: number;
+    } | null;
+    return (
+      <div className="agent-canvas-node__previs-clip">
+        <MediaSurface
+          node={node}
+          asset={asset}
+          status={status}
+          label={label}
+          onOpenVideoPreview={onOpenVideoPreview}
+          onMediaDimensionsResolved={onMediaDimensionsResolved}
+        />
+        <p
+          className="agent-canvas-node__previs-lineage"
+          data-testid={`previs-clip-lineage-${node.node_id}`}
+        >
+          ↳ 预演参考 · {content?.scene_3d_node_title || "3D 场景"}
+          {" · "}
+          {content?.shot_id || "?"}
+          {typeof content?.duration_seconds === "number"
+            ? ` · ${content.duration_seconds.toFixed(1)}s`
+            : ""}
+        </p>
+      </div>
+    );
+  }
   return (
     <MediaSurface
       node={node}

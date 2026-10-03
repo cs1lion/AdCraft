@@ -24,6 +24,7 @@ export const agentCanvasApi = {
   deleteAgentCanvasBinding: v2Api.deleteAgentCanvasBinding,
   agentCanvasConnectionPolicy: v2Api.agentCanvasConnectionPolicy,
   createAgentCanvasConnectedNode: v2Api.createAgentCanvasConnectedNode,
+  publishPrevisClip: v2Api.publishPrevisClip,
   uploadAgentCanvasAsset: v2Api.uploadAgentCanvasAsset,
   listAgentCanvasProjectAssets: v2Api.listAgentCanvasProjectAssets,
   listAgentCanvasReferenceCandidates: v2Api.listAgentCanvasReferenceCandidates,

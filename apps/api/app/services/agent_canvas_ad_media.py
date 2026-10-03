@@ -12,6 +12,7 @@ from app.schemas.agent_canvas_ad_media import (
     BgmContentV2,
     CharacterDesignAssetContentV2,
     DesignAssetContentV2,
+    PrevisClipContentV2,
     ReplicaBlueprintContentV2,
     SceneDesignBoardContentV2,
     StoryboardGridContentV2,
@@ -140,6 +141,14 @@ def _role_registry() -> dict[str, _RegisteredRole]:
         "video",
         "video",
         VideoSegmentContentV2,
+    )
+    # 分镜预演参考片段（ADR 0017）：video 节点承载导演台按镜头发布的预演，
+    # 血缘/关键帧在 PrevisClipContentV2；由发布端点创建，不走生成调度。
+    add(
+        "scene_3d_previs_clip",
+        "video",
+        "video",
+        PrevisClipContentV2,
     )
     add("general_audio", "audio", "audio")
     add("bgm", "audio", "audio", BgmContentV2)

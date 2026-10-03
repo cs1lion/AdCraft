@@ -19,7 +19,13 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { createPortal } from "react-dom";
 
 import { SendIcon } from "../../../icons.tsx";
-import type { CanvasNodeV2, NodeRuntimeV2, ProjectAssetSummaryV2 } from "../../../types-v2.ts";
+import type {
+  CanvasNodeV2,
+  NodeRuntimeV2,
+  PrevisClipContentV2,
+  ProjectAssetSummaryV2,
+  PublishedPrevisClipEntryV2,
+} from "../../../types-v2.ts";
 import type { SceneScriptRoot } from "../../../types/scene-script";
 import { AgentCanvasAudioPlayer } from "../canvas/AgentCanvasAudioPlayer.tsx";
 import { AudioBedEditor } from "./AudioBedEditor.tsx";
@@ -452,6 +458,18 @@ function parseDialogueLines(raw: unknown): DialogueLineDraft[] {
   return lines;
 }
 
+/** ADR 0017: clips published from this scene's shots (reverse lineage). */
+function parsePublishedPrevisClips(raw: unknown): PublishedPrevisClipEntryV2[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry): entry is PublishedPrevisClipEntryV2 =>
+      !!entry
+      && typeof entry === "object"
+      && typeof (entry as Record<string, unknown>).node_id === "string"
+      && typeof (entry as Record<string, unknown>).shot_id === "string",
+  );
+}
+
 /** The applied speech segments, for the picker's speech-aware readings. */
 function parseSpeechSegments(raw: unknown): AlignedSpeechSegment[] {
   if (!Array.isArray(raw)) return [];
@@ -874,6 +892,9 @@ function Scene3DEditSection({
           onFocusShotConsumed={() => setFocusShotId(null)}
           takes={takes}
           onSaveTake={(take) => persistTakes([...takes, take])}
+          publishedPrevisClips={parsePublishedPrevisClips(
+            node.structured_content?.published_previs_clips,
+          )}
           // E4: 多轮记忆接线（V0.2 §14.5）——补传 workflowId/nodeId 让提案
           // 面板的保留集可持久化；initialEngagedIds 让刷新后保留集恢复。
           // 缺这两个 id 时面板静默不持久化（见 TransitionProposalsPanel）。

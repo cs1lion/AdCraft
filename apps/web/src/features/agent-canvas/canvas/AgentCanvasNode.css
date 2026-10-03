@@ -1096,3 +1096,21 @@
     opacity: 0.6;
   }
 }
+
+/* ADR 0017: 分镜预演参考片段节点 —— 血缘一行贴在视频预览下方，
+   让"这段预演拍的是哪个 3D 场景的哪一镜"始终可见。 */
+.agent-canvas-node__previs-clip {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.agent-canvas-node__previs-lineage {
+  margin: 4px 8px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -54,6 +54,7 @@ CanvasCreativeRoleV2 = Literal[
     "general_audio",
     "editing",
     "scene_3d_previs",
+    "scene_3d_previs_clip",
     "voice_cast",
     "replica_blueprint",
 ]
@@ -432,6 +433,22 @@ class ProjectAssetV2(_AgentCanvasModel):
 ProjectAssetSummaryV2 = ProjectAssetV2
 
 
+class PrevisClipPublishRequestV2(_AgentCanvasModel):
+    """Body of ``POST /workflows/{id}/scene-3d-nodes/{id}/previs-clips`` (ADR 0017)."""
+
+    shot_id: str = Field(min_length=1, max_length=160)
+    take_id: str | None = Field(default=None, max_length=160)
+
+
+class PrevisClipPublishResponseV2(_AgentCanvasModel):
+    workflow_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    node: CanvasNodeV2
+    binding: CanvasBindingV2
+    clip_asset: ProjectAssetV2
+    keyframe_asset_ids: tuple[str, ...] = Field(default=())
+
+
 class AgentTargetRefV2(_AgentCanvasModel):
     kind: Literal["node", "image_asset"]
     target_id: str = Field(min_length=1)
@@ -616,6 +633,7 @@ class OmittedOptionalInputV2(_AgentCanvasModel):
         "omitted_no_output",
         "omitted_provider_reference_limit",
         "omitted_reference_share",
+        "previs_clip_keyframes_substituted",
     ]
     asset_id: str | None = Field(default=None, min_length=1)
     asset_version_id: str | None = Field(default=None, min_length=1)
@@ -633,6 +651,10 @@ class OmittedOptionalInputV2(_AgentCanvasModel):
         if self.reason_code in {
             "omitted_provider_reference_limit",
             "omitted_reference_share",
+            # ADR 0017: a substituted previs clip names the clip it replaced —
+            # the omission here is a *replacement* record, not an unavailable
+            # asset, so it carries the same exact identity as a limit omission.
+            "previs_clip_keyframes_substituted",
         }:
             if any(value is None for value in exact_identity):
                 raise ValueError(

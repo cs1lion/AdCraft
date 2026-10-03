@@ -25,6 +25,18 @@ def require_node_runnable(node: object) -> None:
             "Source-only nodes are previewable inputs and cannot be generated.",
             stage="agent_canvas_authoring_validation",
         )
+    # ADR 0017: a previs clip's content comes from the render pipeline (the
+    # director console publishes it), not from a prompt→video generation —
+    # running it would burn provider quota to overwrite a faithful cut.
+    if (
+        getattr(node, "node_type", None) == "video"
+        and getattr(node, "creative_role", None) == "scene_3d_previs_clip"
+    ):
+        raise V2PersistenceError(
+            "previs_clip_publish_only",
+            "Previs clip nodes are published from the director console and cannot be generated.",
+            stage="agent_canvas_authoring_validation",
+        )
 
 
 def validate_node_patch(

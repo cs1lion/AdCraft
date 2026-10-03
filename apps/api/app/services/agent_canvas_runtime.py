@@ -94,6 +94,7 @@ from app.services.agent_canvas_result_publication_recovery import (
 from app.services.agent_canvas_resolved_inputs import (
     AgentCanvasResolvedInputCompiler,
     apply_provider_reference_limits,
+    substitute_previs_keyframes_for_videoless_models,
 )
 from app.services.agent_canvas_run_snapshots import AgentCanvasRunIntentSnapshotService
 from app.services.agent_canvas_role_prompt_recipes import RolePromptRecipeRegistry
@@ -815,6 +816,7 @@ class DynamicCanvasScheduler:
             model_id = resolution.provider_model_id
             provider_id = resolution.provider_id
             if node.node_type in {"image", "video", "audio"}:
+                manifest = substitute_previs_keyframes_for_videoless_models(manifest, resolution)
                 manifest = apply_provider_reference_limits(manifest, resolution)
                 inputs = self._input_compiler.materialize_inputs(manifest)
                 prompt_metadata["resolved_input_manifest"] = manifest.model_dump(mode="json")

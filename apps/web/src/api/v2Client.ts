@@ -43,6 +43,7 @@
   CanvasMutationResponseV2,
   CanvasPostReadyCheckpointV2,
   CanvasNodeCreateRequestV2,
+  PrevisClipPublishResponseV2,
   CanvasNodePatchRequestV2,
   CanvasNodeV2,
   ConceptProposalV2,
@@ -459,6 +460,11 @@ export function v2AuthoringPreconditionTarget(path: string, method: string): V2P
     || suffix.startsWith("/chat/")
     || suffix === "/skill-runs"
     || suffix === "/assets/upload"
+    // ADR 0017: publish is a derived-media operation (cut + asset publication
+    // + node + binding in one call), not a single-revision authoring edit —
+    // same family as /assets/upload. Double-submit is guarded by the
+    // Idempotency-Key instead of If-Match.
+    || /\/previs-clips$/.test(suffix)
     || /\/(?:generate|regenerate)$/.test(suffix)
     || /\/runs\/[^/]+\/cancel$/.test(suffix)
     || /\/nodes\/[^/]+\/export$/.test(suffix)
@@ -758,6 +764,23 @@ export const v2Api = {
         body: JSON.stringify(request),
       },
       normalizeCanvasConnectedNodeCreateResponseV2,
+    );
+  },
+
+  /** ADR 0017: 发布分镜预演参考片段（导演台 → 画布 video 节点 + scene-3d 绑定）。 */
+  publishPrevisClip(
+    workflowId: string,
+    nodeId: string,
+    request: { shot_id: string; take_id?: string | null },
+    idempotencyKey: string,
+  ): Promise<PrevisClipPublishResponseV2> {
+    return requestV2(
+      `/workflows/${encodeURIComponent(workflowId)}/scene-3d-nodes/${encodeURIComponent(nodeId)}/previs-clips`,
+      {
+        method: "POST",
+        headers: idempotencyHeaders(idempotencyKey),
+        body: JSON.stringify(request),
+      },
     );
   },
 

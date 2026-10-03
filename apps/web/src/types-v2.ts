@@ -1531,6 +1531,7 @@ export type CanvasCreativeRoleV2 =
   | "general_audio"
   | "editing"
   | "scene_3d_previs"
+  | "scene_3d_previs_clip"
   | "voice_cast"
   | "replica_blueprint";
 
@@ -1932,6 +1933,46 @@ export interface ProjectAssetSummaryV2 {
   generation_provenance: Record<string, unknown>;
   quality_metadata: Record<string, unknown>;
   created_at: string | null;
+}
+
+/** ADR 0017: lineage recorded on a published previs clip (video node content). */
+export interface PrevisClipContentV2 {
+  previs_clip_version: "previs-clip-v1";
+  scene_3d_node_id: string;
+  scene_3d_node_title: string;
+  shot_id: string;
+  shot_label: string;
+  take_id: string | null;
+  source_asset_id: string;
+  clip_asset_id: string;
+  clip_asset_version_id: string;
+  frame_range: [number, number];
+  duration_seconds: number;
+  previs_keyframes: {
+    asset_id: string;
+    asset_version_id: string;
+    checksum: string;
+    offset_seconds: number;
+    reference_instruction: string;
+  }[];
+  previs_control_level: "video" | "images_only" | "none";
+}
+
+/** Reverse lineage on the scene-3d node: clips published from its shots. */
+export interface PublishedPrevisClipEntryV2 {
+  node_id: string;
+  shot_id: string;
+  clip_asset_id: string;
+  take_id: string | null;
+}
+
+export interface PrevisClipPublishResponseV2 {
+  workflow_id: string;
+  revision: number;
+  node: CanvasNodeV2;
+  binding: CanvasBindingV2;
+  clip_asset: ProjectAssetSummaryV2;
+  keyframe_asset_ids: string[];
 }
 
 export interface VideoSkillPreviewV2 {

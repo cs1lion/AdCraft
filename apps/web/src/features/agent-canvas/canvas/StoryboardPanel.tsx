@@ -17,9 +17,12 @@
  * stays the source of truth for the picture.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { SceneScriptRoot } from "../../../types/scene-script";
+import type { PublishedPrevisClipEntryV2 } from "../../../types-v2.ts";
+import { createOperationKey } from "../../../api/operationKey.ts";
+import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
 
 import {
   exportStoryboard,
@@ -36,6 +39,13 @@ export interface StoryboardPanelProps {
   /** Seek the 3D preview to a frame (wired to playback.seekToFrame). */
   onSeekFrame?: (frame: number) => void;
   disabled?: boolean;
+  /** ADR 0017: present without these two ids hides the publish action. */
+  workflowId?: string | null;
+  nodeId?: string | null;
+  /** Reverse lineage from the scene-3d node content (published_previs_clips). */
+  publishedClips?: readonly PublishedPrevisClipEntryV2[];
+  /** Called after a successful publish so the canvas can refresh lineage. */
+  onPublished?: () => void;
 }
 
 type PanelTab = "storyboard" | "continuity";
@@ -45,6 +55,10 @@ export function StoryboardPanel({
   refreshKey = 0,
   onSeekFrame,
   disabled,
+  workflowId = null,
+  nodeId = null,
+  publishedClips = [],
+  onPublished,
 }: StoryboardPanelProps) {
   const [tab, setTab] = useState<PanelTab>("storyboard");
   const [shots, setShots] = useState<StoryboardShotEntry[]>([]);
@@ -53,6 +67,56 @@ export function StoryboardPanel({
   const [findings, setFindings] = useState<StoryboardFinding[]>([]);
   const [storyboardError, setStoryboardError] = useState<string | null>(null);
   const [storyboardLoading, setStoryboardLoading] = useState(false);
+
+  // ADR 0017: per-shot publish state. Optimistic: the row flips to 已发布
+  // immediately on success (from the authoritative API response), and the
+  // canvas refresh lands the node via SSE — the two merge by node_id.
+  const [publishingShotId, setPublishingShotId] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<{ shotId: string; message: string } | null>(
+    null,
+  );
+  const [localPublishedClips, setLocalPublishedClips] = useState<PublishedPrevisClipEntryV2[]>(
+    [],
+  );
+
+  const publishedClipsAll = useMemo(() => {
+    const seen = new Set(publishedClips.map((clip) => clip.node_id));
+    return [...publishedClips, ...localPublishedClips.filter((clip) => !seen.has(clip.node_id))];
+  }, [publishedClips, localPublishedClips]);
+
+  const publishShot = useCallback(
+    async (shotId: string) => {
+      if (!workflowId || !nodeId || publishingShotId) return;
+      setPublishingShotId(shotId);
+      setPublishError(null);
+      try {
+        const result = await agentCanvasApi.publishPrevisClip(
+          workflowId,
+          nodeId,
+          { shot_id: shotId },
+          createOperationKey("previs-clip"),
+        );
+        setLocalPublishedClips((current) => [
+          ...current,
+          {
+            node_id: result.node.node_id,
+            shot_id: shotId,
+            clip_asset_id: result.clip_asset.asset_id,
+            take_id: null,
+          },
+        ]);
+        onPublished?.();
+      } catch (error) {
+        setPublishError({
+          shotId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setPublishingShotId(null);
+      }
+    },
+    [workflowId, nodeId, publishingShotId, onPublished],
+  );
 
   const [suggestions, setSuggestions] = useState<ContinuitySuggestion[]>([]);
   const [untranslated, setUntranslated] = useState<{ code: string; detail: string }[]>([]);
@@ -178,7 +242,9 @@ export function StoryboardPanel({
           )}
           {!storyboardLoading && !storyboardError && shots.length > 0 && (
             <ul className="scene-script-3d-editor__storyboard-list" aria-label="分镜列表">
-              {shots.map((shot, index) => (
+              {shots.map((shot, index) => {
+                const published = publishedClipsAll.some((clip) => clip.shot_id === shot.shot_id);
+                return (
                 <li
                   key={shot.shot_id}
                   className="scene-script-3d-editor__storyboard-row"
@@ -202,9 +268,56 @@ export function StoryboardPanel({
                   >
                     查看
                   </button>
+                  {workflowId && nodeId && (
+                    published ? (
+                      <span
+                        className="scene-script-3d-editor__storyboard-published"
+                        data-testid={`scene-script-3d-storyboard-published-${index}`}
+                        title="该镜头的预演参考片段已在画布上"
+                      >
+                        ✓ 已发布
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="scene-script-3d-editor__storyboard-seek"
+                        onClick={() => void publishShot(shot.shot_id)}
+                        disabled={disabled || publishingShotId !== null}
+                        title="把该镜头从 animatic 裁切成预演参考片段并发布到画布（ADR 0017）"
+                        data-testid={`scene-script-3d-storyboard-publish-${index}`}
+                      >
+                        {publishingShotId === shot.shot_id ? "发布中…" : "发布预演片段"}
+                      </button>
+                    )
+                  )}
+                  {publishError?.shotId === shot.shot_id && (
+                    <span className="scene-script-3d-editor__error" data-testid={`scene-script-3d-storyboard-publish-error-${index}`}>
+                      {publishError.message}
+                    </span>
+                  )}
                 </li>
-              ))}
+                );
+              })}
             </ul>
+          )}
+          {publishedClipsAll.length > 0 && (
+            <div
+              className="scene-script-3d-editor__storyboard-findings"
+              data-testid="scene-script-3d-published-clips"
+              role="status"
+            >
+              <div className="scene-script-3d-editor__storyboard-findings-title">
+                🎬 已发布预演片段（{publishedClips.length}）— 在画布上与分镜片段连线即成为生成参考：
+              </div>
+              <ul>
+                {publishedClipsAll.map((clip, index) => (
+                  <li key={`${clip.node_id}-${index}`}>
+                    <span className="scene-script-3d-editor__storyboard-shot-id">{clip.shot_id}</span>
+                    ：片段节点 {clip.node_id}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </>
       ) : (

@@ -128,6 +128,8 @@ from app.schemas.agent_canvas import (
     ProjectAssetUploadResponseV2,
     ProjectCreateRequestV2,
     ProjectCreateResponseV2,
+    PrevisClipPublishRequestV2,
+    PrevisClipPublishResponseV2,
     SaveImageToLibraryRequestV2,
     NodeProgressSummary,
     WorkflowProgressResponse,
@@ -334,6 +336,7 @@ from app.services.agent_canvas_world_setting_context import WorldSettingContextR
 from app.services.agent_canvas_storyboard_sequences import (
     StoryboardSequenceAuthoringService,
 )
+from app.services.scene3d.previs_clip_publisher import PrevisClipPublisher
 from app.services.agent_canvas_storyboard_progression import (
     ProgressiveStoryboardReadyService,
 )
@@ -2650,6 +2653,52 @@ def create_binding(
         raise _persistence_http_error(error) from error
     response.headers["ETag"] = workflow_etag(workflow_id, workflow.revision)
     return CanvasMutationResponseV2(workflow=workflow, binding=binding)
+
+
+@router.post(
+    "/workflows/{workflow_id}/scene-3d-nodes/{node_id}/previs-clips",
+    response_model=PrevisClipPublishResponseV2,
+    status_code=status.HTTP_201_CREATED,
+)
+def publish_previs_clip(
+    workflow_id: str,
+    node_id: str,
+    request: PrevisClipPublishRequestV2,
+    response: Response,
+    runtime: Annotated[AgentCanvasRuntime, Depends(get_agent_canvas_runtime)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> PrevisClipPublishResponseV2:
+    """发布分镜预演参考片段（ADR 0017）：导演台按镜头把 animatic 裁切上画布。"""
+    if not idempotency_key:
+        raise _http_error("idempotency_key_required", 422, "Idempotency-Key is required.")
+    try:
+        source_node = runtime.workflows.get_node(workflow_id, node_id)
+        publisher = PrevisClipPublisher(
+            nodes=runtime.nodes,
+            bindings=runtime.bindings,
+            assets=runtime.assets,
+            role_validation=runtime.ad_media_validation,
+        )
+        published = publisher.publish(
+            workflow_id=workflow_id,
+            source_node=source_node,
+            shot_id=request.shot_id,
+            take_id=request.take_id,
+        )
+        workflow = runtime.projects.get_workflow(workflow_id)
+        workflow = runtime.editing_responses.project_workflow(workflow)
+        node = _projected_node(workflow, published.node.node_id)
+    except V2PersistenceError as error:
+        raise _persistence_http_error(error) from error
+    response.headers["ETag"] = workflow_etag(workflow_id, workflow.revision)
+    return PrevisClipPublishResponseV2(
+        workflow_id=workflow_id,
+        revision=workflow.revision,
+        node=node,
+        binding=published.binding,
+        clip_asset=published.clip_asset,
+        keyframe_asset_ids=published.keyframe_asset_ids,
+    )
 
 
 @router.delete(

@@ -39,6 +39,7 @@ import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPre
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
 import { DirectorCommandBar } from "./DirectorCommandBar.tsx";
 import { StoryboardPanel } from "./StoryboardPanel.tsx";
+import type { PublishedPrevisClipEntryV2 } from "../../../types-v2.ts";
 
 import { nextTakeLabel } from "./directorTakes.ts";
 import { INSERT_SHOT_MIN_SECONDS, ShotStrip } from "./ShotStrip.tsx";
@@ -348,6 +349,13 @@ export interface SceneScript3DEditorProps {
   takes?: readonly import("./directorTakes.ts").DirectorTake[];
   onSaveTake?: (take: import("./directorTakes.ts").DirectorTake) => void;
   /**
+   * ADR 0017: clips already published from this scene's shots, read from
+   * ``structured_content.published_previs_clips``. The storyboard panel
+   * shows them as the 导演台 ↔ 预演片段 lineage and per-shot publish action.
+   */
+  publishedPrevisClips?: readonly PublishedPrevisClipEntryV2[];
+  onPublishedPrevisClip?: () => void;
+  /**
    * Advisory jump target (V0.2 §15): a shot id an advisory pointed at. The
    * playhead moves into that shot (so the picker's pair forms) and the
    * readings fetch once; the parent clears the signal via
@@ -401,6 +409,8 @@ export function SceneScript3DEditor({
   initialEngagedIds = [],
   takes = [],
   onSaveTake,
+  publishedPrevisClips = [],
+  onPublishedPrevisClip,
   focusShotId = null,
   onFocusShotConsumed,
 }: SceneScript3DEditorProps) {
@@ -433,6 +443,8 @@ export function SceneScript3DEditor({
         onVariantsChange={onVariantsChange}
         takes={takes}
         onSaveTake={onSaveTake}
+        publishedPrevisClips={publishedPrevisClips}
+        onPublishedPrevisClip={onPublishedPrevisClip}
         workflowId={workflowId}
         nodeId={nodeId}
         initialEngagedIds={initialEngagedIds}
@@ -473,6 +485,8 @@ function SceneScript3DEditorContent({
   initialEngagedIds = [],
   takes = [],
   onSaveTake,
+  publishedPrevisClips = [],
+  onPublishedPrevisClip,
   focusShotId = null,
   onFocusShotConsumed,
 }: SceneScript3DEditorProps) {
@@ -813,6 +827,10 @@ function SceneScript3DEditorContent({
         refreshKey={sceneScript.shots.length}
         onSeekFrame={(frame) => playback.seekToFrame(frame)}
         disabled={saving}
+        workflowId={workflowId}
+        nodeId={nodeId}
+        publishedClips={publishedPrevisClips}
+        onPublished={onPublishedPrevisClip}
       />
       {autoLipSync?.applied && (
         <p
