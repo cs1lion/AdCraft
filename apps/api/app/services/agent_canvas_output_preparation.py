@@ -161,6 +161,13 @@ class AgentCanvasOutputPreparationService:
                     "guided_media_context": guided_media_context,
                     "provider_task_id": outcome.provider_task_id,
                     "post_ready_effects": effects,
+                    # The executor's structured content (scene-3d's generated
+                    # SceneScript + previs trajectory + consistency reports,
+                    # media QA reports, …) must survive the durable commit
+                    # path. Passed through as-is: None stays None, so executors
+                    # that publish no structured content still commit
+                    # asset-only and the node's authoring content is untouched.
+                    "structured_content": outcome.structured_content,
                 }
             )
             if self._publication_intents is not None:

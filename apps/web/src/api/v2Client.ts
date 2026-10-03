@@ -460,11 +460,6 @@ export function v2AuthoringPreconditionTarget(path: string, method: string): V2P
     || suffix.startsWith("/chat/")
     || suffix === "/skill-runs"
     || suffix === "/assets/upload"
-    // ADR 0017: publish is a derived-media operation (cut + asset publication
-    // + node + binding in one call), not a single-revision authoring edit —
-    // same family as /assets/upload. Double-submit is guarded by the
-    // Idempotency-Key instead of If-Match.
-    || /\/previs-clips$/.test(suffix)
     || /\/(?:generate|regenerate)$/.test(suffix)
     || /\/runs\/[^/]+\/cancel$/.test(suffix)
     || /\/nodes\/[^/]+\/export$/.test(suffix)

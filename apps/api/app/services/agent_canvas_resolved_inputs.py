@@ -315,9 +315,12 @@ def substitute_previs_keyframes_for_videoless_models(
             kept.append(
                 ResolvedMediaBindingInputV2(
                     binding_id=f"{item.binding_id}:previs_kf{index}",
+                    # image_asset snapshots must not carry a source node (the
+                    # resolved-snapshot validator rejects that pairing): the
+                    # clip's lineage rides in binding_metadata instead.
                     source_kind="image_asset",
-                    source_node_id=item.source_node_id,
-                    source_node_revision=item.source_node_revision,
+                    source_node_id=None,
+                    source_node_revision=None,
                     input_role="image_reference",
                     source_semantic_role=item.source_semantic_role,
                     binding_metadata=metadata_kv,

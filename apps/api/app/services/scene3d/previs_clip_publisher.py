@@ -3,10 +3,11 @@
 The publisher is the whole "导演台 → 预演参考片段" relationship in one
 transaction-shaped run: cut the shot out of the scene-3d node's animatic,
 publish the clip plus its keyframes as derived assets, create the canvas
-video node (creative role ``scene_3d_previs_clip``) bound back to the
-scene-3d node, and record the reverse lineage on the scene-3d node itself.
-Every refusal is a named error code — a shot that cannot be published must
-say why, not just not appear.
+video node (creative role ``scene_3d_previs_clip``, ``ready`` with the clip
+as its output asset) bound back to the scene-3d node in ONE authoring
+revision, and record the reverse lineage on the scene-3d node itself. Every
+refusal is a named error code — a shot that cannot be published must say
+why, not just not appear.
 """
 
 from __future__ import annotations
@@ -15,16 +16,18 @@ import hashlib
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from app.persistence.errors import V2PersistenceError
 from app.schemas.agent_canvas import (
-    CanvasBindingCreateRequestV2,
     CanvasBindingSourceNodeV2,
-    CanvasNodeCreateRequestV2,
+    CanvasBindingV2,
     CanvasNodePatchRequestV2,
     CanvasPositionV2,
+    CanvasNodeV2,
     ProjectAssetV2,
 )
 from app.schemas.agent_canvas_ad_media import PrevisClipContentV2, PrevisClipKeyframeV2
@@ -34,32 +37,24 @@ from app.services.scene3d.previs_clip_media import extract_keyframes, trim_previ
 PREVIS_CLIP_ROLE = "scene_3d_previs_clip"
 
 
-class _NodesService(Protocol):
-    def create(
+class _WorkflowsRepository(Protocol):
+    def add_node_with_bindings(
         self,
-        workflow_id: str,
-        request: CanvasNodeCreateRequestV2,
+        node: CanvasNodeV2,
+        bindings: tuple[CanvasBindingV2, ...],
         *,
-        expected_revision: int | None,
+        expected_revision: int,
     ) -> Any: ...
 
+
+class _NodesService(Protocol):
     def patch(
         self,
         workflow_id: str,
         node_id: str,
         request: CanvasNodePatchRequestV2,
         *,
-        expected_revision: int | None,
-    ) -> Any: ...
-
-
-class _BindingsService(Protocol):
-    def create(
-        self,
-        workflow_id: str,
-        request: CanvasBindingCreateRequestV2,
-        *,
-        expected_revision: int | None,
+        expected_revision: int,
     ) -> Any: ...
 
 
@@ -79,8 +74,8 @@ class _RoleValidationService(Protocol):
 
 @dataclass(frozen=True)
 class PublishedPrevisClip:
-    node: Any
-    binding: Any
+    node: CanvasNodeV2
+    binding: CanvasBindingV2
     clip_asset: ProjectAssetV2
     keyframe_asset_ids: tuple[str, ...]
 
@@ -91,13 +86,13 @@ class PrevisClipPublisher:
     def __init__(
         self,
         *,
+        workflows: _WorkflowsRepository,
         nodes: _NodesService,
-        bindings: _BindingsService,
         assets: _AssetsService,
         role_validation: _RoleValidationService,
     ) -> None:
+        self._workflows = workflows
         self._nodes = nodes
-        self._bindings = bindings
         self._assets = assets
         self._role_validation = role_validation
 
@@ -107,7 +102,8 @@ class PrevisClipPublisher:
         workflow_id: str,
         source_node: Any,
         shot_id: str,
-        take_id: str | None = None,
+        take_id: str | None,
+        expected_revision: int,
     ) -> PublishedPrevisClip:
         if getattr(source_node, "node_type", None) != "scene-3d":
             raise _error(
@@ -145,7 +141,7 @@ class PrevisClipPublisher:
         source_path = self._assets.resolve_asset_path(animatic_asset_id)
         # Deterministic per (workflow, shot, take): republishing the same shot
         # with the same source bytes lands on the same asset id, so asset-level
-        # re-publication is idempotent even though node creation is not.
+        # re-publication is idempotent.
         publish_node_id = _publish_node_id(workflow_id, shot_id, take_id)
         with tempfile.TemporaryDirectory(prefix="previs_clip_") as tmp_dir:
             clip_path = f"{tmp_dir}/previs_{shot.id}.mp4"
@@ -184,6 +180,7 @@ class PrevisClipPublisher:
                 mime_type="image/jpeg",
                 content=keyframe.png_bytes,
                 fingerprint=f"kf{index}-{hashlib.sha256(keyframe.png_bytes).hexdigest()[:24]}",
+                source_node_id_suffix=f"-kf{index}",
             )
             keyframe_entries.append(
                 PrevisClipKeyframeV2(
@@ -220,39 +217,43 @@ class PrevisClipPublisher:
         )
         self._assets.validate_asset_backed_node(clip_asset.asset_id, "video")
 
+        now = datetime.now(timezone.utc)
         source_position = getattr(source_node, "position", None)
         position = (
             CanvasPositionV2(x=source_position.x + 160.0, y=source_position.y + 80.0)
             if source_position is not None
             else CanvasPositionV2(x=0.0, y=0.0)
         )
-        node = self._nodes.create(
-            workflow_id,
-            CanvasNodeCreateRequestV2(
-                node_type="video",
-                creative_role=PREVIS_CLIP_ROLE,
-                role_contract_version="ad-media-role-v2",
-                title=f"预演片段 · {shot_label}",
-                summary_prompt=None,
-                generation_prompt=None,
-                structured_content=content_dict,
-                model_selection_mode="default",
-                model_ref=None,
-                parameters={},
-                position=position,
-                source_asset_id=clip_asset.asset_id,
-            ),
-            expected_revision=None,
+        node = CanvasNodeV2(
+            node_id=f"node_{uuid4().hex}",
+            workflow_id=workflow_id,
+            node_type="video",
+            creative_role=PREVIS_CLIP_ROLE,
+            role_contract_version="ad-media-role-v2",
+            title=f"预演片段 · {shot_label}",
+            status="ready",
+            structured_content=content_dict,
+            output_asset_id=clip_asset.asset_id,
+            position=position,
+            revision=1,
+            created_at=now,
+            updated_at=now,
         )
-        binding = self._bindings.create(
-            workflow_id,
-            CanvasBindingCreateRequestV2(
-                source=CanvasBindingSourceNodeV2(source_node_id=source_node.node_id),
-                target_node_id=node.node_id,
-                input_role="video_reference",
-                label="预演参考",
-            ),
-            expected_revision=None,
+        binding = CanvasBindingV2(
+            binding_id=f"binding_{uuid4().hex}",
+            workflow_id=workflow_id,
+            source=CanvasBindingSourceNodeV2(source_node_id=source_node.node_id),
+            target_node_id=node.node_id,
+            input_role="video_reference",
+            order=0,
+            label="预演参考",
+            created_at=now,
+            updated_at=now,
+        )
+        updated_workflow = self._workflows.add_node_with_bindings(
+            node,
+            (binding,),
+            expected_revision=expected_revision,
         )
 
         published = list(structured.get("published_previs_clips") or [])
@@ -270,7 +271,7 @@ class PrevisClipPublisher:
             CanvasNodePatchRequestV2(
                 structured_content={**structured, "published_previs_clips": published}
             ),
-            expected_revision=None,
+            expected_revision=updated_workflow.revision,
         )
         return PublishedPrevisClip(
             node=node,
@@ -290,10 +291,11 @@ class PrevisClipPublisher:
         mime_type: str,
         content: bytes,
         fingerprint: str,
+        source_node_id_suffix: str = "",
     ) -> ProjectAssetV2:
         return self._assets.publish_generated_bytes(
             workflow_id,
-            node_id=publish_node_id,
+            node_id=f"{publish_node_id}{source_node_id_suffix}",
             execution_id=f"previs-publish-{uuid.uuid4().hex}",
             filename=filename,
             mime_type=mime_type,

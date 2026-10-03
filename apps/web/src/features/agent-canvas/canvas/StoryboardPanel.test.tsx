@@ -143,16 +143,18 @@ describe("StoryboardPanel previs clip publishing (ADR 0017)", () => {
     findings: [],
   };
 
-  function stubFetchRoutes(routes: { match: (url: string) => boolean; body: Record<string, unknown>; status?: number }[]) {
+  function stubFetchRoutes(routes: { match: (url: string) => boolean; body: Record<string, unknown>; status?: number; etag?: string }[]) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         for (const route of routes) {
           if (route.match(url)) {
+            const headers: Record<string, string> = { "Content-Type": "application/json" };
+            if (route.etag) headers["ETag"] = route.etag;
             return new Response(JSON.stringify(route.body), {
               status: route.status ?? 200,
-              headers: { "Content-Type": "application/json" },
+              headers,
             });
           }
         }
@@ -165,6 +167,7 @@ describe("StoryboardPanel previs clip publishing (ADR 0017)", () => {
     const onPublished = vi.fn();
     const publishCalls: string[] = [];
     stubFetchRoutes([
+      { match: (url) => url.endsWith("/api/v2/workflows/wf_1"), body: { workflow_id: "wf_1", revision: 1 }, etag: "W/\"7\"" },
       { match: (url) => url.includes("/scene-3d/storyboard"), body: storyboardBody },
       {
         match: (url) => {

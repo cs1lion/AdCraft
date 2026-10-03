@@ -223,9 +223,20 @@ class AgentCanvasResultCommitRepository:
                     if command.outcome == "succeeded" and prepared is not None:
                         if asset_id is not None:
                             node_values["output_asset_id"] = asset_id
-                        if prepared.structured_content is not None:
+                        if prepared.structured_content:
+                            # Merge, not replace (same semantics as
+                            # publish_node_output): a run's outputs overwrite
+                            # their own keys with fresh data, while authoring
+                            # fields that live beside them on the node —
+                            # scene-3d drafts, dialogue lines, director takes,
+                            # published previs clips — survive the commit.
+                            previous_content = json.loads(
+                                str(node["structured_content_json"] or "{}")
+                            )
+                            merged = dict(previous_content)
+                            merged.update(prepared.structured_content)
                             node_values["structured_content_json"] = json.dumps(
-                                prepared.structured_content,
+                                merged,
                                 sort_keys=True,
                                 separators=(",", ":"),
                             )

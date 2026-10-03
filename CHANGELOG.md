@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 实机验证《静海攻防》全流程发现的三个真缺陷（预演片段通道实装暴露）
+
+- **缺陷 1（成片级）媒体运行的 structured_content 在持久提交路径整体丢失**：scene-3d 节点真实运行后节点上没有 SceneScript/轨迹/一致性报告（DB 实证 `structured_content_json = "{}"`），导演台打不开、下游无法绑定、预演片段发布报 `previs_clip_scene_script_missing`。根因：`agent_canvas_output_preparation` 媒体路径的 `PreparedNodeResultV2` 不携带 `outcome.structured_content`，而提交仓库仅在字段非 None 时写节点。修复：准备器透传（None 保持 None，纯资产提交不碰节点内容）+ 提交仓库改**合并**写（与 `publish_node_output` 同语义：运行产物覆盖自身键，作者态字段——草稿/台词/take/已发布预演片段——存活）。回归测试 `test_agent_canvas_result_commit_structured_content.py` 2 条（合并保作者态 / 无结构化内容不白写节点；mutation 对照：退回整列替换即红）。
+- **缺陷 2（连线层）flash + 预演片段的 `video_reference` 绑定被建绑定时模型能力校验拒绝**（`binding_model_incompatible`）——降级通道在运行期，绑定 gate 在它之前就把关系拒掉了，"flash 吃关键帧"永远走不到。修复：`agent_canvas_bindings` 准入先按原形态判；不可接受且视频参考源为 `scene_3d_previs_clip` 时，按**关键帧替换后形态**（video→image）再判——与运行期投递一致。实机：4 条连线 409→201。
+- **缺陷 3（运行期）替换出的关键帧图片输入带 `source_node_id` 违反 `ResolvedMediaInputSnapshotV2` 校验**（"Image asset snapshots cannot include a source node"→节点失败）。修复：替换项 `source_kind=image_asset` 且不携带源节点，血缘在 `binding_metadata`（`derived_from_binding_id/asset_id`）；测试锁死。
+- 另：前端 normalizers 的 `CANVAS_CREATIVE_ROLES` 集合漏新角色——发布后整个 workflow 快照被判 invalid、画布不渲染片段节点（2026-10-03 实机发现，与 replica_blueprint 同类坑，已修）。
+- **验证**：api ruff ✓；预演/提交/绑定/导出相关 **93 passed**（22+9+2+2 媒体 + 71 相关子集 + normalizers 339）；全量 ruff 仅剩并行会话在途文件 1 条 F401（非本次文件）。
+
 ### Added — 3D 分镜预演参考片段节点（ADR 0017）：导演台按镜头发布 animatic 片段上画布，与分镜片段连线并打通 flash 关键帧降级通道
 
 - **问题**：导演口令 3D 功能让 scene-3d 节点成为导演台（SceneScript/镜头表/take/全场景 animatic），但"分镜预演参考片段"不是画布节点——分镜片段（storyboard_video）生成无法以镜头粒度引用预演；且 agnes-video-2.5-flash 拒绝 `videos` 参数（catalog video:0），预演视频参考在 flash 下被静默 withhold，连线形同虚设。

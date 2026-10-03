@@ -122,6 +122,9 @@ class TestKeyframeSubstitution:
         assert first.binding_metadata["previs_control_level"] == "images_only"
         assert first.asset_id == "asset_kf0"
         assert first.input_role == "image_reference"
+        # image_asset snapshots must not carry a source node (validator rule).
+        assert first.source_node_id is None
+        assert first.source_kind == "image_asset"
         omitted = {item.binding_id: item.reason_code for item in result.omitted_optional_inputs}
         assert omitted["b_previs"] == "previs_clip_keyframes_substituted"
 

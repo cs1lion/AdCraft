@@ -223,6 +223,10 @@ const CANVAS_CREATIVE_ROLES = new Set<CanvasCreativeRoleV2>([
   "character",
   "scene",
   "scene_3d_previs",
+  // ADR 0017 分镜预演参考片段（video 节点承载导演台发布的镜头预演）。
+  // 漏了它，发布返回的响应会被 normalizer 判 invalid，画布上片段节点不渲染
+  // ——2026-10-03 实机发现（与下方 replica_blueprint 同一类坑）。
+  "scene_3d_previs_clip",
   "storyboard_sequence",
   "storyboard_video",
   // 复刻蓝图节点（ReplicaTeardown 建蓝图时落这个角色）。漏了它，建蓝图返回的

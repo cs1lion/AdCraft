@@ -213,6 +213,38 @@ class AgentCanvasBindingService:
                 reference_count,
             )
             if not getattr(capability_decision, "accepted", False):
+                # ADR 0017: a previs clip's video reference is *substitutable* —
+                # for models that refuse video inputs the delivery path swaps in
+                # the clip's published keyframes (images_only, queryable). The
+                # binding gate therefore also accepts the post-substitution
+                # shape when at least one video reference comes from a previs
+                # clip; without this, flash shots could never carry the very
+                # reference the channel exists to deliver.
+                node_roles = {
+                    node.node_id: node.creative_role for node in workflow.nodes
+                }
+                video_source_ids = [
+                    binding.source.node_id
+                    for binding in incoming
+                    if binding.input_role == "video_reference"
+                    and isinstance(binding.source, CanvasBindingSourceNodeV2)
+                ] + (
+                    [source_node.node_id]
+                    if request.input_role == "video_reference"
+                    and isinstance(request.source, CanvasBindingSourceNodeV2)
+                    else []
+                )
+                if any(
+                    node_roles.get(node_id) == "scene_3d_previs_clip"
+                    for node_id in video_source_ids
+                ):
+                    substituted_types = frozenset((input_types - {"video"}) | {"image"})
+                    capability_decision = self._binding_capability_validator(
+                        target,
+                        substituted_types,
+                        reference_count,
+                    )
+            if not getattr(capability_decision, "accepted", False):
                 if request.metadata.get("storyboard_reference_purpose") == "sequence_visual_anchor":
                     raise V2PersistenceError(
                         "guided_reference_model_incompatible",

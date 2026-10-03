@@ -2666,6 +2666,7 @@ def publish_previs_clip(
     request: PrevisClipPublishRequestV2,
     response: Response,
     runtime: Annotated[AgentCanvasRuntime, Depends(get_agent_canvas_runtime)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> PrevisClipPublishResponseV2:
     """发布分镜预演参考片段（ADR 0017）：导演台按镜头把 animatic 裁切上画布。"""
@@ -2674,8 +2675,8 @@ def publish_previs_clip(
     try:
         source_node = runtime.workflows.get_node(workflow_id, node_id)
         publisher = PrevisClipPublisher(
+            workflows=runtime.workflows,
             nodes=runtime.nodes,
-            bindings=runtime.bindings,
             assets=runtime.assets,
             role_validation=runtime.ad_media_validation,
         )
@@ -2684,6 +2685,7 @@ def publish_previs_clip(
             source_node=source_node,
             shot_id=request.shot_id,
             take_id=request.take_id,
+            expected_revision=_expected_revision(if_match, workflow_id),
         )
         workflow = runtime.projects.get_workflow(workflow_id)
         workflow = runtime.editing_responses.project_workflow(workflow)
