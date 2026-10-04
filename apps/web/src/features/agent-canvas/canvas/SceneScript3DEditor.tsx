@@ -381,6 +381,11 @@ export interface SceneScript3DEditorProps {
   initialEngagedIds?: readonly string[];
   focusShotId?: string | null;
   onFocusShotConsumed?: () => void;
+  /**
+   * 成片预演态指令栏的提交目标。省略时指令栏明确显示「未接线」——把一句话
+   * 变成 SceneScript 改动属于第四层（agent 按段交付），不做假动作。
+   */
+  onFilmInstruction?: (instruction: string) => void;
 }
 
 export function SceneScript3DEditor({
@@ -417,6 +422,7 @@ export function SceneScript3DEditor({
   onPublishedPrevisClip,
   focusShotId = null,
   onFocusShotConsumed,
+  onFilmInstruction,
 }: SceneScript3DEditorProps) {
   return (
     <SceneScriptPlaybackProvider sceneScript={sceneScript}>
@@ -454,8 +460,71 @@ export function SceneScript3DEditor({
         initialEngagedIds={initialEngagedIds}
         focusShotId={focusShotId}
         onFocusShotConsumed={onFocusShotConsumed}
+        onFilmInstruction={onFilmInstruction}
       />
     </SceneScriptPlaybackProvider>
+  );
+}
+
+/** 双模式的两种视图：场景调度（编辑）与成片预演（审片）。 */
+export type SceneScriptViewMode = "schedule" | "film";
+
+export interface FilmInstructionBarProps {
+  /** 提交指令。未提供时输入框明确说明尚未接线，而不是假装能生效。 */
+  onSubmit?: (instruction: string) => void;
+  placeholder?: string;
+}
+
+/**
+ * 成片预演态底部的指令栏。
+ *
+ * 它只收集文字并回调；把指令真正变成 SceneScript 改动属于第四层（agent 按段
+ * 交付），尚未接线。未接线时如实说明——一个不收发的输入框比一个假装收发的
+ * 输入框更诚实，也更容易让人发现缺了什么。
+ */
+export function FilmInstructionBar({
+  onSubmit,
+  placeholder = "选中一个元素或机位，描述如何调整..",
+}: FilmInstructionBarProps) {
+  const [text, setText] = useState("");
+  const trimmed = text.trim();
+  return (
+    <form
+      className="scene-script-3d-editor__instruction"
+      data-testid="film-instruction-bar"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!trimmed || !onSubmit) return;
+        onSubmit(trimmed);
+        setText("");
+      }}
+    >
+      <span className="scene-script-3d-editor__instruction-icon" aria-hidden="true">
+        +
+      </span>
+      <input
+        type="text"
+        aria-label="AI 场景指令"
+        placeholder={placeholder}
+        value={text}
+        disabled={!onSubmit}
+        onChange={(event) => setText(event.target.value)}
+      />
+      {onSubmit ? (
+        <button
+          type="submit"
+          className="scene-script-3d-editor__instruction-send"
+          disabled={!trimmed}
+          aria-label="发送指令"
+        >
+          ↑
+        </button>
+      ) : (
+        <span className="scene-script-3d-editor__instruction-pending" title="agent 通道尚未接线">
+          未接线
+        </span>
+      )}
+    </form>
   );
 }
 
@@ -493,12 +562,16 @@ function SceneScript3DEditorContent({
   onPublishedPrevisClip,
   focusShotId = null,
   onFocusShotConsumed,
+  onFilmInstruction,
 }: SceneScript3DEditorProps) {
   const [selectedObject, setSelectedObject] = useState<SceneObjectRef | null>(null);
   const [placementMode, setPlacementMode] = useState(false);
   const [gestureMode, setGestureMode] = useState(false);
   const [gestureError, setGestureError] = useState<string | null>(null);
   const [gestureSeconds, setGestureSeconds] = useState("2");
+  // 双模式默认回编辑态：审片态是"看看现在是什么"，不是要记住的位置，所以不做
+  // 持久化——刷新后总是落在场景调度。
+  const [viewMode, setViewMode] = useState<SceneScriptViewMode>("schedule");
   const playback = useSceneScriptPlayback();
 
   // The shot under the playhead, its camera, its label, and its published clip
@@ -712,7 +785,12 @@ function SceneScript3DEditorContent({
   );
 
   return (
-    <div className="scene-script-3d-editor scene-script-3d-editor--with-tray">
+    <div
+      className={`scene-script-3d-editor scene-script-3d-editor--with-tray${
+        viewMode === "film" ? " scene-script-3d-editor--film" : ""
+      }`}
+      data-view-mode={viewMode}
+    >
       <header className="scene-script-3d-editor__draft-header">
         <div>
           <strong>3D 场景草稿</strong>
@@ -727,6 +805,27 @@ function SceneScript3DEditorContent({
           </button>
           <button type="button" className="scene-script-3d-editor__save" onClick={onSave} disabled={!dirty || saving}>
             {saving ? "正在保存场景…" : "保存场景"}
+          </button>
+        </div>
+        {/* 双模式：同一份草稿的两种看法。场景调度是编辑态（现有全部控件）；
+            成片预演是审片态——大画面 + 分镜时间轴 + 指令栏。模式只改变呈现，
+            不改变数据，所以来回切换不会丢未保存修改。 */}
+        <div className="scene-script-3d-editor__modes" role="group" aria-label="视图模式">
+          <button
+            type="button"
+            className={viewMode === "schedule" ? "is-active" : undefined}
+            aria-pressed={viewMode === "schedule"}
+            onClick={() => setViewMode("schedule")}
+          >
+            场景调度
+          </button>
+          <button
+            type="button"
+            className={viewMode === "film" ? "is-active" : undefined}
+            aria-pressed={viewMode === "film"}
+            onClick={() => setViewMode("film")}
+          >
+            成片预演
           </button>
         </div>
         {error && <p role="alert" className="scene-script-3d-editor__error">{error}</p>}
@@ -1085,6 +1184,10 @@ function SceneScript3DEditorContent({
           onChange(setShotTransitionIntent(sceneScript, shotId, null))
         }
       />
+      {/* 成片预演态：分镜时间轴之下就是指令栏——审片时"看到不满意的镜头，
+          当场用一句话改掉"是这条动线的终点。编辑态不显示，因为那时已有检查器
+          和导演条。 */}
+      {viewMode === "film" && <FilmInstructionBar onSubmit={onFilmInstruction} />}
       <aside className="scene-script-3d-editor__inspector">
         <SceneScriptEditPanel
           sceneScript={sceneScript}
