@@ -110,7 +110,16 @@ export function formatTimecode(seconds: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
-/** The shot's span as seconds, at the script's frame rate. */
+/**
+ * The shot's span in seconds, at the script's frame rate.
+ *
+ * The `+ 1` matters: `start_frame`/`end_frame` are inclusive bounds and the
+ * schema keeps consecutive shots contiguous with no gap, so a shot covering
+ * frames 0..149 is 150 frames — 5.0s at 30fps, not 4.97s. `ShotStrip` measures
+ * the same span for its bar widths (`endFrame - startFrame + 1`); a card that
+ * disagreed with the strip about how long one shot is would put two different
+ * numbers on the same length.
+ */
 export function shotDurationSeconds(shot: SceneShot, frameRate: number): number {
-  return (shot.end_frame - shot.start_frame) / frameRate;
+  return (shot.end_frame - shot.start_frame + 1) / frameRate;
 }

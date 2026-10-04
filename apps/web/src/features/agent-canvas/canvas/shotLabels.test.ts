@@ -157,11 +157,24 @@ describe("shotDurationSeconds", () => {
       id: "s",
       camera: "c",
       start_frame: 0,
-      end_frame: 135,
+      end_frame: 134,
     };
-    // 135 frames is 4.5s at 30fps and 5.625s at 24fps; the reference framework
-    // quotes "4.5s-8.0s", i.e. the 30fps reading.
+    // Frames 0..134 inclusive = 135 frames = 4.5s at 30fps, 5.625s at 24fps.
     expect(shotDurationSeconds(shot, 30)).toBeCloseTo(4.5);
     expect(shotDurationSeconds(shot, 24)).toBeCloseTo(5.625);
+  });
+
+  it("agrees with the shot strip's span for the same shot", () => {
+    // One shot, two readouts — the strip's bar width and this card's timecode.
+    // If they disagreed about how long a shot is, the author would be reading
+    // two different numbers for the same cut.
+    const shot: SceneScriptRoot["shots"][number] = {
+      id: "s",
+      camera: "c",
+      start_frame: 150,
+      end_frame: 299,
+    };
+    const stripSpanFrames = shot.end_frame - shot.start_frame + 1;
+    expect(shotDurationSeconds(shot, 30) * 30).toBe(stripSpanFrames);
   });
 });

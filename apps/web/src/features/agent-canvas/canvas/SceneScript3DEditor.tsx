@@ -36,6 +36,8 @@ import {
   useSceneScriptPlayback,
 } from "./SceneScriptPlaybackContext";
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
+import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
+import { cameraLabel, shotForFrame } from "./shotLabels.ts";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
 import { DirectorCommandBar } from "./DirectorCommandBar.tsx";
 import { StoryboardPanel } from "./StoryboardPanel.tsx";
@@ -51,6 +53,8 @@ import {
   keyframesFromGesturePath,
 } from "./cameraGesturePath.ts";
 import { replaceCameraKeyframesInWindow } from "./cameraMotionPresets.ts";
+import { createOperationKey } from "../../../api/operationKey.ts";
+import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
 
 import { checkBlockingContinuity } from "./blockingContinuity.ts";
 import {
@@ -496,6 +500,45 @@ function SceneScript3DEditorContent({
   const [gestureError, setGestureError] = useState<string | null>(null);
   const [gestureSeconds, setGestureSeconds] = useState("2");
   const playback = useSceneScriptPlayback();
+
+  // The shot under the playhead, its camera, its label, and its published clip
+  // — everything the floating 机位 card needs. Derived here rather than inside
+  // the card so the card stays presentational, and so the label is the one
+  // `shotLabels` format the rest of the UI already uses.
+  const activeShotPreview = useMemo(() => {
+    const shot = shotForFrame(sceneScript, playback.currentFrame);
+    if (!shot) return null;
+    const index = sceneScript.cameras.findIndex((camera) => camera.id === shot.camera);
+    const camera = index < 0 ? null : sceneScript.cameras[index];
+    return {
+      shot,
+      label: camera ? cameraLabel(camera, index) : null,
+      clip: publishedPrevisClips.find((entry) => entry.shot_id === shot.id) ?? null,
+    };
+  }, [sceneScript, playback.currentFrame, publishedPrevisClips]);
+
+  const [publishingShotId, setPublishingShotId] = useState<string | null>(null);
+
+  const handlePublishActiveShot = useCallback(async () => {
+    const shot = activeShotPreview?.shot;
+    if (!shot || !workflowId || !nodeId || publishingShotId) return;
+    setPublishingShotId(shot.id);
+    try {
+      await agentCanvasApi.publishPrevisClip(
+        workflowId,
+        nodeId,
+        { shot_id: shot.id },
+        createOperationKey("previs-clip"),
+      );
+      onPublishedPrevisClip?.();
+    } catch {
+      // StoryboardPanel already surfaces publish failures against the shot row.
+      // The card only offers a shortcut, so a failure here must not double the
+      // message; giving up quietly is the honest option.
+    } finally {
+      setPublishingShotId(null);
+    }
+  }, [activeShotPreview, workflowId, nodeId, publishingShotId, onPublishedPrevisClip]);
 
   // Live consistency mirror of the backend gate (scene_consistency.py) plus
   // the cross-shot blocking continuity (blocking_continuity.py, the V0.2
@@ -964,6 +1007,21 @@ function SceneScript3DEditorContent({
             setGestureError(null);
           }}
         />
+        {/* The 机位 card. It floats over the viewport beside the shot it
+            belongs to, because that adjacency is the whole point: a 3D scene
+            and the clip published from one of its cameras otherwise read as two
+            unrelated surfaces. */}
+        {activeShotPreview && (
+          <ShotPreviewCard
+            label={activeShotPreview.label}
+            shot={activeShotPreview.shot}
+            frameRate={sceneScript.scene.frame_rate}
+            clip={activeShotPreview.clip}
+            active
+            onPublish={activeShotPreview.clip ? undefined : handlePublishActiveShot}
+            publishing={publishingShotId !== null}
+          />
+        )}
       </div>
       {/* V0.2 §12: a declared reading must be revocable. Without this the
           relation is write-once, and "这个切不需要读法" would have no
