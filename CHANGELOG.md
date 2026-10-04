@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 成片验收三轮返工：预演锚定过强的首镜重生成 + 字幕烧录两个 Windows 环境缺陷
+
+- **用户实看反馈"这不是最终成片"**：v1 成片首镜是 Blender 白模画面。归因（抽帧比对实证）：agnes-video-2.5-flash 对预演关键帧参考锚定过强，把素模画面直接光栅化成"视频"（shot2-4 正常，仅 shot1 中招——模型方差）。处置：重写首镜提示词（强风格指令：严禁素模/白模/低多边形 + 实拍与电影 CG 质感），保留预演关键帧通道重生成——新首镜为写实月面基地大远景，四镜风格统一。
+- **字幕烧录缺陷 A（配置）**：`FINAL_COMPOSITION_SUBTITLE_FONT_PATH` 未配置 → 能力探测 `font_readable=False` → 烧录被降级标记（`subtitle_burn_in_unavailable`，可查询但此前无人看）。配置指向 `C:\Windows\Fonts\msyh.ttc`。
+- **字幕烧录缺陷 B（代码）**：`_ass_filter` 的裸转义形式 `ass=C\:/...` 在 Windows ffmpeg 7.1.1 essentials 上 filterchain 解析直接报错（`Error parsing a filter description`），导致修完字体后导出 ffmpeg failed。修复：参数值套单引号（`ass='C\:/...'`），对本机工具链实测验证后落码；相关回归 165 passed。
+- **成片 v3**：`asset_a2dae8b65aa5724b1c41022f`（25.7s / 720p / 6.3MB）——四镜写实 + 5 句台词字幕烧录 + 配音床。成片路径：`apps/api/data/assets/objects/sha256/...`（按 asset_id 走 `/api/v2/assets/{id}/content` 取用）。
+
 ### Fixed — 实机验证《静海攻防》全流程发现的三个真缺陷（预演片段通道实装暴露）
 
 - **缺陷 1（成片级）媒体运行的 structured_content 在持久提交路径整体丢失**：scene-3d 节点真实运行后节点上没有 SceneScript/轨迹/一致性报告（DB 实证 `structured_content_json = "{}"`），导演台打不开、下游无法绑定、预演片段发布报 `previs_clip_scene_script_missing`。根因：`agent_canvas_output_preparation` 媒体路径的 `PreparedNodeResultV2` 不携带 `outcome.structured_content`，而提交仓库仅在字段非 None 时写节点。修复：准备器透传（None 保持 None，纯资产提交不碰节点内容）+ 提交仓库改**合并**写（与 `publish_node_output` 同语义：运行产物覆盖自身键，作者态字段——草稿/台词/take/已发布预演片段——存活）。回归测试 `test_agent_canvas_result_commit_structured_content.py` 2 条（合并保作者态 / 无结构化内容不白写节点；mutation 对照：退回整列替换即红）。

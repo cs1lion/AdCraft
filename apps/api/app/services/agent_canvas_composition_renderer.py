@@ -933,11 +933,18 @@ def _escape_filter_path(path: Path) -> str:
 
 
 def _ass_filter(path: Path, *, settings: Settings) -> str:
-    """Build the libass ``ass`` filter, exposing the configured font dir."""
-    result = f"ass={_escape_filter_path(path)}"
+    """Build the libass ``ass`` filter, exposing the configured font dir.
+
+    Option values are wrapped in single quotes: on Windows the drive colon
+    must be escaped (``C\\:/...``), and ffmpeg 7.1 essentials rejects the
+    bare escaped form at filter-parse time ("Error parsing a filter
+    description") while the quoted form parses and renders. Verified against
+    the local toolchain before shipping this change.
+    """
+    result = f"ass='{_escape_filter_path(path)}'"
     if settings.final_composition_subtitle_font_path:
         fonts_dir = Path(settings.final_composition_subtitle_font_path).expanduser().parent
-        result += f":fontsdir={_escape_filter_path(fonts_dir)}"
+        result += f":fontsdir='{_escape_filter_path(fonts_dir)}'"
     return result
 
 
