@@ -185,6 +185,47 @@ describe("SceneScript3DEditor dual view modes", () => {
     });
     expect(screen.queryByTestId("scene-edit-report")).toBeNull();
   });
+
+  it("adopts the gate's report when a director preset passes", async () => {
+    // The point of the whole layer: a preset applied through the gate must land
+    // its per-shot account in the 审片 view, so "what did that actually change"
+    // is answerable without re-deriving it from the script.
+    const directorClient = await import("./directorOperationsClient.ts");
+    const gateSpy = vi.spyOn(directorClient, "applyDirectorMotion").mockResolvedValue({
+      ok: true,
+      appliedSceneScript: sceneScript(),
+      editReport: {
+        changes: { cam1: ["camera_moved"] },
+        shots: [
+          {
+            id: "shot1",
+            camera_id: "cam1",
+            camera_label: "机位01 | 双人全景",
+            start_seconds: 0,
+            end_seconds: 6,
+            changes: ["camera_moved"],
+            objects_touched: ["cam1"],
+          },
+        ],
+        shot_count: 1,
+        change_count: 1,
+        labels: { camera_moved: "机位移动" },
+      },
+    });
+    renderEditor({});
+    fireEvent.change(screen.getByLabelText("导演指令对象"), { target: { value: "cam1" } });
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "push_in" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("scene-script-3d-director-submit"));
+    });
+    // The report is not part of the editing view; switch to 审片 to read it.
+    expect(screen.queryByTestId("scene-edit-report")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("scene-edit-report").textContent).toContain(
+      "机位01 | 双人全景 的 0s–6s",
+    );
+    gateSpy.mockRestore();
+  });
 });
 
 describe("SceneScript3DEditor", () => {

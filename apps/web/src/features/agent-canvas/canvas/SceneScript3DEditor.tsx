@@ -581,6 +581,12 @@ function SceneScript3DEditorContent({
   // 双模式默认回编辑态：审片态是"看看现在是什么"，不是要记住的位置，所以不做
   // 持久化——刷新后总是落在场景调度。
   const [viewMode, setViewMode] = useState<SceneScriptViewMode>("schedule");
+  // 最近一次过闸门的调整回报，由导演条/触发器回填；外部 prop 可作种子值
+  // （例如调用方从自己保存的响应里带下来）。本地 state 优先，因为过闸门这件事
+  // 发生在编辑器内部。
+  const [editReport, setEditReport] = useState<SceneEditReport | null>(lastEditReport);
+  const lastEditReportRef = useRef(lastEditReport);
+  lastEditReportRef.current = lastEditReport;
   const playback = useSceneScriptPlayback();
 
   // The shot under the playhead, its camera, its label, and its published clip
@@ -971,6 +977,7 @@ function SceneScript3DEditorContent({
         selectedObject={selectedObject}
         playheadFrame={playback.currentFrame}
         onNudge={(next) => onChange(next)}
+        onEditReport={setEditReport}
         disabled={saving}
       />
       <StoryboardPanel
@@ -1201,7 +1208,7 @@ function SceneScript3DEditorContent({
       {viewMode === "film" && (
         <>
           <SceneEditReportPanel
-            report={lastEditReport}
+            report={editReport}
             frameRate={sceneScript.scene.frame_rate}
           />
           <FilmInstructionBar onSubmit={onFilmInstruction} />

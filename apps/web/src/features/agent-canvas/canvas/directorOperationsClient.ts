@@ -15,6 +15,7 @@
  */
 
 import type { SceneScriptRoot } from "../../../types/scene-script";
+import type { SceneEditReport } from "./shotLabels";
 
 const SCENE_3D_BASE = "/api/v1/scene-3d";
 
@@ -35,6 +36,12 @@ export interface DirectorMotionGateResult {
   appliedSceneScript?: SceneScriptRoot;
   /** The ops the backend expanded from the intent (for logging / replay). */
   operations?: Record<string, unknown>[];
+  /**
+   * What the batch actually changed, per 机位 and 镜头. Derived by the backend
+   * from the before/after diff, so an op that changed nothing is not reported
+   * as a change. Absent when the gate rejected (nothing was applied).
+   */
+  editReport?: SceneEditReport | null;
   error?: string;
   errorCode?: string;
 }
@@ -68,6 +75,7 @@ export async function applyDirectorMotion(
     success?: boolean;
     applied_scene_script?: SceneScriptRoot;
     operations?: Record<string, unknown>[];
+    edit_report?: SceneEditReport | null;
     error?: string;
     error_code?: string;
   };
@@ -94,6 +102,7 @@ export async function applyDirectorMotion(
     ok: true,
     appliedSceneScript: body.applied_scene_script,
     operations: body.operations ?? [],
+    editReport: body.edit_report ?? null,
   };
 }
 
@@ -260,6 +269,8 @@ export interface TriggerEventGateResult {
   ok: boolean;
   appliedSceneScript?: SceneScriptRoot;
   operations?: Record<string, unknown>[];
+  /** What the trigger actually changed, per 机位 and 镜头 (see DirectorMotionGateResult). */
+  editReport?: SceneEditReport | null;
   error?: string;
   errorCode?: string;
 }
@@ -287,6 +298,7 @@ export async function applyTriggerEvent(
     success?: boolean;
     applied_scene_script?: SceneScriptRoot;
     operations?: Record<string, unknown>[];
+    edit_report?: SceneEditReport | null;
     error?: string;
     error_code?: string;
   };
@@ -303,6 +315,7 @@ export async function applyTriggerEvent(
     ok: true,
     appliedSceneScript: body.applied_scene_script,
     operations: body.operations ?? [],
+    editReport: body.edit_report ?? null,
   };
 }
 
