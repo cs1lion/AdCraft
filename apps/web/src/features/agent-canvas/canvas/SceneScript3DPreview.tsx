@@ -45,6 +45,7 @@ import {
   SphereGeometry,
   useThree,
 } from "./LeanSceneCanvas";
+import { cameraLabel, cameraLabelsById, shotForFrame } from "./shotLabels";
 import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSceneScriptPlayback } from "./SceneScriptPlaybackContext";
@@ -394,11 +395,14 @@ function PropMesh({
 
 function CameraGizmo({
   camera,
+  label,
   active,
   frame,
   handlers,
 }: {
   camera: SceneCamera;
+  /** Human-readable shot name, e.g. "机位05 | 飞船俯瞰". */
+  label: string;
   active: boolean;
   frame: number;
   handlers: EditHandlers;
@@ -471,6 +475,18 @@ function CameraGizmo({
         </BufferGeometry>
         <LineBasicMaterial color={bodyColor} opacity={0.4} transparent />
       </LineSegments>
+      {/* Shot name, floating above the body. A camera you cannot name is a
+          camera you cannot ask an agent to move: this label is the handle the
+          reference framework's "选中一个元素或机位" refers to. */}
+      <Html position={[0, 0.42, 0]} center distanceFactor={9}>
+        <span
+          className="scene-script-camera-label"
+          data-camera-label={camera.id}
+          data-active={active ? "true" : "false"}
+        >
+          {label}
+        </span>
+      </Html>
     </Group>
   );
 }
@@ -929,14 +945,14 @@ export function SceneScript3DPreview({
   const [ghost, setGhost] = useState<{ ref: SceneObjectRef; position: SceneVec3 } | null>(null);
   const dragJustEndedRef = useRef(0);
 
-  const activeCameraId = useMemo(() => {
-    for (const shot of sceneScript.shots) {
-      if (currentFrame >= shot.start_frame && currentFrame <= shot.end_frame) {
-        return shot.camera;
-      }
-    }
-    return sceneScript.shots[0]?.camera ?? "";
-  }, [currentFrame, sceneScript.shots]);
+  // One label per camera, built once per script rather than per camera per
+  // frame: the viewport re-renders on every playhead move.
+  const cameraLabels = useMemo(() => cameraLabelsById(sceneScript), [sceneScript]);
+
+  const activeCameraId = useMemo(
+    () => shotForFrame(sceneScript, currentFrame)?.camera ?? sceneScript.shots[0]?.camera ?? "",
+    [currentFrame, sceneScript],
+  );
 
   // Kinds this build has no geometry for. Normally empty; a non-empty list means
   // the script came from a backend newer than this bundle, and the magenta boxes
@@ -1082,10 +1098,11 @@ export function SceneScript3DPreview({
                 ))}
 
                 {/* Cameras */}
-                {sceneScript.cameras.map((object) => (
+                {sceneScript.cameras.map((object, index) => (
                   <CameraGizmo
                     key={object.id}
                     camera={object}
+                    label={cameraLabels[object.id] ?? cameraLabel(object, index)}
                     active={object.id === activeCameraId}
                     frame={currentFrame}
                     handlers={handlersFor(

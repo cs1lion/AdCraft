@@ -735,22 +735,36 @@ export function Html({ position, center, children }: HtmlProps) {
   const state = useContext(LeanThreeContext);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
 
+  const place = (dom: HTMLDivElement, eye: THREE.Camera) => {
+    if (!state) return;
+    const vector = new THREE.Vector3();
+    node.getWorldPosition(vector);
+    vector.project(eye);
+    const rect = state.domElement.getBoundingClientRect();
+    dom.style.transform =
+      `translate3d(${(vector.x * 0.5 + 0.5) * rect.width}px, ${(-vector.y * 0.5 + 0.5) * rect.height}px, 0)`;
+    if (center) {
+      dom.style.marginLeft = `${-dom.offsetWidth / 2}px`;
+      dom.style.marginTop = `${-dom.offsetHeight / 2}px`;
+    }
+  };
+
+  // Project EVERY frame, not once: the camera moves (orbit drag, playback, a
+  // gizmo being dragged) and the overlay has to stay glued to its object. A
+  // one-shot projection reads fine on a static scene — which is exactly how the
+  // first cut of this module passed its own browser spec — and then leaves the
+  // label behind the moment the playhead moves. drei's Html registers with
+  // useFrame for the same reason.
+  useFrame((frameState) => {
+    if (!element) return;
+    place(element, frameState.camera);
+  });
+
   useLayoutEffect(() => {
     if (!state || !element) return;
-    const vector = new THREE.Vector3();
-    const update = () => {
-      node.getWorldPosition(vector);
-      vector.project(state.camera);
-      const rect = state.domElement.getBoundingClientRect();
-      element.style.transform =
-        `translate3d(${(vector.x * 0.5 + 0.5) * rect.width}px, ${(-vector.y * 0.5 + 0.5) * rect.height}px, 0)`;
-      if (center) {
-        element.style.marginLeft = `${-element.offsetWidth / 2}px`;
-        element.style.marginTop = `${-element.offsetHeight / 2}px`;
-      }
-    };
-    update();
-    const observer = new ResizeObserver(update);
+    // Place it before the first frame so it never flashes at the host origin.
+    place(element, state.camera);
+    const observer = new ResizeObserver(() => place(element, state.camera));
     observer.observe(element);
     return () => observer.disconnect();
   }, [state, element, node, center]);

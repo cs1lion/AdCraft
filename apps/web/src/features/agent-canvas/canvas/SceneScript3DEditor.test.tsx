@@ -89,6 +89,145 @@ function inspectorSpinbuttons(): HTMLInputElement[] {
 
 afterEach(cleanup);
 
+describe("SceneScript3DEditor dual view modes", () => {
+  it("opens in schedule mode with the editing surface present", () => {
+    renderEditor();
+    expect(
+      document.querySelector(".scene-script-3d-editor")?.getAttribute("data-view-mode"),
+    ).toBe("schedule");
+    expect(document.querySelector(".scene-script-3d-editor__inspector")).toBeTruthy();
+    expect(screen.queryByTestId("film-instruction-bar")).toBeNull();
+  });
+
+  it("switches to film mode and drops the editing surface for the instruction bar", () => {
+    renderEditor();
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    const root = document.querySelector(".scene-script-3d-editor");
+    expect(root?.getAttribute("data-view-mode")).toBe("film");
+    // Hidden by CSS rather than unmounted: placement mode, the selection and the
+    // tray's own state must survive a round trip.
+    expect(root?.className).toContain("scene-script-3d-editor--film");
+    expect(document.querySelector(".scene-script-3d-editor__inspector")).toBeTruthy();
+    expect(screen.getByTestId("film-instruction-bar")).toBeTruthy();
+  });
+
+  it("keeps the two modes' pressed states exclusive", () => {
+    renderEditor();
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByRole("button", { name: "成片预演" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "场景调度" }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "场景调度" }));
+    expect(screen.getByRole("button", { name: "场景调度" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("film-instruction-bar")).toBeNull();
+  });
+
+  it("keeps the draft boundary in both modes so a switch cannot lose work", () => {
+    renderEditor({ dirty: true });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    // The mode changes the presentation, never the draft, so an author who
+    // switches mid-edit must still be able to save.
+    const save = screen.getByRole("button", { name: /保存场景/ }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+  });
+
+  it("routes a submitted instruction to the caller", () => {
+    const onFilmInstruction = vi.fn();
+    renderEditor({ onFilmInstruction });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    fireEvent.change(screen.getByLabelText("AI 场景指令"), {
+      target: { value: "把这个机位拉远一点" },
+    });
+    fireEvent.click(screen.getByLabelText("发送指令"));
+    expect(onFilmInstruction).toHaveBeenCalledWith("把这个机位拉远一点");
+  });
+
+  it("reports the delivered edit above the instruction bar in film mode", () => {
+    // "改了什么" sits ON TOP of the next instruction: the order on screen is the
+    // order of cause and effect. A report rendered below the bar would read as
+    // the answer to a question the author has not asked yet.
+    renderEditor({
+      lastEditReport: {
+        changes: { cam1: ["camera_moved"] },
+        shots: [
+          {
+            id: "shot1",
+            camera_id: "cam1",
+            camera_label: "机位01 | 双人全景",
+            start_seconds: 0,
+            end_seconds: 3,
+            changes: ["camera_moved"],
+            objects_touched: ["cam1"],
+          },
+        ],
+        shot_count: 1,
+        change_count: 1,
+        labels: { camera_moved: "机位移动" },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    const report = screen.getByTestId("scene-edit-report");
+    const bar = screen.getByTestId("film-instruction-bar");
+    expect(report.textContent).toContain("机位01 | 双人全景 的 0s–3s");
+    expect(
+      report.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the edit report out of the editing view", () => {
+    renderEditor({
+      lastEditReport: {
+        changes: { cam1: ["camera_moved"] },
+        shots: [],
+        shot_count: 1,
+        change_count: 1,
+        labels: {},
+      },
+    });
+    expect(screen.queryByTestId("scene-edit-report")).toBeNull();
+  });
+
+  it("adopts the gate's report when a director preset passes", async () => {
+    // The point of the whole layer: a preset applied through the gate must land
+    // its per-shot account in the 审片 view, so "what did that actually change"
+    // is answerable without re-deriving it from the script.
+    const directorClient = await import("./directorOperationsClient.ts");
+    const gateSpy = vi.spyOn(directorClient, "applyDirectorMotion").mockResolvedValue({
+      ok: true,
+      appliedSceneScript: sceneScript(),
+      editReport: {
+        changes: { cam1: ["camera_moved"] },
+        shots: [
+          {
+            id: "shot1",
+            camera_id: "cam1",
+            camera_label: "机位01 | 双人全景",
+            start_seconds: 0,
+            end_seconds: 6,
+            changes: ["camera_moved"],
+            objects_touched: ["cam1"],
+          },
+        ],
+        shot_count: 1,
+        change_count: 1,
+        labels: { camera_moved: "机位移动" },
+      },
+    });
+    renderEditor({});
+    fireEvent.change(screen.getByLabelText("导演指令对象"), { target: { value: "cam1" } });
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "push_in" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("scene-script-3d-director-submit"));
+    });
+    // The report is not part of the editing view; switch to 审片 to read it.
+    expect(screen.queryByTestId("scene-edit-report")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("scene-edit-report").textContent).toContain(
+      "机位01 | 双人全景 的 0s–6s",
+    );
+    gateSpy.mockRestore();
+  });
+});
+
 describe("SceneScript3DEditor", () => {
   it("exposes the draft save boundary and a collapsed, keyboard-accessible guide", () => {
     renderEditor({ dirty: true });

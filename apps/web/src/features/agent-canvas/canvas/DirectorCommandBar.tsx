@@ -21,6 +21,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SceneScriptRoot } from "../../../types/scene-script";
+import type { SceneEditReport } from "./shotLabels.ts";
 import type { SceneVec3 } from "./sceneScriptAxes.ts";
 import { CAMERA_MOTION_PRESETS } from "./cameraMotionPresets.ts";
 import { CHARACTER_MOTION_PRESETS } from "./characterMotionPresets.ts";
@@ -58,6 +59,14 @@ export interface DirectorCommandBarProps {
 
   onNudge?: (next: SceneScriptRoot) => void;
 
+  /**
+   * Called with the backend's per-shot account of what the gate actually
+   * changed. Separate from `onApply` because the report describes an OUTCOME
+   * while `onApply` carries the new script: one command produces both, and the
+   * 成片预演 view needs the report even after the preview already moved.
+   */
+  onEditReport?: (report: SceneEditReport) => void;
+
   disabled?: boolean;
 
 }
@@ -76,6 +85,8 @@ export function DirectorCommandBar({
 
   onNudge,
 
+  onEditReport,
+
   disabled,
 
 }: DirectorCommandBarProps) {
@@ -83,6 +94,10 @@ export function DirectorCommandBar({
   const latestScriptRef = useRef(sceneScript);
   latestScriptRef.current = sceneScript;
   const requestGenerationRef = useRef(0);
+  // Held in a ref so the async gate callbacks always reach the latest callback
+  // without re-subscribing on every render.
+  const onEditReportRef = useRef(onEditReport);
+  onEditReportRef.current = onEditReport;
   useEffect(() => () => { requestGenerationRef.current += 1; }, []);
   const beginGate = (expected: SceneScriptRoot) => {
     const generation = ++requestGenerationRef.current;
@@ -206,6 +221,9 @@ export function DirectorCommandBar({
       if (!isCurrent()) return;
       if (gate.ok && gate.appliedSceneScript) {
         onApply(gate.appliedSceneScript);
+        // The report rides with the accepted script: it describes what changed,
+        // which is only knowable once the gate has applied the batch.
+        if (gate.editReport) onEditReportRef.current?.(gate.editReport);
         setStatus({ ok: true, message: `触发事件已过闸门：${trigger} @ frame ${frame}` });
       } else {
         setStatus({ ok: false, message: `触发事件未过闸门：${gate.error ?? "未知"}` });
@@ -330,6 +348,8 @@ export function DirectorCommandBar({
       if (gate.ok && gate.appliedSceneScript) {
 
         onApply(gate.appliedSceneScript);
+
+        if (gate.editReport) onEditReportRef.current?.(gate.editReport);
 
         setStatus({
 

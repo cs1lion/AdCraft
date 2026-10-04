@@ -1070,6 +1070,321 @@
   user-select: none;
 }
 
+/* 3D viewport camera label: the shot name floating above a camera gizmo.
+   A camera you cannot name is a camera you cannot ask an agent to move, so
+   this is the handle behind "选中一个元素或机位". The active camera (the one the
+   playhead is inside) reads brighter than the rest, which is how the author
+   tells which shot a drag would edit. */
+.scene-script-camera-label {
+  display: inline-block;
+  max-width: 180px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: rgba(13, 13, 13, 0.72);
+  color: #9fb6d4;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+
+.scene-script-camera-label[data-active="true"] {
+  background: rgba(13, 13, 13, 0.86);
+  color: #ffe9a8;
+  font-weight: 600;
+}
+
+/* 机位预览卡：3D 视口左下角的浮层，播放在该机位上发布的预演片段。
+   它存在的意义是让「3D ↔ 视频」的关系可见——链条本来就在后端
+   （SceneShot.camera 与 published_previs_clips.shot_id），但表格里的一行
+   血缘不如"贴着镜头放的播放器"直观。 */
+.shot-preview-card {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 3;
+  width: min(232px, 42%);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(10, 10, 16, 0.9);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.shot-preview-card[data-active="true"] {
+  border-color: rgba(255, 209, 102, 0.55);
+}
+
+.shot-preview-card__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: #cfd6e4;
+}
+
+.shot-preview-card[data-active="true"] .shot-preview-card__header {
+  color: #ffe9a8;
+}
+
+.shot-preview-card__icon {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.shot-preview-card__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shot-preview-card__duration {
+  flex: none;
+  font-family: monospace;
+  font-size: 10px;
+  color: #8a93a6;
+}
+
+.shot-preview-card__stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #07070c;
+}
+
+.shot-preview-card__video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #07070c;
+}
+
+.shot-preview-card__empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  text-align: center;
+}
+
+.shot-preview-card__hint {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #6f7789;
+}
+
+.shot-preview-card__publish {
+  padding: 3px 10px;
+  border: 1px solid rgba(79, 195, 247, 0.4);
+  border-radius: 3px;
+  background: rgba(79, 195, 247, 0.12);
+  color: #9fdcf7;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.shot-preview-card__publish:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 双模式切换（场景调度 / 成片预演）。模式只改呈现不改数据：编辑器、时间轴、
+   机位卡都读同一份草稿，所以切换不会丢未保存修改——这点必须在 CSS 上成立：
+   两个模式共用同一套 DOM 顺序，靠根节点上的修饰类改布局，而不是把两棵树
+   换来换去。 */
+.scene-script-3d-editor__modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.scene-script-3d-editor__modes button {
+  padding: 3px 12px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #8a93a6;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__modes button.is-active {
+  background: rgba(79, 195, 247, 0.16);
+  color: #bde6fb;
+}
+
+/* 成片预演态：审片要的是画面与时间轴，编辑控件（资产托盘、工具栏、检查器）
+   全部让位。用 display 藏起来而不是卸载，是为了保住它们内部的状态（选中项、
+   放置模式、手势进行中）——切回场景调度时作者回到原处，而不是从头再来。 */
+.scene-script-3d-editor--film .scene-3d-workbench__tray,
+.scene-script-3d-editor--film .scene-script-3d-editor__toolbar,
+.scene-script-3d-editor--film .scene-script-3d-editor__takes,
+.scene-script-3d-editor--film .scene-script-3d-editor__inspector,
+.scene-script-3d-editor--film .scene-script-3d-editor__consistency {
+  display: none;
+}
+
+.scene-script-3d-editor--film .scene-script-3d-editor__stage {
+  width: 100%;
+}
+
+/* 审片态的大画面：预览高度由调用方给，这里只保证舞台不被子元素挤压。 */
+.scene-script-3d-editor--film .scene-script-3d-editor__strip {
+  margin-top: 8px;
+}
+
+/* 成片预演态指令栏：参考框架里它是"看到不满意的镜头，当场一句话改掉"的落点，
+   所以紧贴时间轴下方，横跨整个编辑区。 */
+.scene-script-3d-editor__instruction {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(12, 12, 18, 0.85);
+}
+
+.scene-script-3d-editor__instruction-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: #9aa3b5;
+  font-size: 13px;
+}
+
+.scene-script-3d-editor__instruction input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: #dfe4ee;
+  font-size: 12px;
+}
+
+.scene-script-3d-editor__instruction input::placeholder {
+  color: #5f6879;
+}
+
+.scene-script-3d-editor__instruction input:disabled {
+  color: #6f7789;
+}
+
+.scene-script-3d-editor__instruction-send {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: #2f7fb5;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__instruction-send:disabled {
+  background: rgba(255, 255, 255, 0.1);
+  color: #6f7789;
+  cursor: default;
+}
+
+.scene-script-3d-editor__instruction-pending {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #6f7789;
+  font-size: 10px;
+}
+
+/* 调整回报面板：紧贴指令栏上方。顺序即因果——先看这次改了什么，再决定下一条
+   指令改什么；放在指令栏下方会读成"对一个还没问的问题的回答"。 */
+.scene-edit-report {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(12, 12, 18, 0.85);
+  font-size: 11px;
+  color: #cfd6e4;
+}
+
+.scene-edit-report--empty {
+  color: #6f7789;
+}
+
+.scene-edit-report__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.scene-edit-report__title {
+  color: #bde6fb;
+  font-weight: 600;
+}
+
+.scene-edit-report__count {
+  color: #6f7789;
+  font-size: 10px;
+}
+
+.scene-edit-report__shots {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.scene-edit-report__shot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.scene-edit-report__shot-headline {
+  color: #ffe9a8;
+}
+
+.scene-edit-report__shot-changes {
+  color: #8a93a6;
+  font-size: 10px;
+}
+
+.scene-edit-report__orphans {
+  margin: 5px 0 0;
+  color: #8a93a6;
+  font-size: 10px;
+}
+
 .dialogue-lipsync__summary {
   margin: 0;
   font-size: 10px;
