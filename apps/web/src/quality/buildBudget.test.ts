@@ -9,11 +9,22 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import { transform } from "lightningcss";
 
 const budgetScriptPath = join(process.cwd(), "scripts/perf/check-build-budget.mjs");
 const temporaryDirectories: string[] = [];
+
+// Derived from the script rather than hardcoded: this test locks the SEMANTICS
+// (a lazy chunk counts toward core JS, and a smaller payload passes), and it
+// must survive a re-baseline of the threshold without being edited.
+// `@vite-ignore` because the script is outside the Vite root; importing it is
+// safe since the script guards its CLI body behind a direct-run check.
+const budgetLimits = await import(/* @vite-ignore */ pathToFileURL(budgetScriptPath).href) as {
+  BUDGET_LIMITS: { TOTAL_JS_BYTES: number };
+};
+const TOTAL_JS_LIMIT = budgetLimits.BUDGET_LIMITS.TOTAL_JS_BYTES;
 
 function writeAsset(assetsDirectory: string, name: string, size = 1) {
   writeFileSync(join(assetsDirectory, name), Buffer.alloc(size));
@@ -66,7 +77,9 @@ describe("build budget", () => {
     for (const name of ["WorkflowPage-fixture.js", "WorkflowPage-fixture.css", "vendor-react-flow-fixture.js", "vendor-react-flow-fixture.css", "AgentCanvasChatPanel-fixture.js", "CanonicalAssetViewer-fixture.js", "home-fixture.css"]) {
       writeAsset(assetsDirectory, name);
     }
-    writeAsset(assetsDirectory, "SceneScript3DPreview-fixture.js", 1281 * 1024);
+    // The index fixture contributes 1 byte, so this is exactly one byte over
+    // the ceiling — the smallest overshoot that must still fail.
+    writeAsset(assetsDirectory, "SceneScript3DPreview-fixture.js", TOTAL_JS_LIMIT);
     writeFileSync(join(manifestDirectory, "manifest.json"), JSON.stringify({
       "index.html": {
         file: "assets/index-fixture.js",
@@ -89,7 +102,7 @@ describe("build budget", () => {
     expect(oversized.stderr).toContain("core JS is");
     // Mutate only payload size: a genuinely smaller lazy chunk passes without
     // changing the budget, its classification, or its loading strategy.
-    writeAsset(assetsDirectory, "SceneScript3DPreview-fixture.js", 1281 * 1024 - 1);
+    writeAsset(assetsDirectory, "SceneScript3DPreview-fixture.js", TOTAL_JS_LIMIT - 1);
     const withinBudget = run();
     expect(withinBudget.status).toBe(0);
     expect(withinBudget.stderr).not.toContain("core JS is");
