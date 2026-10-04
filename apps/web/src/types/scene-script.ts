@@ -75,6 +75,16 @@ export interface SceneCamera {
   id: string;
   shot_type: "wide" | "medium" | "closeup" | "over_shoulder" | "pov" | "top_down" | string;
   keyframes: CameraKeyframe[];
+  /**
+   * Human-authored shot name, e.g. "飞船俯瞰" (rendered as "机位05 | 飞船俯瞰").
+   *
+   * Forward declaration for the additive backend change described in
+   * docs/plans/scene3d-shot-preview-bridge.md — `SceneCamera` today has no such
+   * field, so this is optional and every consumer must fall back to the
+   * ordinal (see `shotLabels.cameraLabel`). Declaring it here lets the label UI
+   * ship before the schema does, without a second edit later.
+   */
+  display_name?: string | null;
 }
 
 export interface SceneShot {

@@ -1070,6 +1070,33 @@
   user-select: none;
 }
 
+/* 3D viewport camera label: the shot name floating above a camera gizmo.
+   A camera you cannot name is a camera you cannot ask an agent to move, so
+   this is the handle behind "选中一个元素或机位". The active camera (the one the
+   playhead is inside) reads brighter than the rest, which is how the author
+   tells which shot a drag would edit. */
+.scene-script-camera-label {
+  display: inline-block;
+  max-width: 180px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: rgba(13, 13, 13, 0.72);
+  color: #9fb6d4;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+
+.scene-script-camera-label[data-active="true"] {
+  background: rgba(13, 13, 13, 0.86);
+  color: #ffe9a8;
+  font-weight: 600;
+}
+
 .dialogue-lipsync__summary {
   margin: 0;
   font-size: 10px;
