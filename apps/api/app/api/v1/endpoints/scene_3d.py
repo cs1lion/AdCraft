@@ -1441,6 +1441,10 @@ class SceneOperationsResponse(BaseModel):
     applied: list[dict[str, Any]] = []
     warnings: list[str] = []
     mcp_results: list[dict[str, Any]] = []
+    #: Per-shot account of what this batch changed. Derived from the before/after
+    #: diff, NOT from the ops asked for, so a no-op instruction is not reported
+    #: as a change and a caller cannot be told something that did not happen.
+    edit_report: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -1464,6 +1468,8 @@ class DirectorMotionCommandResponse(BaseModel):
     preset_id: str | None = None
     operations: list[dict[str, Any]] = []
     applied_scene_script: dict[str, Any] | None = None
+    #: Per-shot account of what the expansion changed (see SceneOperationsResponse).
+    edit_report: dict[str, Any] | None = None
     error: str | None = None
     error_code: str | None = None
     violations: list[dict[str, Any]] = []
@@ -1482,6 +1488,7 @@ async def apply_scene_operations_endpoint(
     server when ``use_mcp`` is set; a batch containing them without a server
     is rejected with a queryable ``mcp_unavailable`` code.
     """
+    from app.services.scene3d.scene_edit_report import build_scene_edit_report
     from app.services.scene3d.scene_script_tool_service import (
         SceneOperationError,
         SceneScriptToolService,
@@ -1516,6 +1523,7 @@ async def apply_scene_operations_endpoint(
             applied=result.applied,
             warnings=result.warnings,
             mcp_results=result.mcp_results,
+            edit_report=build_scene_edit_report(request.scene_script, result.scene_script),
         )
     except SceneOperationError as e:
         raise HTTPException(
@@ -1545,6 +1553,7 @@ def apply_director_motion_command(request: DirectorMotionCommandRequest) -> Dire
         DirectorMotionError,
         expand_director_motion,
     )
+    from app.services.scene3d.scene_edit_report import build_scene_edit_report
     from app.services.scene3d.scene_script_tool_service import (
         SceneOperationError,
         SceneScriptToolService,
@@ -1590,6 +1599,7 @@ def apply_director_motion_command(request: DirectorMotionCommandRequest) -> Dire
         preset_id=command["preset_id"],
         operations=operations,
         applied_scene_script=result.scene_script.model_dump(mode="json"),
+        edit_report=build_scene_edit_report(request.scene_script, result.scene_script),
     )
 
 # ---------------------------------------------------------------------------
@@ -1623,6 +1633,8 @@ class TriggerEventResponse(BaseModel):
     then_frame: int | None = None
     operations: list[dict[str, Any]] = []
     applied_scene_script: dict[str, Any] | None = None
+    #: Per-shot account of what the trigger changed (see SceneOperationsResponse).
+    edit_report: dict[str, Any] | None = None
     error: str | None = None
     error_code: str | None = None
 
@@ -1630,6 +1642,7 @@ class TriggerEventResponse(BaseModel):
 @router.post("/trigger-event", response_model=TriggerEventResponse)
 def apply_trigger_event_command(request: TriggerEventRequest) -> TriggerEventResponse:
     """Expand a when/then trigger into gated SceneScript ops."""
+    from app.services.scene3d.scene_edit_report import build_scene_edit_report
     from app.services.scene3d.trigger_events import (
         TriggerError,
         expand_trigger_event,
@@ -1684,6 +1697,7 @@ def apply_trigger_event_command(request: TriggerEventRequest) -> TriggerEventRes
             then_frame=request.then_frame,
             operations=operations,
             applied_scene_script=result.scene_script.model_dump(mode="json"),
+            edit_report=build_scene_edit_report(request.scene_script, result.scene_script),
         )
     except SceneOperationError as error:
         return TriggerEventResponse(

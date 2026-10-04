@@ -123,3 +123,68 @@ export function formatTimecode(seconds: number): string {
 export function shotDurationSeconds(shot: SceneShot, frameRate: number): number {
   return (shot.end_frame - shot.start_frame + 1) / frameRate;
 }
+
+// ---------------------------------------------------------------------------
+// Per-segment edit report (the backend's `/scene-3d/*` `edit_report`)
+// ---------------------------------------------------------------------------
+
+/**
+ * One change the backend's `scene_edit_report` can attribute to an object.
+ * Stable strings: the renderer matches them to pick a label, so a new backend
+ * code arrives as an unknown code rather than as a crash.
+ */
+export type SceneChangeCode =
+  | "camera_moved"
+  | "camera_aimed"
+  | "camera_renamed"
+  | "camera_shot_type"
+  | "camera_added"
+  | "camera_removed"
+  | "object_moved"
+  | "object_rotated"
+  | "object_scaled"
+  | "object_added"
+  | "object_removed"
+  | "character_action"
+  | "shot_added"
+  | "shot_removed"
+  | "shot_repointed";
+
+export interface SceneEditShotReport {
+  id: string;
+  camera_id: string;
+  /** "机位05 | 飞船俯瞰" — the label the workbench spells everywhere. */
+  camera_label: string;
+  start_seconds: number;
+  end_seconds: number;
+  changes: SceneChangeCode[];
+  objects_touched: string[];
+}
+
+export interface SceneEditReport {
+  /** Object id → the change codes attributed to it. */
+  changes: Record<string, SceneChangeCode[]>;
+  /** Only the shots whose content or range changed; an untouched shot is not news. */
+  shots: SceneEditShotReport[];
+  shot_count: number;
+  change_count: number;
+  /** Change code → Chinese label, from the backend so every caller agrees. */
+  labels: Record<string, string>;
+}
+
+/** Seconds for the report's span readout: "3s", "4.5s". */
+export function formatSegmentSeconds(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  return safe % 1 === 0 ? `${safe.toFixed(0)}s` : `${safe.toFixed(1)}s`;
+}
+
+/**
+ * "机位02 | 飞船俯瞰 的 3s–6s" — the one line the reference framework prints for
+ * a delivered edit. Built here (not per caller) so the report panel, the
+ * instruction confirmation and any future agent reply cannot spell one fact
+ * three different ways.
+ */
+export function shotChangeHeadline(shot: SceneEditShotReport): string {
+  const span = `${formatSegmentSeconds(shot.start_seconds)}–${formatSegmentSeconds(shot.end_seconds)}`;
+  return `${shot.camera_label} 的 ${span}`;
+}

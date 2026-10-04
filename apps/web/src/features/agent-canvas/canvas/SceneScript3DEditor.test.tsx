@@ -140,6 +140,51 @@ describe("SceneScript3DEditor dual view modes", () => {
     fireEvent.click(screen.getByLabelText("发送指令"));
     expect(onFilmInstruction).toHaveBeenCalledWith("把这个机位拉远一点");
   });
+
+  it("reports the delivered edit above the instruction bar in film mode", () => {
+    // "改了什么" sits ON TOP of the next instruction: the order on screen is the
+    // order of cause and effect. A report rendered below the bar would read as
+    // the answer to a question the author has not asked yet.
+    renderEditor({
+      lastEditReport: {
+        changes: { cam1: ["camera_moved"] },
+        shots: [
+          {
+            id: "shot1",
+            camera_id: "cam1",
+            camera_label: "机位01 | 双人全景",
+            start_seconds: 0,
+            end_seconds: 3,
+            changes: ["camera_moved"],
+            objects_touched: ["cam1"],
+          },
+        ],
+        shot_count: 1,
+        change_count: 1,
+        labels: { camera_moved: "机位移动" },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    const report = screen.getByTestId("scene-edit-report");
+    const bar = screen.getByTestId("film-instruction-bar");
+    expect(report.textContent).toContain("机位01 | 双人全景 的 0s–3s");
+    expect(
+      report.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the edit report out of the editing view", () => {
+    renderEditor({
+      lastEditReport: {
+        changes: { cam1: ["camera_moved"] },
+        shots: [],
+        shot_count: 1,
+        change_count: 1,
+        labels: {},
+      },
+    });
+    expect(screen.queryByTestId("scene-edit-report")).toBeNull();
+  });
 });
 
 describe("SceneScript3DEditor", () => {

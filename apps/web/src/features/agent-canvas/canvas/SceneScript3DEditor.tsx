@@ -37,7 +37,8 @@ import {
 } from "./SceneScriptPlaybackContext";
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
-import { cameraLabel, shotForFrame } from "./shotLabels.ts";
+import { SceneEditReportPanel } from "./SceneEditReportPanel.tsx";
+import { cameraLabel, shotForFrame, type SceneEditReport } from "./shotLabels.ts";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
 import { DirectorCommandBar } from "./DirectorCommandBar.tsx";
 import { StoryboardPanel } from "./StoryboardPanel.tsx";
@@ -386,6 +387,11 @@ export interface SceneScript3DEditorProps {
    * 变成 SceneScript 改动属于第四层（agent 按段交付），不做假动作。
    */
   onFilmInstruction?: (instruction: string) => void;
+  /**
+   * 后端 `/scene-3d/*` 返回的 `edit_report`：本次调整实际改了什么，按镜头
+   * 归因。由 diff 前后脚本得出，不是"请求了什么"，所以空操作不会被说成改动。
+   */
+  lastEditReport?: SceneEditReport | null;
 }
 
 export function SceneScript3DEditor({
@@ -423,6 +429,7 @@ export function SceneScript3DEditor({
   focusShotId = null,
   onFocusShotConsumed,
   onFilmInstruction,
+  lastEditReport = null,
 }: SceneScript3DEditorProps) {
   return (
     <SceneScriptPlaybackProvider sceneScript={sceneScript}>
@@ -461,6 +468,7 @@ export function SceneScript3DEditor({
         focusShotId={focusShotId}
         onFocusShotConsumed={onFocusShotConsumed}
         onFilmInstruction={onFilmInstruction}
+        lastEditReport={lastEditReport}
       />
     </SceneScriptPlaybackProvider>
   );
@@ -563,6 +571,7 @@ function SceneScript3DEditorContent({
   focusShotId = null,
   onFocusShotConsumed,
   onFilmInstruction,
+  lastEditReport = null,
 }: SceneScript3DEditorProps) {
   const [selectedObject, setSelectedObject] = useState<SceneObjectRef | null>(null);
   const [placementMode, setPlacementMode] = useState(false);
@@ -1187,7 +1196,17 @@ function SceneScript3DEditorContent({
       {/* 成片预演态：分镜时间轴之下就是指令栏——审片时"看到不满意的镜头，
           当场用一句话改掉"是这条动线的终点。编辑态不显示，因为那时已有检查器
           和导演条。 */}
-      {viewMode === "film" && <FilmInstructionBar onSubmit={onFilmInstruction} />}
+      {/* 成片预演态：先看这次调整改了什么，再下一条指令。"改了什么"排在
+          指令栏上方，因为一条指令的回报是它上面那块——顺序即因果。 */}
+      {viewMode === "film" && (
+        <>
+          <SceneEditReportPanel
+            report={lastEditReport}
+            frameRate={sceneScript.scene.frame_rate}
+          />
+          <FilmInstructionBar onSubmit={onFilmInstruction} />
+        </>
+      )}
       <aside className="scene-script-3d-editor__inspector">
         <SceneScriptEditPanel
           sceneScript={sceneScript}
