@@ -132,6 +132,20 @@ def _is_frame_number(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _clean_display_name(value: Any) -> str | None:
+    """A camera's authored name, or None when the author left it blank.
+
+    Blank is un-authored, not an empty name: the frontend then falls back to the
+    ordinal ("机位05"), which is what a script that never declares one has
+    always rendered as.
+    """
+
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    return trimmed[:64] if trimmed else None
+
+
 def _ranges_overlap(
     start: int, end: int, other_start: int, other_end: int
 ) -> bool:
@@ -332,6 +346,13 @@ class SceneScriptToolService:
                     f"shot_type '{shot_type}' is not a known ShotType",
                     path=f"operations[{index}].shot_type",
                 )
+            display_name = operation.get("display_name")
+            if display_name is not None and not isinstance(display_name, str):
+                reject(
+                    "display_name_invalid",
+                    "display_name must be a string",
+                    path=f"operations[{index}].display_name",
+                )
             position = _position(operation.get("position"))
             if position is None or not _in_bounds(position):
                 reject("position_invalid", None, path=f"operations[{index}].position")
@@ -491,6 +512,23 @@ class SceneScriptToolService:
                 and _position(operation.get("look_at")) is None
             ):
                 reject("look_at_invalid", None, path=f"operations[{index}].look_at")
+            # Renaming a camera belongs to set_camera: "把这个机位叫做飞船俯瞰"
+            # is the same intent as moving it, and a caller should not need a
+            # third op kind to name a shot. Only cameras carry a display_name in
+            # the schema, so the other kinds reject it rather than ignore it.
+            if operation.get("display_name") is not None:
+                if kind != "set_camera" and kind != "add_camera":
+                    reject(
+                        "display_name_not_supported",
+                        f"display_name applies to cameras only, not {target_kind or kind}",
+                        path=f"operations[{index}].display_name",
+                    )
+                elif not isinstance(operation.get("display_name"), str):
+                    reject(
+                        "display_name_invalid",
+                        "display_name must be a string",
+                        path=f"operations[{index}].display_name",
+                    )
             # ``frame`` turns a restage into a beat: the op writes a keyframe
             # at that frame instead of rewriting frame 0. Only time-capable
             # targets accept it — environment/props have no keyframes in the
@@ -692,10 +730,13 @@ class SceneScriptToolService:
             object_id = operation.get("id") or _next_id(
                 [obj.id for obj in script.cameras], "cam"
             )
+            # A blank name is un-authored: the schema coerces "" to None and the
+            # frontend falls back to the ordinal.
             script.cameras.append(
                 SceneCamera(
                     id=object_id,
                     shot_type=operation.get("shot_type", "wide"),
+                    display_name=_clean_display_name(operation.get("display_name")),
                     keyframes=[
                         {
                             "frame": int(operation.get("frame", 0)),
@@ -840,6 +881,8 @@ class SceneScriptToolService:
                 )
                 if operation.get("shot_type"):
                     camera.shot_type = operation["shot_type"]
+                if operation.get("display_name") is not None:
+                    camera.display_name = _clean_display_name(operation["display_name"])
             return script
 
         if kind == "set_camera":
@@ -854,6 +897,8 @@ class SceneScriptToolService:
                     camera.keyframes[0].look_at = [float(v) for v in operation["look_at"]]
                 if operation.get("shot_type"):
                     camera.shot_type = operation["shot_type"]
+                if operation.get("display_name") is not None:
+                    camera.display_name = _clean_display_name(operation["display_name"])
             return script
         if kind == "add_keyframe":
             target_kind = operation["kind"]

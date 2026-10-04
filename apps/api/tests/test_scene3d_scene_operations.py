@@ -1148,3 +1148,117 @@ def test_trigger_event_endpoint_arrive_requires_position() -> None:
     body = response.json()
     assert body["success"] is False
     assert body["error_code"] == "trigger_target_missing"
+
+
+# ---------------------------------------------------------------------------
+# Camera display names (the 机位's human-readable name)
+# ---------------------------------------------------------------------------
+
+
+def test_add_camera_carries_its_display_name(service) -> None:
+    """"机位05 | 飞船俯瞰" needs the name to exist on the schema: `id` is a
+    machine key (`cam_5`) and `shot_type` is one of five enums, so neither names
+    a shot a reviewer could search for."""
+
+    result = service.apply_operations(
+        base_script(),
+        [
+            {
+                "op": "add_camera",
+                "id": "cam_2",
+                "position": [4, -6, 3],
+                "look_at": [0, 1, 1],
+                "display_name": "飞船俯瞰",
+                "frame": 0,
+            }
+        ],
+    )
+    assert result.scene_script.cameras[1].display_name == "飞船俯瞰"
+
+
+def test_set_camera_renames_the_shot(service) -> None:
+    """"把这个机位叫做飞船俯瞰" is the same intent as moving it, so the name is
+    set by the same op kind — a caller should not need a third vocabulary."""
+
+    result = service.apply_operations(
+        base_script(),
+        [{"op": "set_camera", "kind": "camera", "id": "cam1", "display_name": "双人全景"}],
+    )
+    assert result.scene_script.cameras[0].display_name == "双人全景"
+
+
+def test_set_camera_renames_alongside_a_move_at_a_frame(service) -> None:
+    """The framed form of set_camera must not silently drop the rename: a batch
+    that says "at frame 90, pull back and call it X" applies both or nothing."""
+
+    result = service.apply_operations(
+        base_script(),
+        [
+            {
+                "op": "set_camera",
+                "kind": "camera",
+                "id": "cam1",
+                "position": [9, -11, 6],
+                "display_name": "飞船起飞",
+                "frame": 90,
+            }
+        ],
+    )
+    camera = result.scene_script.cameras[0]
+    assert camera.display_name == "飞船起飞"
+    assert camera.keyframes[-1].frame == 90
+
+
+def test_a_blank_display_name_is_un_authored_not_an_empty_name(service) -> None:
+    """Blank falls back to the ordinal ("机位05"), never to "机位05 | "."""
+
+    result = service.apply_operations(
+        base_script(),
+        [{"op": "set_camera", "kind": "camera", "id": "cam1", "display_name": "   "}],
+    )
+    assert result.scene_script.cameras[0].display_name is None
+
+
+def test_display_name_is_rejected_for_objects_that_have_none(service) -> None:
+    """Only cameras carry a display name, so a prop op naming one is rejected
+    rather than ignored — an accepted-and-dropped field is the same lie the
+    camera-rotation rejection in this file was written to stop."""
+
+    with pytest.raises(SceneOperationError) as exc:
+        service.apply_operations(
+            base_script(),
+            [
+                {
+                    "op": "scale_object",
+                    "kind": "prop",
+                    "id": "crate1",
+                    "scale": 2,
+                    "display_name": "x",
+                }
+            ],
+        )
+    assert exc.value.violations[0]["code"] == "display_name_not_supported"
+
+
+def test_non_string_display_name_is_rejected(service) -> None:
+    with pytest.raises(SceneOperationError) as exc:
+        service.apply_operations(
+            base_script(),
+            [{"op": "set_camera", "kind": "camera", "id": "cam1", "display_name": {"name": "x"}}],
+        )
+    assert exc.value.violations[0]["code"] == "display_name_invalid"
+
+
+def test_a_script_without_display_names_round_trips_unchanged(service) -> None:
+    """The field is additive: an author who never declares one keeps the exact
+    script they had."""
+
+    script = base_script()
+    before = script.model_dump(mode="json")
+    result = service.apply_operations(
+        script,
+        [{"op": "move_object", "kind": "prop", "id": "crate1", "position": [1, 1, 0]}],
+    )
+    after = result.scene_script.model_dump(mode="json")
+    assert after["cameras"] == before["cameras"]
+    assert all(camera.display_name is None for camera in result.scene_script.cameras)

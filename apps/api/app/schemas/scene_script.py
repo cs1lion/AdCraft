@@ -308,9 +308,31 @@ class SceneCamera(BaseModel):
 
     id: str = Field(min_length=1, max_length=64)
     shot_type: ShotType = Field(default="medium", description="Cinematographic shot type")
+    #: Human-authored name for this camera, e.g. "飞船俯瞰". Rendered by the
+    #: frontend as "机位05 | 飞船俯瞰" (see `shotLabels.cameraLabel`), because
+    #: `id` is a machine identifier (`cam_5`) and `shot_type` is one of five
+    #: enums — neither names a shot a reviewer could search for.
+    #:
+    #: Optional and additive, exactly like `SceneShot.transition_intent`: an
+    #: author (or an LLM) that never declares one keeps the ordinal-only label,
+    #: and every consumer must fall back to it. The frontend declares the mirror
+    #: field in the hand-written `src/types/scene-script.ts` (not generated —
+    #: the contract generator emits only enums and colours).
+    display_name: str | None = Field(default=None, max_length=64)
     keyframes: list[CameraKeyframe] = Field(
         min_length=1, description="At least one keyframe (static cameras need frame 0)"
     )
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _coerce_display_name(cls, value: object) -> object:
+        # Same tolerance as `transition_intent`: a free-text sentence where a
+        # name belongs would otherwise reject the whole scene, and a declaration
+        # nobody can read is not a declaration. Blank means un-authored.
+        if not isinstance(value, str):
+            return None
+        trimmed = value.strip()
+        return trimmed[:64] if trimmed else None
 
 
 class SceneShot(BaseModel):
