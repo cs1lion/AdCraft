@@ -38,6 +38,7 @@ import {
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
 import { PrevisFilmStage } from "./PrevisFilmStage.tsx";
+import { Scene3DPillRow } from "./Scene3DPillRow.tsx";
 import { SceneEditReportPanel } from "./SceneEditReportPanel.tsx";
 import { cameraLabel, shotForFrame, type SceneEditReport } from "./shotLabels.ts";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
@@ -855,6 +856,10 @@ function SceneScript3DEditorContent({
           <li>满意后保存场景；预览渲染需要本机 Blender，声音开关只影响视口试听。</li>
         </ol>
       </details>
+      {/* 快捷入口：参考图建景 / 素材库 / 运镜预设。只在编辑态出现——这三个胶囊
+          指向的目标（图片入口、素材托盘、导演条）在成片预演态都不渲染，指向
+          不存在的东西比没有入口更糟。 */}
+      {viewMode !== "film" && <Scene3DPillRow disabled={saving} />}
       <SceneAssetTray onAddEnvironment={addEnvironment} onAddProp={addProp} disabled={saving} />
       {issues.length > 0 && (
         <ul className="scene-script-3d-editor__consistency" aria-label="场景一致性提示">

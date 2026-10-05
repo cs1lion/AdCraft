@@ -1531,6 +1531,65 @@
 }
 
 
+/* 场景快捷入口（#3）：三个胶囊 + 一句说明。说明写出来而不是留白，因为"为什么
+   只有三个"和"有哪三个"一样是需要答案的问题。 */
+.scene-3d-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.scene-3d-pill-row__pill {
+  padding: 4px 12px;
+  border: 1px solid rgba(79, 195, 247, 0.4);
+  border-radius: 999px;
+  background: rgba(20, 34, 46, 0.85);
+  color: #bde6fb;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-3d-pill-row__pill:hover:not(:disabled) {
+  background: rgba(47, 127, 181, 0.85);
+  color: #fff;
+}
+
+.scene-3d-pill-row__pill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.scene-3d-pill-row__note {
+  color: #6f7789;
+  font-size: 10px;
+}
+
+/* 跳转后的高亮环：3D 台很长，静默滚动会被读成"什么都没发生"。 */
+[data-pill-flash="true"] {
+  animation: scene-3d-pill-flash 900ms ease-out;
+}
+
+@keyframes scene-3d-pill-flash {
+  0% {
+    box-shadow: 0 0 0 2px rgba(255, 233, 168, 0.95);
+    background: rgba(47, 127, 181, 0.22);
+  }
+  100% {
+    box-shadow: 0 0 0 2px rgba(255, 233, 168, 0);
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-pill-flash="true"] {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(255, 233, 168, 0.95);
+  }
+}
+
+
 /* 调整回报面板：紧贴指令栏上方。顺序即因果——先看这次改了什么，再决定下一条
    指令改什么；放在指令栏下方会读成"对一个还没问的问题的回答"。 */
 .scene-edit-report {

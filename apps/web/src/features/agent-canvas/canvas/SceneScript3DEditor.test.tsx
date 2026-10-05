@@ -211,6 +211,24 @@ describe("SceneScript3DEditor dual view modes", () => {
     expect(screen.getByTestId("preview-mock")).toBeTruthy();
   });
 
+  it("shows the quick-entry pills beside the asset tray", () => {
+    // The pills are the entry points the reference framework leads with; each
+    // must point at a surface that is actually mounted.
+    renderEditor({});
+    expect(screen.getByTestId("scene-3d-pill-row")).toBeTruthy();
+    expect(screen.getByTestId("scene-asset-tray")).toBeTruthy();
+    // 运镜 → the director bar, which carries the camera motion presets.
+    expect(screen.getByTestId("scene-3d-pill-scene-script-3d-director")).toBeTruthy();
+  });
+
+  it("keeps the pills in scene-editing mode only, where their targets live", () => {
+    renderEditor({});
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    // Film mode's reel replaces the tray and the director bar; a pill pointing
+    // at a hidden surface would be a button that appears to do nothing.
+    expect(screen.queryByTestId("scene-3d-pill-row")).toBeNull();
+  });
+
   it("adopts the gate's report when a director preset passes", async () => {
     // The point of the whole layer: a preset applied through the gate must land
     // its per-shot account in the 审片 view, so "what did that actually change"
