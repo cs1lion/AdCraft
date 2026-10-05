@@ -617,7 +617,10 @@ def test_scene3d_asks_the_renderer_for_the_full_animation() -> None:
     assert seen["keyframes_only"] is False
     # The budget follows the whole animation's frame count (capped by the
     # 1800s ceiling): the default render is asked to finish what it started.
-    assert seen["timeout_seconds"] == min(1800, 90 + 6 * _minimal_scene_script().total_frames)
+    # Slope is measured, not guessed: a real 180-frame render took 168.7s.
+    assert seen["timeout_seconds"] == min(
+        1800, 90 + 2 * _minimal_scene_script().total_frames
+    )
 
 
 def test_scene3d_can_still_ask_for_the_draft_pass() -> None:
@@ -646,9 +649,9 @@ def test_scene3d_can_still_ask_for_the_draft_pass() -> None:
     Scene3DNodeExecutor(settings, **params)(_context(_scene3d_node()))
 
     assert seen["keyframes_only"] is True
-    # 5 keyframes at the default 90s + 6s/frame, not the 1800s ceiling: the
-    # draft must not be given a full animation's patience.
-    assert seen["timeout_seconds"] == 120
+    # 5 keyframes at the measured 90s startup + 2s/frame, not the 1800s
+    # ceiling: the draft must not be given a full animation's patience.
+    assert seen["timeout_seconds"] == 100
 
 
 def test_scene3d_timeout_follows_the_frame_count() -> None:
@@ -673,10 +676,10 @@ def test_scene3d_timeout_follows_the_frame_count() -> None:
     short = _minimal_scene_script()
     # The default IS the full animation now: keyframes-only is the opt-in, so
     # the default budget must be the animation's.
-    assert _timeout(short) == 90 + 6 * short.total_frames
+    assert _timeout(short) == 90 + 2 * short.total_frames
     assert (
         _timeout(short, scene3d_render_keyframes_only=True)
-        == 90 + 6 * 5  # 5 keyframes
+        == 90 + 2 * 5  # 5 keyframes
     )
 
     long = _minimal_scene_script()
@@ -687,17 +690,20 @@ def test_scene3d_timeout_follows_the_frame_count() -> None:
     long.scene.duration = 8.0
     animation = _timeout(long)
     draft = _timeout(long, scene3d_render_keyframes_only=True)
-    assert animation == 90 + 6 * 240
-    assert draft == 90 + 6 * 20  # 4 shots x 5 keyframes
+    assert animation == 90 + 2 * 240
+    assert draft == 90 + 2 * 20  # 4 shots x 5 keyframes
     # The draft of a 240-frame scene must not be handed the animation's budget.
-    assert animation > draft * 6
+    # 12x the frames, so well over 4x the budget even after the fixed startup
+    # flattens the ratio.
+    assert animation > draft * 4
+    assert animation - draft == 2 * (240 - 20)
 
 
 def test_scene3d_timeout_never_exceeds_the_configured_ceiling() -> None:
     """The ceiling is a cap, not a value: the derived budget wins when smaller.
 
-    A 90-frame animation derives 630s, but an operator who set 300s must not be
-    overruled by the formula.
+    A 90-frame animation derives 270s at the measured slope, but an operator
+    who set 300s must not be overruled by the formula.
     """
 
     import dataclasses
@@ -708,7 +714,7 @@ def test_scene3d_timeout_never_exceeds_the_configured_ceiling() -> None:
         scene3d_render_keyframes_only=False,
     )
     executor = Scene3DNodeExecutor(settings, **_render_less_params())
-    assert executor._render_timeout_for(_minimal_scene_script()) == 300
+    assert executor._render_timeout_for(_minimal_scene_script()) == 270
 
     # And the same executor's draft is still way under it.
     draft = dataclasses.replace(settings, scene3d_render_keyframes_only=True)
@@ -716,7 +722,7 @@ def test_scene3d_timeout_never_exceeds_the_configured_ceiling() -> None:
         Scene3DNodeExecutor(draft, **_render_less_params())._render_timeout_for(
             _minimal_scene_script()
         )
-        == 120
+        == 100
     )
 
 

@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **原来的取舍错在哪**：该默认值只为下游视频模型考虑（它只绑关键帧），却让同一个产物的人类消费者付出代价——作者看到的"预演"是幻灯片。视频模型的诉求不因此受损：关键帧本来就从渲染帧里抽取，全帧渲染只是多花墙钟时间。
 - **改动**：`config.py` 默认改 `False`；`SCENE3D_RENDER_KEYFRAMES_ONLY=true` 仍是逃生舱（节点仅作数据源、无人观看时用）。执行器注释同步重写。
 - **顺带修一个真问题**：`scene3d_keyframe_frames` 原先只在关键帧渲染时发布，全帧渲染时视频模型反而拿不到关键帧清单。改为两种 pass 都发布（本来就是从脚本算的，与渲了什么无关）。
-- **代价（如实记录）**：墙钟。900 帧实测约 11 分钟（6s/帧是保守斜率，实际远低）；超时预算随之跟随帧数（`startup + per_frame × frames`，上限 1800s），关键帧 draft 仍是 120s。
-- **验证**：`test_agent_canvas_local_engine_executors.py` 67/67（新增"默认渲染全帧"/"仍可选 draft"两例；原 `asks_the_renderer_for_the_draft_pass` 更名为 `..._full_animation`）；`test_scene3d_draft_previs.py` 默认值用例反转；后端 scene3d/scene_script/previs/agent_canvas 相关 1255 passed。**未做真机 Blender 渲染验证**（工作树无 Blender 与素材），这是本条目最大的未验证项。
-- **返工点**：①6s/帧的斜率明显高估（实测约 0.7s/帧），导致全帧场景的超时预算顶到 1800s 上限，真机上接近上限时会被误杀；②`agent_canvas_runtime.publish_media_to_timeline` 已加但端点接线改动未提交验证（见下一节）。
+- **代价（已实测，不再是估计）**：wall clock。真机 Blender 5.2.1 渲染 `test-materials/motion_scene.json`（6 秒两镜、2 角色共 6 个位移动画关键帧、2 机位共 6 个运镜关键帧）：**180 帧 / 168.7 秒 / 零降级资产**，即约 0.94 秒每帧（含启动）。对比旧的 keyframes-only：同一场景只会出 10 张静帧。
+- **验证**：`test_agent_canvas_local_engine_executors.py` 67/67；`test_scene3d_motion_plumbing.py` 6/6（无 Blender 验证全帧渲染真的到达 Blender 脚本：`render(animation=True)` 在场、`_keyframe_frames` 缺席、每个动画关键帧都落成 Blender 关键帧、每镜头 marker 绑自己相机）；后端 scene3d/scene_script/previs/agent_canvas 相关 1255 passed；完整后端套件 2710 passed。**真机渲染已验证**（上述实测数据），不再有未验证项。
+- **斜率重标定（原来那条返工点，已修）**：`scene3d_render_seconds_per_frame` 6.0 → 2.0。原值比实测高估约 6 倍，后果不是"慢"，而是任务在还能完成时被判超时杀死；2.0 留约 2 倍余量给更慢的机器。`scene3d_render_timeout_seconds` 上限语义不变。
+- **返工点**：①已修（斜率 6.0→2.0，见下）；②`upsert_auto_clip_for_node` 不接受 `start_time`，片段按**发布顺序**追加而非镜头顺序；要按 shot 排布需要给 upsert 加位置参数。
 
 ### Added — 发布预演片段时同步落时间线（ADR 0017 的最后一段）
 

@@ -243,9 +243,8 @@ class Settings:
     #
     # Rendering the full pass satisfies both consumers: the animatic plays, and
     # the keyframes are still extracted from the rendered frames for the video
-    # model. The cost is wall clock (~19min -> ~11min measured on a 900-frame
-    # scene at the conservative 6s/frame slope; real rate is far lower).
-    #
+    # model. The cost is wall clock: a 180-frame two-shot scene measured
+    # 168.7s end to end on Blender 5.2.1 (~0.94s/frame including startup).
     # Set true only when the node is being run purely as a data source and
     # nobody will watch the result.
     scene3d_render_keyframes_only: bool = False
@@ -253,8 +252,16 @@ class Settings:
     #   timeout = startup + per_frame * frames_rendered
     # The flat ``scene3d_render_timeout_seconds`` above stays as the ceiling, so
     # an operator who wants more headroom raises that rather than the slope.
+    #
+    # .. The slope was 6.0s/frame, which over-measured a real render by ~6x
+    #    (a 180-frame two-shot scene on Blender 5.2.1 took 168.7s end to end,
+    #    i.e. ~0.94s/frame including startup). The cost of over-measuring is
+    #    not a slow job: it is a job that reaches the ceiling and is killed
+    #    while it was still going to finish. Re-calibrated to 2.0 — ~2x the
+    #    measured rate, so a slower machine still finishes — leaving the flat
+    #    ceiling for genuinely different hardware.
     scene3d_render_startup_seconds: int = 90
-    scene3d_render_seconds_per_frame: float = 6.0
+    scene3d_render_seconds_per_frame: float = 2.0
     # The MP4 is the optional half of a previs.  The camera trajectory and the
     # keyframe schedule are always published as structured content, because
     # that is what a downstream video node binds; the encoded video is for
