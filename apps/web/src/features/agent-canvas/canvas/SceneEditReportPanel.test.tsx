@@ -93,8 +93,12 @@ describe("SceneEditReportPanel", () => {
       />,
     );
     const panel = screen.getByTestId("scene-edit-report");
-    expect(panel.textContent).toContain("机位移动");
-    expect(panel.textContent).toContain("some_future_code");
+    // Assert on the CHANGES LINE, not the whole panel. "the panel contains the
+    // code" also passes when the code is blanked out, as long as any other
+    // change is still rendered — which is what a mutation run showed this test
+    // doing. The guarantee is that this shot's change list keeps every entry.
+    const changes = panel.querySelector(".scene-edit-report__shot-changes");
+    expect(changes?.textContent).toBe("机位移动 · some_future_code");
   });
 });
 
