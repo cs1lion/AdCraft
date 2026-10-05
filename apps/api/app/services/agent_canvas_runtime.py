@@ -382,7 +382,11 @@ class DynamicCanvasScheduler:
         self._total_limit = total_limit
         self._clock = clock
 
-    def publish_media_to_timeline(self, node: CanvasNodeV2) -> bool:
+    def publish_media_to_timeline(
+        self,
+        node: CanvasNodeV2,
+        desired_start_time: float | None = None,
+    ) -> bool:
         """Lay a node's already-published output on the timeline.
 
         The normal path is ``_on_lease_succeeded``: a node whose execution
@@ -393,6 +397,10 @@ class DynamicCanvasScheduler:
         video node and be missing from the timeline, which is exactly the
         "the clips are there but the film is not" gap.
 
+        ``desired_start_time`` is where the clip belongs on its track. Publish
+        order is not play order: a director publishing shot 2 before shot 1
+        should still get a timeline that plays in shot order.
+
         Returns True when a publisher handled the node (not that a clip was
         created — an unmapped node type is a legitimate no-op).
         """
@@ -400,7 +408,9 @@ class DynamicCanvasScheduler:
             return False
         if node.node_type not in {"image", "video", "audio", "voice-cast", "scene-3d"}:
             return False
-        self._media_ready_publisher(node)
+        self._media_ready_publisher(
+            node, desired_start_time=desired_start_time
+        )
         return True
 
     def resume(self, execution_id: str) -> None:
