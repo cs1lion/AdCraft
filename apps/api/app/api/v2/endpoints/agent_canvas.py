@@ -2687,6 +2687,10 @@ def publish_previs_clip(
             take_id=request.take_id,
             expected_revision=_expected_revision(if_match, workflow_id),
         )
+        # The clip node never takes a lease, so the usual media-ready hook does
+        # not fire for it. Lay it on the timeline here, or every published shot
+        # would be on the canvas but missing from the film.
+        runtime.publish_media_to_timeline(published.node)
         workflow = runtime.projects.get_workflow(workflow_id)
         workflow = runtime.editing_responses.project_workflow(workflow)
         node = _projected_node(workflow, published.node.node_id)

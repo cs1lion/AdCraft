@@ -232,7 +232,23 @@ class Settings:
     provider_requests_per_minute: int = 10
     scene3d_render_timeout_seconds: int = 1800
     scene3d_max_concurrent_renders: int = 1
-    scene3d_render_keyframes_only: bool = True
+    # Default FALSE: render the whole animation, not just the keyframes.
+    #
+    # The node's output has two consumers and the old True default served the
+    # machine one at the machine's expense. A downstream video model binds the
+    # five keyframes, which made keyframes-only look sufficient — but the SAME
+    # asset is also what the director publishes as previs clips and what an
+    # author watches to judge pacing. Five stills cannot show pacing, motion or
+    # a cut, so the default render produced a "previs" that never moved.
+    #
+    # Rendering the full pass satisfies both consumers: the animatic plays, and
+    # the keyframes are still extracted from the rendered frames for the video
+    # model. The cost is wall clock (~19min -> ~11min measured on a 900-frame
+    # scene at the conservative 6s/frame slope; real rate is far lower).
+    #
+    # Set true only when the node is being run purely as a data source and
+    # nobody will watch the result.
+    scene3d_render_keyframes_only: bool = False
     # Timeout budget derived from the frame count instead of a flat guess:
     #   timeout = startup + per_frame * frames_rendered
     # The flat ``scene3d_render_timeout_seconds`` above stays as the ceiling, so

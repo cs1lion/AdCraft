@@ -492,8 +492,27 @@ class _FakeRenderResult:
     blender_version: str = "Blender 5.2"
     # The real RenderResult reports which pass ran; the fake must too, or the
     # executor's metadata would be tested against a value it can never see.
-    rendered_frames: str = "keyframes"
+    # Default is set per-call by `_renderer_that_mirrors_the_flag`: the real
+    # renderer derives `rendered_frames` from the `keyframes_only` argument it
+    # was handed, so a fake with a frozen value would test the fixture instead
+    # of the wiring.
+    rendered_frames: str = "animation"
     degraded_assets: tuple[str, ...] = ()
+
+
+def _renderer_that_mirrors_the_flag(script, frames_dir, **kwargs):
+    """A fake renderer that reports the pass it was asked for.
+
+    Mirrors ``blender_renderer.render_scene_script``, which derives
+    ``rendered_frames`` from its own ``keyframes_only`` argument. Without this,
+    ``scene3d_rendered_frames`` in the executor's metadata would be a value the
+    executor can never influence — the test would pass no matter what it asked
+    the renderer for.
+    """
+
+    return _FakeRenderResult(
+        rendered_frames="keyframes" if kwargs.get("keyframes_only") else "animation"
+    )
 
 
 @dataclass
@@ -519,18 +538,27 @@ def _render_less_params() -> dict[str, Any]:
 
 
 def _scene3d_executor(**overrides: Any) -> Scene3DNodeExecutor:
-    params: dict[str, Any] = {
+    params: dict[str, Any] = _scene3d_params()
+    params.update(overrides)
+    return Scene3DNodeExecutor(Settings(agent_runtime_mode="fake"), **params)
+
+
+def _scene3d_params() -> dict[str, Any]:
+    """Fakes for an executor that renders, encodes and muxes for real.
+
+    The encoder writes the bytes the executor then reads, because the mux step
+    opens its own output path.
+    """
+    from pathlib import Path as _Path
+
+    return {
         "capability_probe": lambda: _FakeCapability(),
-        "renderer": lambda script, frames_dir, timeout_seconds=1800, keyframes_only=True: (
-            _FakeRenderResult()
-        ),
+        "renderer": _renderer_that_mirrors_the_flag,
         "encoder": lambda input_dir, output_path, fps=30: (
-            Path(output_path).write_bytes(b"\x00\x00\x00\x18ftypmp42fake"),
+            _Path(output_path).write_bytes(b"\x00\x00\x00\x18ftypmp42fake"),
             _FakeEncodeResult(),
         )[1],
     }
-    params.update(overrides)
-    return Scene3DNodeExecutor(Settings(agent_runtime_mode="fake"), **params)
 
 
 def _scene3d_node() -> CanvasNodeV2:
@@ -563,11 +591,21 @@ def test_scene3d_reports_which_frames_it_rendered() -> None:
     outcome = _scene3d_executor()(_context(_scene3d_node()))
 
     metadata = outcome.media.metadata
-    assert metadata["scene3d_rendered_frames"] == "keyframes"
+    assert metadata["scene3d_rendered_frames"] == "animation"
+    # The keyframe schedule is still published for the video model — a full
+    # render costs time, not the reference frames it extracts.
     assert metadata["scene3d_keyframe_frames"] == [0, 22, 44, 67, 89]
 
 
-def test_scene3d_asks_the_renderer_for_the_draft_pass() -> None:
+def test_scene3d_asks_the_renderer_for_the_full_animation() -> None:
+    """The previs must move, so the default render is the full animation.
+
+    Five keyframes cannot show a dolly, a pan or a cut — a "previs" made of
+    stills is a slideshow, and that is exactly what authors reported. The video
+    model downstream still gets its reference frames (extracted from the
+    rendered frames), so a full pass costs wall clock and nothing else.
+    """
+
     seen: dict[str, object] = {}
 
     def _renderer(script, frames_dir, **kwargs):
@@ -575,6 +613,37 @@ def test_scene3d_asks_the_renderer_for_the_draft_pass() -> None:
         return _FakeRenderResult()
 
     _scene3d_executor(renderer=_renderer)(_context(_scene3d_node()))
+
+    assert seen["keyframes_only"] is False
+    # The budget follows the whole animation's frame count (capped by the
+    # 1800s ceiling): the default render is asked to finish what it started.
+    assert seen["timeout_seconds"] == min(1800, 90 + 6 * _minimal_scene_script().total_frames)
+
+
+def test_scene3d_can_still_ask_for_the_draft_pass() -> None:
+    """The escape hatch stays: a node run purely as a data source.
+
+    Nobody watches that result, so keyframes-only remain available — but it is
+    an explicit opt-in now, not the default that silently shipped a slideshow.
+    """
+
+    import dataclasses
+
+    from app.core.config import Settings
+
+    seen: dict[str, object] = {}
+
+    def _renderer(script, frames_dir, **kwargs):
+        seen.update(kwargs)
+        return _FakeRenderResult()
+
+    settings = dataclasses.replace(
+        Settings(agent_runtime_mode="fake"),
+        scene3d_render_keyframes_only=True,
+    )
+    params = _scene3d_params()
+    params["renderer"] = _renderer
+    Scene3DNodeExecutor(settings, **params)(_context(_scene3d_node()))
 
     assert seen["keyframes_only"] is True
     # 5 keyframes at the default 90s + 6s/frame, not the 1800s ceiling: the
@@ -602,10 +671,12 @@ def test_scene3d_timeout_follows_the_frame_count() -> None:
         return executor._render_timeout_for(script)
 
     short = _minimal_scene_script()
-    assert _timeout(short) == 90 + 6 * 5  # draft: 5 keyframes, 90s ceiling is 1800
+    # The default IS the full animation now: keyframes-only is the opt-in, so
+    # the default budget must be the animation's.
+    assert _timeout(short) == 90 + 6 * short.total_frames
     assert (
-        _timeout(short, scene3d_render_keyframes_only=False)
-        == 90 + 6 * short.total_frames
+        _timeout(short, scene3d_render_keyframes_only=True)
+        == 90 + 6 * 5  # 5 keyframes
     )
 
     long = _minimal_scene_script()
@@ -614,10 +685,10 @@ def test_scene3d_timeout_follows_the_frame_count() -> None:
         for i in range(4)
     ]
     long.scene.duration = 8.0
-    draft = _timeout(long)
-    animation = _timeout(long, scene3d_render_keyframes_only=False)
-    assert draft == 90 + 6 * 20  # 4 shots x 5 keyframes
+    animation = _timeout(long)
+    draft = _timeout(long, scene3d_render_keyframes_only=True)
     assert animation == 90 + 6 * 240
+    assert draft == 90 + 6 * 20  # 4 shots x 5 keyframes
     # The draft of a 240-frame scene must not be handed the animation's budget.
     assert animation > draft * 6
 
@@ -661,25 +732,27 @@ def test_scene3d_timeout_has_a_floor_for_a_one_frame_scene() -> None:
     assert executor._render_timeout_for(_minimal_scene_script()) == 30
 
 
-def test_scene3d_can_opt_back_into_a_full_animation() -> None:
+def test_scene3d_renders_the_full_animation_by_default() -> None:
+    """The default must make the previs move.
+
+    This is the whole point: a node run with no tuning should produce an
+    animatic an author can watch for pacing, not five stills.
+    """
+
     import dataclasses
 
     executor = _scene3d_executor()
-    assert executor._keyframes_only is True
+    assert executor._keyframes_only is False
 
+    # Explicit opt-in into the draft pass still works.
     settings = dataclasses.replace(
         Settings(agent_runtime_mode="fake"),
-        scene3d_render_keyframes_only=False,
+        scene3d_render_keyframes_only=True,
     )
-    executor = Scene3DNodeExecutor(
-        settings,
-        capability_probe=lambda: _FakeCapability(),
-        renderer=lambda script, frames_dir, **kwargs: _FakeRenderResult(
-            rendered_frames="animation"
-        ),
-        encoder=lambda input_dir, output_path, fps=30: _FakeEncodeResult(),
-    )
-    assert executor._keyframes_only is False
+    params = _render_less_params()
+    params["renderer"] = lambda script, frames_dir, **kwargs: _FakeRenderResult()
+    executor = Scene3DNodeExecutor(settings, **params)
+    assert executor._keyframes_only is True
 
 
 def test_scene3d_surfaces_degraded_assets_in_metadata() -> None:
@@ -893,8 +966,12 @@ def test_scene3d_publishes_the_camera_trajectory() -> None:
     assert trajectory["frame_rate"] == 30
     assert trajectory["total_frames"] == 90
     assert trajectory["duration_seconds"] == 3.0
-    assert trajectory["rendered_frames"] == "keyframes"
-    assert trajectory["keyframe_frames"] == [0, 22, 44, 67, 89]
+    # The default pass is the full animation, and the trajectory must say so —
+    # a consumer reading "keyframes" would measure a 3s scene as 5 instants.
+    assert trajectory["rendered_frames"] == "animation"
+    # In a full pass every frame exists, so the schedule is the frame list — the
+    # draft's five instants are the exception, not the rule.
+    assert trajectory["keyframe_frames"] == list(range(90))
 
     (shot,) = trajectory["shots"]
     assert shot["id"] == "shot1"
@@ -904,7 +981,9 @@ def test_scene3d_publishes_the_camera_trajectory() -> None:
     assert shot["end_frame"] == 90
     assert shot["start_seconds"] == 0.0
     assert shot["end_seconds"] == 3.0
-    # The draft renders 5 of this shot's 90 frames, and says which five.
+    # The keyframe plan is per-shot (five instants of THIS shot) and is
+    # published in both passes; `rendered_frames` is what this pass actually
+    # produced, which in a full pass is every one of those five.
     assert shot["keyframe_frames"] == [0, 22, 44, 67, 89]
     assert shot["rendered_frames"] == [0, 22, 44, 67, 89]
     assert shot["camera_keyframes"] == [
@@ -929,7 +1008,9 @@ def test_scene3d_trajectory_marks_a_full_pass_as_continuous() -> None:
     assert trajectory["rendered_frames"] == "animation"
     assert trajectory["keyframe_frames"] == list(range(90))
     assert outcome.media.metadata["scene3d_rendered_frames"] == "animation"
-    assert "scene3d_keyframe_frames" not in outcome.media.metadata
+    # The keyframe schedule is published in BOTH passes: it is what a video
+    # model binds, and the full animation extracts exactly these instants.
+    assert outcome.media.metadata["scene3d_keyframe_frames"] == [0, 22, 44, 67, 89]
 
 
 def test_scene3d_can_skip_the_video_and_publish_a_still() -> None:
@@ -974,9 +1055,13 @@ def test_scene3d_can_skip_the_video_and_publish_a_still() -> None:
     assert outcome.media.content == b"\x89PNG\r\n\x1a\n"
     # The establishing frame, not "some frame".
     assert outcome.media.metadata["scene3d_still_frame"] == 0
-    assert outcome.media.metadata["scene3d_rendered_frames"] == "keyframes"
+    assert outcome.media.metadata["scene3d_rendered_frames"] == "animation"
     # The data half survives either way.
-    assert outcome.structured_content["previs_trajectory"]["keyframe_frames"] == [
+    assert outcome.structured_content["previs_trajectory"]["rendered_frames"] == "animation"
+    assert outcome.structured_content["previs_trajectory"]["keyframe_frames"] == list(
+        range(90)
+    )
+    assert outcome.structured_content["previs_trajectory"]["shots"][0]["keyframe_frames"] == [
         0,
         22,
         44,
