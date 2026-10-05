@@ -240,15 +240,22 @@ class TestRenderedFramesPlumbing:
         default = RenderResult(success=True, frame_count=1)
         assert default.rendered_frames == "animation"
 
-    def test_config_defaults_to_the_draft_pass(self) -> None:
-        assert Settings.from_env().scene3d_render_keyframes_only is True
+    def test_config_defaults_to_the_full_animation(self) -> None:
+        """The previs must move, so the default is the full animation.
 
-    def test_operators_can_ask_for_a_real_animation(self, monkeypatch) -> None:
-        monkeypatch.setenv("SCENE3D_RENDER_KEYFRAMES_ONLY", "false")
+        A previs is what an author watches to judge pacing, motion and cuts.
+        Five stills cannot show any of those, so the draft pass is an explicit
+        opt-in for node runs nobody watches — never the silent default.
+        """
+
         assert Settings.from_env().scene3d_render_keyframes_only is False
 
+    def test_operators_can_ask_for_a_draft_pass(self, monkeypatch) -> None:
         monkeypatch.setenv("SCENE3D_RENDER_KEYFRAMES_ONLY", "true")
         assert Settings.from_env().scene3d_render_keyframes_only is True
+
+        monkeypatch.setenv("SCENE3D_RENDER_KEYFRAMES_ONLY", "false")
+        assert Settings.from_env().scene3d_render_keyframes_only is False
 
 
 # ---------------------------------------------------------------------------

@@ -131,6 +131,9 @@ describe("SceneScript3DEditor dual view modes", () => {
   });
 
   it("routes a submitted instruction to the caller", () => {
+    // With nothing selected, the target is the shot under the playhead — the
+    // instruction and its target travel together so the (future) executor
+    // never has to infer one from the other.
     const onFilmInstruction = vi.fn();
     renderEditor({ onFilmInstruction });
     fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
@@ -138,7 +141,13 @@ describe("SceneScript3DEditor dual view modes", () => {
       target: { value: "把这个机位拉远一点" },
     });
     fireEvent.click(screen.getByLabelText("发送指令"));
-    expect(onFilmInstruction).toHaveBeenCalledWith("把这个机位拉远一点");
+    expect(onFilmInstruction).toHaveBeenCalledWith("把这个机位拉远一点", {
+      // The fixture camera carries no display_name, so the ordinal alone is the
+      // label — exactly what an un-renamed 机位 should read as.
+      label: "机位01",
+      scope: "shot",
+      targetId: "shot1",
+    });
   });
 
   it("reports the delivered edit above the instruction bar in film mode", () => {
@@ -184,6 +193,96 @@ describe("SceneScript3DEditor dual view modes", () => {
       },
     });
     expect(screen.queryByTestId("scene-edit-report")).toBeNull();
+  });
+
+  it("plays the reel in film mode instead of widening the 3D editor", () => {
+    // 成片预演 must show the FILM — the ordered published clips — not a wider
+    // scratch-able scene. Rendering the 3D preview in that mode is what made
+    // the view's name a lie.
+    renderEditor({});
+    expect(screen.queryByTestId("previs-film")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("previs-film")).toBeTruthy();
+    // "preview-mock" is the stubbed SceneScript3DPreview (mocked above): its
+    // absence is the point — film mode does not render the scene viewport.
+    expect(screen.queryByTestId("preview-mock")).toBeNull();
+    // The 机位 card belongs to the editing mode; the reel strip is the same
+    // information with every shot visible at once.
+    expect(screen.queryByTestId("shot-preview-card")).toBeNull();
+  });
+
+  it("returns to the scene viewport when leaving film mode", () => {
+    renderEditor({});
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("previs-film")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "场景调度" }));
+    expect(screen.queryByTestId("previs-film")).toBeNull();
+    expect(screen.getByTestId("preview-mock")).toBeTruthy();
+  });
+
+  it("shows the quick-entry pills beside the asset tray", () => {
+    // The pills are the entry points the reference framework leads with; each
+    // must point at a surface that is actually mounted.
+    renderEditor({});
+    expect(screen.getByTestId("scene-3d-pill-row")).toBeTruthy();
+    expect(screen.getByTestId("scene-asset-tray")).toBeTruthy();
+    // 运镜 → the director bar, which carries the camera motion presets.
+    expect(screen.getByTestId("scene-3d-pill-scene-script-3d-director")).toBeTruthy();
+  });
+
+  it("keeps the pills in scene-editing mode only, where their targets live", () => {
+    renderEditor({});
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    // Film mode's reel replaces the tray and the director bar; a pill pointing
+    // at a hidden surface would be a button that appears to do nothing.
+    expect(screen.queryByTestId("scene-3d-pill-row")).toBeNull();
+  });
+
+  it("aims the instruction at the shot under the playhead when nothing is selected", () => {
+    // 成片预演态 does not render the 3D viewport, so nothing can be newly
+    // selected there. The playhead (driven by the reel) is then the only honest
+    // target — falling back to a null subject would leave "这个" ambiguous.
+    renderEditor({});
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    const bar = screen.getByTestId("film-instruction-bar");
+    expect(bar.getAttribute("data-subject-scope")).toBe("shot");
+    expect(screen.getByTestId("film-instruction-subject").textContent).toContain("机位01");
+  });
+
+  it("aims the instruction at the selected object once one is pointed at", () => {
+    // Object scope wins over shot scope: "move this crate" is not the same
+    // instruction as "move this shot", and the bar must say which it will do.
+    renderEditor({});
+    // The 3D viewport is a stub; its onSelect is how the editor learns what the
+    // pointer is on, so drive it the way the real viewport would.
+    previewProps.onSelect?.({ kind: "prop", id: "crate1" });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("film-instruction-bar").getAttribute("data-subject-scope")).toBe(
+      "object",
+    );
+    expect(screen.getByTestId("film-instruction-subject").textContent).toContain("crate1");
+  });
+
+  it("keeps the object target after the playhead moves, until the author clears it", () => {
+    // The playhead moves on its own during playback; an object target that
+    // silently retargeted itself would send instructions at the wrong thing.
+    const onFilmInstruction = vi.fn();
+    renderEditor({ onFilmInstruction });
+    previewProps.onSelect?.({ kind: "prop", id: "crate1" });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    fireEvent.change(screen.getByLabelText("AI 场景指令"), {
+      target: { value: "往左移两米" },
+    });
+    fireEvent.click(screen.getByLabelText("发送指令"));
+    expect(onFilmInstruction).toHaveBeenCalledWith("往左移两米", {
+      label: "crate1",
+      scope: "object",
+      targetId: "crate1",
+    });
+    fireEvent.click(screen.getByLabelText("改调整个镜头"));
+    expect(screen.getByTestId("film-instruction-bar").getAttribute("data-subject-scope")).toBe(
+      "shot",
+    );
   });
 
   it("adopts the gate's report when a director preset passes", async () => {

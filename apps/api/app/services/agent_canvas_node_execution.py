@@ -2107,14 +2107,17 @@ class Scene3DNodeExecutor:
         self._render_seconds_per_frame = max(
             0.0, float(getattr(settings, "scene3d_render_seconds_per_frame", 6.0))
         )
-        # The canvas output is a previs the *next* node binds: a video model
-        # needs reference frames, not 90 interpolated ones.  Rendering only the
-        # keyframes turns a 6-shot node from ~19 minutes into ~20 seconds and
-        # changes none of the images the full pass would have produced at those
-        # instants.  Set SCENE3D_RENDER_KEYFRAMES_ONLY=false for a real
-        # animation when someone wants to watch it.
+        # Render the whole animation by default (SCENE3D_RENDER_KEYFRAMES_ONLY
+        # escapes to the draft pass when the node is only a data source).
+        #
+        # The node's MP4 is what the director publishes as previs clips and
+        # what an author watches to judge pacing, so it has to carry motion.
+        # Keyframes alone cannot show a camera move or a cut — which is how a
+        # "previs" ended up as five stills that never moved. The video model
+        # still gets its reference frames: they are extracted from the rendered
+        # frames, so a full pass costs time and nothing else.
         self._keyframes_only = bool(
-            getattr(settings, "scene3d_render_keyframes_only", True)
+            getattr(settings, "scene3d_render_keyframes_only", False)
         )
         # The MP4 is the *optional* half of the deliverable.  What a downstream
         # video node or a reviewer actually needs is the camera trajectory and
@@ -2627,11 +2630,12 @@ class Scene3DNodeExecutor:
             # continuous sequence (or measure duration against the scene's
             # frame count) must be able to tell the difference.
             "scene3d_rendered_frames": rendered_frames,
+            # Always published, not only in the draft pass: the keyframe
+            # schedule is what a video model binds, and the full animation
+            # extracts exactly these instants.  Gating it on the pass would
+            # mean the default render hides the list from its own consumer.
+            "scene3d_keyframe_frames": list(keyframe_render_frames(scene_script)),
         }
-        if rendered_frames == "keyframes":
-            metadata["scene3d_keyframe_frames"] = list(
-                keyframe_render_frames(scene_script)
-            )
         if degraded_assets:
             metadata["degraded_assets"] = list(degraded_assets)
         return metadata

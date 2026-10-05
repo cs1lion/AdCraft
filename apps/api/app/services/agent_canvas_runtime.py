@@ -382,6 +382,27 @@ class DynamicCanvasScheduler:
         self._total_limit = total_limit
         self._clock = clock
 
+    def publish_media_to_timeline(self, node: CanvasNodeV2) -> bool:
+        """Lay a node's already-published output on the timeline.
+
+        The normal path is ``_on_lease_succeeded``: a node whose execution
+        lease completes gets its clip auto-created. A previs clip node is
+        different — it is born ``ready`` with its output asset already set, so
+        it never takes a lease and that hook never fires for it. Without this
+        method every published previs clip would exist on the canvas as a
+        video node and be missing from the timeline, which is exactly the
+        "the clips are there but the film is not" gap.
+
+        Returns True when a publisher handled the node (not that a clip was
+        created — an unmapped node type is a legitimate no-op).
+        """
+        if self._media_ready_publisher is None:
+            return False
+        if node.node_type not in {"image", "video", "audio", "voice-cast", "scene-3d"}:
+            return False
+        self._media_ready_publisher(node)
+        return True
+
     def resume(self, execution_id: str) -> None:
         execution = self._runtime.get_execution(execution_id)
         if execution.status not in {"queued", "running", "waiting"}:

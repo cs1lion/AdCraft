@@ -22,8 +22,48 @@ describe("FilmInstructionBar", () => {
     fireEvent.change(input, { target: { value: "  把飞船往左移两米  " } });
     fireEvent.click(screen.getByLabelText("发送指令"));
     // Trimmed: the agent must not receive padding it would have to re-trim.
-    expect(onSubmit).toHaveBeenCalledWith("把飞船往左移两米");
+    expect(onSubmit).toHaveBeenCalledWith("把飞船往左移两米", null);
     expect(input.value).toBe("");
+  });
+
+  it("carries the target with the instruction", () => {
+    // A bar that shows the target but submits without it would make the future
+    // executor guess once between the author's intent and what it received.
+    const onSubmit = vi.fn();
+    const subject = { label: "机位02 | 飞船俯瞰", scope: "shot", targetId: "shot2" };
+    render(<FilmInstructionBar onSubmit={onSubmit} subject={subject} />);
+    expect(screen.getByTestId("film-instruction-subject").textContent).toContain("飞船俯瞰");
+    expect(screen.getByLabelText("AI 场景指令").getAttribute("placeholder")).toBe(
+      "描述如何调整「机位02 | 飞船俯瞰」..",
+    );
+    fireEvent.change(screen.getByLabelText("AI 场景指令"), { target: { value: "拉远一点" } });
+    fireEvent.click(screen.getByLabelText("发送指令"));
+    expect(onSubmit).toHaveBeenCalledWith("拉远一点", subject);
+  });
+
+  it("returns to shot scope when the object target is cleared", () => {
+    const onClearSubject = vi.fn();
+    const subject = { label: "crate1", scope: "object", targetId: "crate1" };
+    render(
+      <FilmInstructionBar
+        onSubmit={vi.fn()}
+        subject={subject}
+        onClearSubject={onClearSubject}
+      />,
+    );
+    expect(screen.getByLabelText("AI 场景指令").getAttribute("placeholder")).toBe(
+      "描述如何调整「crate1」..",
+    );
+    fireEvent.click(screen.getByLabelText("改调整个镜头"));
+    expect(onClearSubject).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the reference placeholder while nothing is selected", () => {
+    render(<FilmInstructionBar onSubmit={vi.fn()} subject={null} />);
+    expect(screen.getByLabelText("AI 场景指令").getAttribute("placeholder")).toBe(
+      "选中一个元素或机位，描述如何调整..",
+    );
+    expect(screen.queryByTestId("film-instruction-subject")).toBeNull();
   });
 
   it("cannot send an empty instruction", () => {

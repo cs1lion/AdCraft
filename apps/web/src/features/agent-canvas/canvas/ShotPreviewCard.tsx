@@ -19,7 +19,7 @@
  * action, belong to the caller — the panel that owns the API.
  */
 
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { SceneShot } from "../../../types/scene-script";
 import type { ProjectAssetSummaryV2 } from "../../../types-v2.ts";
@@ -45,6 +45,8 @@ export interface ShotPreviewCardProps {
   onPublish?: () => void;
   /** True while a publish request for this shot is in flight. */
   publishing?: boolean;
+  /** Expand this card's clip into the full-width film stage. */
+  onExpand?: () => void;
 }
 
 export function ShotPreviewCard({
@@ -56,6 +58,7 @@ export function ShotPreviewCard({
   active,
   onPublish,
   publishing = false,
+  onExpand,
 }: ShotPreviewCardProps) {
   const playerRef = useRef<HTMLVideoElement>(null);
   const posterUrl = useAgentCanvasVideoPoster(asset, playerRef);
@@ -63,12 +66,52 @@ export function ShotPreviewCard({
   const poster = asset ? mediaAssetPosterPath(asset) || posterUrl || undefined : undefined;
   const duration = shot ? shotDurationSeconds(shot, frameRate) : null;
 
+  // Explicit play/pause: the reference card shows a transport button rather
+  // than relying on the browser's own controls, which the small 16:9 stage
+  // makes easy to miss. Both are kept — the native bar still carries seeking.
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    player.addEventListener("play", onPlay);
+    player.addEventListener("pause", onPause);
+    return () => {
+      player.removeEventListener("play", onPlay);
+      player.removeEventListener("pause", onPause);
+    };
+  }, [mediaUrl]);
+
+  const togglePlay = useCallback(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    if (player.paused) {
+      // `play()` is not guaranteed to return a promise (jsdom returns
+      // undefined), so guard the shape rather than assuming it.
+      const started = player.play() as Promise<void> | undefined;
+      if (started && typeof started.catch === "function") {
+        started.catch(() => undefined);
+      }
+    } else {
+      player.pause();
+    }
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    const stage = playerRef.current?.closest(".shot-preview-card__stage");
+    if (!stage) return;
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    else void stage.requestFullscreen().catch(() => undefined);
+  }, []);
+
   return (
     <section
       className="shot-preview-card"
       data-active={active ? "true" : "false"}
       data-testid="shot-preview-card"
       aria-label={label ?? "机位预览"}
+      data-playing={playing ? "true" : "false"}
     >
       <header className="shot-preview-card__header">
         <span className="shot-preview-card__icon" aria-hidden="true">
@@ -86,16 +129,51 @@ export function ShotPreviewCard({
 
       <div className="shot-preview-card__stage">
         {mediaUrl ? (
-          <video
-            ref={playerRef}
-            className="shot-preview-card__video"
-            data-testid="shot-preview-card-video"
-            src={mediaUrl}
-            poster={poster}
-            controls
-            playsInline
-            preload="metadata"
-          />
+          <>
+            <video
+              ref={playerRef}
+              className="shot-preview-card__video"
+              data-testid="shot-preview-card-video"
+              src={mediaUrl}
+              poster={poster}
+              controls
+              playsInline
+              preload="metadata"
+            />
+            {/* Reference-shape transport: play on the left, expand on the
+                right, both overlaid on the stage rather than in a chrome bar. */}
+            <div className="shot-preview-card__transport">
+              <button
+                type="button"
+                className="shot-preview-card__play"
+                data-testid="shot-preview-card-play"
+                aria-label={playing ? "暂停预演片段" : "播放预演片段"}
+                aria-pressed={playing}
+                onClick={togglePlay}
+              >
+                {playing ? "❚❚" : "▶"}
+              </button>
+              <button
+                type="button"
+                className="shot-preview-card__fullscreen"
+                data-testid="shot-preview-card-fullscreen"
+                aria-label="全屏播放预演片段"
+                onClick={toggleFullscreen}
+              >
+                ⤢
+              </button>
+            </div>
+            {onExpand && (
+              <button
+                type="button"
+                className="shot-preview-card__expand"
+                data-testid="shot-preview-card-expand"
+                onClick={onExpand}
+              >
+                放大到成片视口
+              </button>
+            )}
+          </>
         ) : (
           <div className="shot-preview-card__empty" data-testid="shot-preview-card-empty">
             {clip ? (

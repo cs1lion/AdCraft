@@ -390,18 +390,58 @@ function distanceFrom(position: CanvasPositionV2, origin: CanvasPositionV2): num
   return Math.abs(position.x - origin.x) + Math.abs(position.y - origin.y);
 }
 
+/**
+ * A binding whose target is a published previs clip is a REFERENCE edge: the
+ * 3D scene's shot is the source of truth for that footage, not an input to be
+ * consumed. The reference framework draws those in a light dashed style so an
+ * author can tell "this clip exists because of that shot" from "this node
+ * needs that node's output" at a glance.
+ *
+ * Enrichment happens here rather than in the renderer because this is the only
+ * layer that knows both the binding and its target node's role.
+ */
+const PREVIS_REFERENCE_ROLE = "scene_3d_previs_clip";
+const PREVIS_REFERENCE_STYLE = { stroke: "#cfe8ff", strokeDasharray: "4 3" };
+
+function withPrevisReferenceRole(
+  edges: Edge[],
+  roleByNodeId: Map<string, string | undefined>,
+): Edge[] {
+  const data = (edge: Edge): Record<string, unknown> =>
+    edge.data && typeof edge.data === "object" ? (edge.data as Record<string, unknown>) : {};
+  return edges.map((edge) => {
+    // Already enriched: return the same object so React Flow keeps its edge
+    // identity and does not re-render an unchanged graph.
+    if (data(edge).previsReference) return edge;
+    if (roleByNodeId.get(edge.target) !== PREVIS_REFERENCE_ROLE) return edge;
+    // `markerEnd` is a string|object union; our own edges always set the object
+    // form, but a spread must not assume it.
+    const marker = edge.markerEnd;
+    return {
+      ...edge,
+      markerEnd: marker && typeof marker === "object"
+        ? { ...marker, color: PREVIS_REFERENCE_STYLE.stroke }
+        : marker,
+      style: PREVIS_REFERENCE_STYLE,
+      data: { ...data(edge), previsReference: true },
+    };
+  });
+}
+
 export function toAgentCanvasFlowEdges(
   bindings: CanvasBindingV2[],
   nodes: CanvasNodeV2[],
   previousEdges: readonly Edge[] = [],
 ): Edge[] {
-  return toAgentCanvasFlowEdgesForNodeIds(
+  const visibleEdges = toAgentCanvasFlowEdgesForNodeIds(
     bindings,
     nodes
       .filter((node) => isAgentCanvasVisibleNodeType(node.node_type))
       .map((node) => node.node_id),
     previousEdges,
   );
+  const roleByNodeId = new Map(nodes.map((node) => [node.node_id, node.creative_role]));
+  return withPrevisReferenceRole(visibleEdges, roleByNodeId);
 }
 
 export function toAgentCanvasFlowEdgesForNodeIds(

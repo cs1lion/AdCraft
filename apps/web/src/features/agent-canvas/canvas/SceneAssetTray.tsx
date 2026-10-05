@@ -76,7 +76,11 @@ export function SceneAssetTray({
   // different string unions, and mapping a heterogeneous array would union
   // them into `never` at the add-callback call site.
   return (
-    <aside className="scene-asset-tray" aria-label="低模资产托盘">
+    <aside
+      className="scene-asset-tray"
+      aria-label="低模资产托盘"
+      data-testid="scene-asset-tray"
+    >
       <div className="scene-asset-tray__title">低模资产</div>
 
       <section className="scene-asset-tray__group">

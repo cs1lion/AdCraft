@@ -420,6 +420,57 @@ describe("canvasGraphModel", () => {
     });
   });
 
+  it("draws a binding to a published previs clip as a reference edge", () => {
+    // The 3D scene's shot is the source of truth for that footage, not an
+    // input to be consumed. An author must be able to tell "this clip exists
+    // because of that shot" from "this node needs that node's output" at a
+    // glance — same colour and arrowhead for both is a category error.
+    const edges = toAgentCanvasFlowEdges(
+      [{ ...workflow.bindings[0]!, target_node_id: "clip-1" }],
+      [
+        ...workflow.nodes,
+        { ...workflow.nodes[1]!, node_id: "clip-1", creative_role: "scene_3d_previs_clip" },
+      ],
+    );
+
+    expect(edges[0]?.target).toBe("clip-1");
+    expect(edges[0]?.style).toEqual({ stroke: "#cfe8ff", strokeDasharray: "4 3" });
+    expect(edges[0]?.markerEnd).toMatchObject({ color: "#cfe8ff" });
+    expect(edges[0]?.data).toMatchObject({ previsReference: true });
+  });
+
+  it("leaves an ordinary edge untouched even next to a previs clip edge", () => {
+    const nodes = [
+      ...workflow.nodes,
+      { ...workflow.nodes[1]!, node_id: "clip-1", creative_role: "scene_3d_previs_clip" },
+    ];
+    const edges = toAgentCanvasFlowEdges(
+      [
+        workflow.bindings[0]!,
+        { ...workflow.bindings[0]!, binding_id: "binding-clip", target_node_id: "clip-1" },
+      ],
+      nodes,
+    );
+
+    const ordinary = edges.find((edge) => edge.target === "video-1");
+    expect(ordinary?.style).toBeUndefined();
+    expect(ordinary?.markerEnd).toMatchObject({ color: "#686868" });
+  });
+
+  it("keeps edge identity once enriched so an unchanged graph does not re-render", () => {
+    // The inner builder returns the previous object to preserve identity;
+    // enrichment must not defeat that by re-wrapping every pass.
+    const nodes = [
+      ...workflow.nodes,
+      { ...workflow.nodes[1]!, node_id: "clip-1", creative_role: "scene_3d_previs_clip" },
+    ];
+    const bindings = [{ ...workflow.bindings[0]!, target_node_id: "clip-1" }];
+    const first = toAgentCanvasFlowEdges(bindings, nodes);
+    const second = toAgentCanvasFlowEdges(bindings, nodes, first);
+
+    expect(second[0]).toBe(first[0]);
+  });
+
   it("preserves same-pair bindings with distinct semantic roles and stable order", () => {
     const bindings = [
       {

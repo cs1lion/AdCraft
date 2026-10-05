@@ -37,6 +37,8 @@ import {
 } from "./SceneScriptPlaybackContext";
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
+import { PrevisFilmStage } from "./PrevisFilmStage.tsx";
+import { Scene3DPillRow } from "./Scene3DPillRow.tsx";
 import { SceneEditReportPanel } from "./SceneEditReportPanel.tsx";
 import { cameraLabel, shotForFrame, type SceneEditReport } from "./shotLabels.ts";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
@@ -386,7 +388,7 @@ export interface SceneScript3DEditorProps {
    * 成片预演态指令栏的提交目标。省略时指令栏明确显示「未接线」——把一句话
    * 变成 SceneScript 改动属于第四层（agent 按段交付），不做假动作。
    */
-  onFilmInstruction?: (instruction: string) => void;
+  onFilmInstruction?: (instruction: string, subject: FilmInstructionSubject | null) => void;
   /**
    * 后端 `/scene-3d/*` 返回的 `edit_report`：本次调整实际改了什么，按镜头
    * 归因。由 diff 前后脚本得出，不是"请求了什么"，所以空操作不会被说成改动。
@@ -477,10 +479,30 @@ export function SceneScript3DEditor({
 /** 双模式的两种视图：场景调度（编辑）与成片预演（审片）。 */
 export type SceneScriptViewMode = "schedule" | "film";
 
+/**
+ * 一条指令作用的对象。
+ *
+ * 参考框架的指令栏占位文字 presupposes 选中态（"选中一个元素或机位，描述如何
+ * 调整"），所以目标必须是显式的：作者说得清"这个"指什么，将来的执行端也不必
+ * 猜。`scope` 区分「整个镜头」与「镜头里的某个对象」——前者重定时长与机位，
+ * 后者只动物体，语义不同。
+ */
+export interface FilmInstructionSubject {
+  /** 作者看得懂的名字，如「机位02 | 飞船俯瞰」或「crate1」。 */
+  label: string;
+  scope: "object" | "shot";
+  /** 交给执行端的稳定 id。 */
+  targetId: string;
+}
+
 export interface FilmInstructionBarProps {
   /** 提交指令。未提供时输入框明确说明尚未接线，而不是假装能生效。 */
-  onSubmit?: (instruction: string) => void;
+  onSubmit?: (instruction: string, subject: FilmInstructionSubject | null) => void;
   placeholder?: string;
+  /** 当前指令作用的对象；为空时退回参考框架的原始占位文字。 */
+  subject?: FilmInstructionSubject | null;
+  /** 清空对象级目标，回到镜头级。 */
+  onClearSubject?: () => void;
 }
 
 /**
@@ -489,31 +511,61 @@ export interface FilmInstructionBarProps {
  * 它只收集文字并回调；把指令真正变成 SceneScript 改动属于第四层（agent 按段
  * 交付），尚未接线。未接线时如实说明——一个不收发的输入框比一个假装收发的
  * 输入框更诚实，也更容易让人发现缺了什么。
+ *
+ * 目标随指令一起提交：只显示目标、提交时不带的指令栏，会让将来的执行端在
+ * 作者的意图和它收到的内容之间凭空猜一次。
  */
 export function FilmInstructionBar({
   onSubmit,
-  placeholder = "选中一个元素或机位，描述如何调整..",
+  placeholder,
+  subject = null,
+  onClearSubject,
 }: FilmInstructionBarProps) {
   const [text, setText] = useState("");
   const trimmed = text.trim();
+  const resolvedPlaceholder = placeholder
+    ?? (subject
+      ? `描述如何调整「${subject.label}」..`
+      : "选中一个元素或机位，描述如何调整..");
   return (
     <form
       className="scene-script-3d-editor__instruction"
       data-testid="film-instruction-bar"
+      data-subject-scope={subject?.scope ?? "none"}
       onSubmit={(event) => {
         event.preventDefault();
         if (!trimmed || !onSubmit) return;
-        onSubmit(trimmed);
+        onSubmit(trimmed, subject);
         setText("");
       }}
     >
       <span className="scene-script-3d-editor__instruction-icon" aria-hidden="true">
         +
       </span>
+      {subject && (
+        <span
+          className="scene-script-3d-editor__instruction-subject"
+          data-testid="film-instruction-subject"
+        >
+          <span className="scene-script-3d-editor__instruction-subject-label">
+            {subject.label}
+          </span>
+          {onClearSubject && (
+            <button
+              type="button"
+              aria-label="改调整个镜头"
+              title="清空对象级目标，改为对当前镜头下指令"
+              onClick={onClearSubject}
+            >
+              ×
+            </button>
+          )}
+        </span>
+      )}
       <input
         type="text"
         aria-label="AI 场景指令"
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         value={text}
         disabled={!onSubmit}
         onChange={(event) => setText(event.target.value)}
@@ -574,6 +626,9 @@ function SceneScript3DEditorContent({
   lastEditReport = null,
 }: SceneScript3DEditorProps) {
   const [selectedObject, setSelectedObject] = useState<SceneObjectRef | null>(null);
+  // 对象级目标是否显式关掉。选中态和播放头会变，作者「改调整个镜头」的意愿不能
+  // 被下一次选中悄悄覆盖——所以它是一个独立的、显式的开关。
+  const [objectSubjectCleared, setObjectSubjectCleared] = useState(false);
   const [placementMode, setPlacementMode] = useState(false);
   const [gestureMode, setGestureMode] = useState(false);
   const [gestureError, setGestureError] = useState<string | null>(null);
@@ -604,6 +659,34 @@ function SceneScript3DEditorContent({
       clip: publishedPrevisClips.find((entry) => entry.shot_id === shot.id) ?? null,
     };
   }, [sceneScript, playback.currentFrame, publishedPrevisClips]);
+
+  // 指令栏的目标：先看作者指向的对象，再看播放头所在的镜头。
+  //
+  // 为什么不是只有对象：成片预演态下 3D 视口不渲染，无法新选对象，此时指令仍要
+  // 有落点——播放头（由 PrevisFilmStage 驱动）就是那一镜。两级回退让「这个」
+  // 在任何模式下都有明确答案，而不是退回歧义。
+  const filmSubject = useMemo<FilmInstructionSubject | null>(() => {
+    if (!objectSubjectCleared && selectedObject) {
+      return { label: selectedObject.id, scope: "object", targetId: selectedObject.id };
+    }
+    if (activeShotPreview?.shot) {
+      return {
+        label: activeShotPreview.label ?? activeShotPreview.shot.camera,
+        scope: "shot",
+        targetId: activeShotPreview.shot.id,
+      };
+    }
+    return null;
+  }, [objectSubjectCleared, selectedObject, activeShotPreview]);
+
+  const clearObjectSubject = useCallback(() => setObjectSubjectCleared(true), []);
+
+  // 重新选中对象时撤销「改调整个镜头」：作者又指了一个东西，就按新的来。
+  const handleSelect = useCallback((ref: SceneObjectRef | null) => {
+    setSelectedObject(ref);
+    if (ref) setObjectSubjectCleared(false);
+    onSelectionChange?.(ref);
+  }, [onSelectionChange]);
 
   const [publishingShotId, setPublishingShotId] = useState<string | null>(null);
 
@@ -854,6 +937,10 @@ function SceneScript3DEditorContent({
           <li>满意后保存场景；预览渲染需要本机 Blender，声音开关只影响视口试听。</li>
         </ol>
       </details>
+      {/* 快捷入口：参考图建景 / 素材库 / 运镜预设。只在编辑态出现——这三个胶囊
+          指向的目标（图片入口、素材托盘、导演条）在成片预演态都不渲染，指向
+          不存在的东西比没有入口更糟。 */}
+      {viewMode !== "film" && <Scene3DPillRow disabled={saving} />}
       <SceneAssetTray onAddEnvironment={addEnvironment} onAddProp={addProp} disabled={saving} />
       {issues.length > 0 && (
         <ul className="scene-script-3d-editor__consistency" aria-label="场景一致性提示">
@@ -1098,35 +1185,43 @@ function SceneScript3DEditorContent({
           </p>
         ))}
       <div className="scene-script-3d-editor__stage">
-        <SceneScript3DPreview
-          sceneScript={sceneScript}
-          height={previewHeight}
-          dialogueLines={dialogueLines}
-          speechAudioUrl={speechAudioUrl}
-          editMode
-          selectedObject={selectedObject}
-          onSelect={(ref) => {
-            setSelectedObject(ref);
-            // The pointer is the language layer's only clue about which object
-            // "这个" means (§8.2), so it goes up rather than staying in here.
-            onSelectionChange?.(ref);
-          }}
-          onDragCommit={handleDragCommit}
-          placementMode={placementMode}
-          onPlacementCommit={handlePlacementCommit}
-          onPlacementCancel={() => setPlacementMode(false)}
-          gestureMode={gestureMode}
-          onGestureCommit={handleGestureCommit}
-          onGestureCancel={() => {
-            setGestureMode(false);
-            setGestureError(null);
-          }}
-        />
+        {/* 成片预演态播的是成片（按镜头顺序的已发布片段），不是把 3D 编辑器拉宽。
+            编辑态才需要可拖拽的场景视口——两者不是同一个东西。 */}
+        {viewMode === "film" ? (
+          <PrevisFilmStage
+            workflowId={workflowId}
+            shots={sceneScript.shots}
+            cameras={sceneScript.cameras}
+            clips={publishedPrevisClips}
+            onSeekFrame={(frame) => playback.seekToFrame(frame)}
+          />
+        ) : (
+          <SceneScript3DPreview
+            sceneScript={sceneScript}
+            height={previewHeight}
+            dialogueLines={dialogueLines}
+            speechAudioUrl={speechAudioUrl}
+            editMode
+            selectedObject={selectedObject}
+            onSelect={handleSelect}
+            onDragCommit={handleDragCommit}
+            placementMode={placementMode}
+            onPlacementCommit={handlePlacementCommit}
+            onPlacementCancel={() => setPlacementMode(false)}
+            gestureMode={gestureMode}
+            onGestureCommit={handleGestureCommit}
+            onGestureCancel={() => {
+              setGestureMode(false);
+              setGestureError(null);
+            }}
+          />
+        )}
         {/* The 机位 card. It floats over the viewport beside the shot it
             belongs to, because that adjacency is the whole point: a 3D scene
             and the clip published from one of its cameras otherwise read as two
-            unrelated surfaces. */}
-        {activeShotPreview && (
+            unrelated surfaces. Hidden in film mode, where the reel strip is the
+            same information with every shot visible at once. */}
+        {activeShotPreview && viewMode !== "film" && (
           <ShotPreviewCard
             label={activeShotPreview.label}
             shot={activeShotPreview.shot}
@@ -1211,7 +1306,11 @@ function SceneScript3DEditorContent({
             report={editReport}
             frameRate={sceneScript.scene.frame_rate}
           />
-          <FilmInstructionBar onSubmit={onFilmInstruction} />
+          <FilmInstructionBar
+            onSubmit={onFilmInstruction}
+            subject={filmSubject}
+            onClearSubject={clearObjectSubject}
+          />
         </>
       )}
       <aside className="scene-script-3d-editor__inspector">

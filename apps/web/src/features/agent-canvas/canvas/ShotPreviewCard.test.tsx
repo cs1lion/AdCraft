@@ -101,6 +101,43 @@ describe("ShotPreviewCard", () => {
     expect(screen.queryByTestId("shot-preview-card-empty")).toBeNull();
   });
 
+  it("offers the reference-shape transport once there is something to play", () => {
+    const asset = {
+      asset_id: "asset-shot_1",
+      version_id: "ver_1",
+      media_type: "video",
+    } as ProjectAssetSummaryV2;
+    render(card({ clip: clip("shot_1"), asset }));
+    // The reference card carries an explicit play and fullscreen affordance;
+    // relying on the browser's own controls makes them easy to miss in a
+    // 16:9 stage this small.
+    expect(screen.getByTestId("shot-preview-card-play")).toBeTruthy();
+    expect(screen.getByTestId("shot-preview-card-fullscreen")).toBeTruthy();
+    expect(screen.getByTestId("shot-preview-card-play").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+  });
+
+  it("toggles the clip through the card's own play button", () => {
+    const asset = {
+      asset_id: "asset-shot_1",
+      version_id: "ver_1",
+      media_type: "video",
+    } as ProjectAssetSummaryV2;
+    render(card({ clip: clip("shot_1"), asset }));
+    const play = screen.getByTestId("shot-preview-card-play") as HTMLButtonElement;
+    // jsdom has no media engine, so play() rejects; the button must stay
+    // usable rather than dead after the first click.
+    fireEvent.click(play);
+    expect(play.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("hides the transport while the shot has no clip", () => {
+    render(card({ onPublish: vi.fn() }));
+    expect(screen.queryByTestId("shot-preview-card-play")).toBeNull();
+    expect(screen.queryByTestId("shot-preview-card-fullscreen")).toBeNull();
+  });
+
   it("says the clip is resolving rather than pretending there is none", () => {
     // clip present, asset not yet loaded: the lineage exists, the bytes do not.
     // Claiming "no clip" here would invite a duplicate publish.
