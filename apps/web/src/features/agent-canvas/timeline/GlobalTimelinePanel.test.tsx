@@ -230,6 +230,50 @@ describe("GlobalTimelinePanel — audio track controls", () => {
       true,
     );
   });
+
+  it("positions video-track clips by their start_time, not by arrival order", async () => {
+    // The backend places a published previs clip at its SHOT's start, so a
+    // director who published shot 2 before shot 1 still gets a timeline that
+    // opens on shot 1. That only holds if the panel lays clips out at
+    // ``clip.start_time`` rather than packing them in array order — and the
+    // array order here is deliberately the WRONG play order (6s listed first).
+    const laterShot = makeClip({
+      clip_id: "clip_shot2",
+      start_time: 6,
+      duration: 3,
+      label: "预演片段 · shot 2",
+      source_node_id: "node_clip_2",
+    });
+    const earlierShot = makeClip({
+      clip_id: "clip_shot1",
+      start_time: 0,
+      duration: 6,
+      label: "预演片段 · shot 1",
+      source_node_id: "node_clip_1",
+    });
+    vi.mocked(getTimeline).mockResolvedValue(
+      makeTimeline({
+        tracks: [{ ...videoTrack, clips: [laterShot, earlierShot] }],
+      }),
+    );
+    renderPanel();
+
+    const clips = await screen.findAllByTestId("timeline-clip");
+    expect(clips).toHaveLength(2);
+    // The clip's own aria-label is its label, so this pairs each element with
+    // the shot it belongs to without needing an id the panel does not expose.
+    const leftByLabel = new Map(
+      clips.map((clip) => [
+        clip.getAttribute("aria-label"),
+        (clip as HTMLElement).style.left,
+      ]),
+    );
+    //     // 40px per second is the panel's own scale, so 6s is 240px. What matters
+    // is that the later shot is NOT parked at zero -- i.e. the panel reads
+    // clip.start_time rather than packing clips in array order.
+    expect(leftByLabel.get("预演片段 · shot 2")).toBe("240px");
+    expect(leftByLabel.get("预演片段 · shot 1")).toBe("0px");
+  });
 });
 
 describe("GlobalTimelinePanel — selected clip inspector", () => {
