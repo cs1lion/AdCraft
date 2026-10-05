@@ -1,0 +1,70 @@
+{
+  "scene": {
+    "name": "验证用 · 起飞场",
+    "environment": "outdoor",
+    "lighting": "cool",
+    "duration": 6.0,
+    "frame_rate": 30
+  },
+  "characters": [
+    {
+      "id": "char_han",
+      "type": "lowpoly_human",
+      "appearance": { "color": "#3498DB", "height": 1.7, "scale": 1.0 },
+      "keyframes": [
+        { "frame": 0,   "position": [-3.0, 0.0, 2.0], "rotation_y": 0,   "action": "stand" },
+        { "frame": 45,  "position": [-1.5, 0.0, 2.0], "rotation_y": 25,  "action": "walk" },
+        { "frame": 90,  "position": [0.0, 0.0, 2.0],  "rotation_y": 45,  "action": "walk" },
+        { "frame": 150, "position": [0.0, 0.0, 2.0],  "rotation_y": 45,  "action": "gesture" }
+      ]
+    },
+    {
+      "id": "char_su",
+      "type": "lowpoly_human",
+      "appearance": { "color": "#E74C3C", "height": 1.65, "scale": 1.0 },
+      "keyframes": [
+        { "frame": 60,  "position": [3.5, 0.0, 4.0],  "rotation_y": 180, "action": "stand" },
+        { "frame": 120, "position": [2.0, 0.0, 3.0],  "rotation_y": 160, "action": "walk" }
+      ]
+    }
+  ],
+  "props": [
+    {
+      "id": "prop_crate",
+      "type": "crate",
+      "position": [1.0, 1.0, 0.0],
+      "scale": 1.0
+    }
+  ],
+  "environment": [
+    { "id": "env_ground", "type": "floor", "position": [0.0, 0.0, 0.0], "scale": 1.0 },
+    { "id": "env_pillar", "type": "pillar", "position": [-5.0, 5.0, 0.0], "scale": 1.0 }
+  ],
+  "cameras": [
+    {
+      "id": "cam_wide",
+      "shot_type": "wide",
+      "display_name": "双人全景",
+      "keyframes": [
+        { "frame": 0,  "position": [8.0, -12.0, 6.0],  "look_at": [0.0, 0.0, 1.5] },
+        { "frame": 75, "position": [6.0, -10.0, 5.0],  "look_at": [-1.0, 0.0, 1.5] }
+      ]
+    },
+    {
+      "id": "cam_dolly",
+      "shot_type": "medium",
+      "display_name": "飞船起飞",
+      "keyframes": [
+        { "frame": 90,  "position": [3.0, -4.0, 2.0],  "look_at": [0.0, 0.0, 1.5] },
+        { "frame": 120, "position": [2.0, -3.0, 2.5],  "look_at": [0.0, 0.0, 2.0] },
+        { "frame": 150, "position": [1.0, -2.0, 3.5],  "look_at": [0.0, 0.0, 2.5] },
+        { "frame": 179, "position": [0.5, -1.5, 4.5],  "look_at": [0.0, 0.0, 3.0] }
+      ]
+    }
+  ],
+  "shots": [
+    { "id": "shot_1", "camera": "cam_wide",  "start_frame": 0,   "end_frame": 89,  "description": "全景建立" },
+    { "id": "shot_2", "camera": "cam_dolly", "start_frame": 90,  "end_frame": 179, "description": "推进跟移" }
+  ],
+  "speech_bindings": []
+}
