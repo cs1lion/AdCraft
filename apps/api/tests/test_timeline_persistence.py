@@ -1067,6 +1067,169 @@ class TestNodeClipUpsertScoping:
             )
         assert len(video_track.clips) == 1
 
+    def test_desired_start_time_places_a_clip_beyond_the_last_one(
+        self, database: V2Database
+    ) -> None:
+        """Publishing out of order must still play in order.
+
+        A director publishes shot 2 (later) before shot 1. Appending would put
+        shot 2 first on the track, so the timeline would open on the wrong cut.
+        The shot's own start is the position that makes the track play in shot
+        order regardless of publish order.
+        """
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+
+            later, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_shot2",
+                track_id=video_track.track_id,
+                duration=3.0,
+                asset_id="asset_2",
+                asset_version_id=None,
+                label="Shot 2",
+                desired_start_time=6.0,
+            )
+            earlier, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_shot1",
+                track_id=video_track.track_id,
+                duration=6.0,
+                asset_id="asset_1",
+                asset_version_id=None,
+                label="Shot 1",
+                desired_start_time=0.0,
+            )
+            session.commit()
+
+        assert earlier.start_time == pytest.approx(0.0)
+        assert later.start_time == pytest.approx(6.0)
+        # Sorted by start time, the track reads shot 1 then shot 2. Re-read the
+        # track: the handle from before the commit is a stale snapshot.
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            track = next(
+                t
+                for t in repo.get_by_workflow_id(_WORKFLOW_ID).tracks
+                if t.type == "video"
+            )
+        ordered = sorted(track.clips, key=lambda clip: clip.start_time)
+        assert [clip.label for clip in ordered] == ["Shot 1", "Shot 2"]
+
+    def test_a_clash_with_an_arranged_clip_appends_rather_than_overlapping(
+        self, database: V2Database
+    ) -> None:
+        """An occupied slot falls back to appending.
+
+        Overlapping would silently push a neighbour out of sync, which is worse
+        than a clip that is merely out of order.
+        """
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+            # A clip the author arranged by hand, occupying 0..4s.
+            repo.add_clip(
+                track_id=video_track.track_id,
+                start_time=0.0,
+                duration=4.0,
+                label="Author's cut",
+            )
+            newcomer, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_late",
+                track_id=video_track.track_id,
+                duration=2.0,
+                asset_id="asset_x",
+                asset_version_id=None,
+                label="Published late",
+                # 1.0s lands inside the author's clip.
+                desired_start_time=1.0,
+            )
+            session.commit()
+
+        # Placed after the occupied region instead of on top of it.
+        assert newcomer.start_time == pytest.approx(4.0)
+
+    def test_an_existing_clip_never_moves_for_a_new_desired_start(
+        self, database: V2Database
+    ) -> None:
+        """A rerun refreshes content; it does not re-place the clip.
+
+        Once a clip exists its position is either an earlier request of ours or
+        the author's own arrangement. Neither is a rerun's to overwrite — that
+        is how a user's hand-placed clip would drift while they worked.
+        """
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+            first, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_shot",
+                track_id=video_track.track_id,
+                duration=2.0,
+                asset_id="asset_v1",
+                asset_version_id=None,
+                label="v1",
+                desired_start_time=0.0,
+            )
+            rerun, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_shot",
+                track_id=video_track.track_id,
+                duration=2.0,
+                asset_id="asset_v2",
+                asset_version_id=None,
+                label="v2",
+                # A different position for the same node.
+                desired_start_time=9.0,
+            )
+            session.commit()
+
+        assert rerun.clip_id == first.clip_id
+        assert rerun.asset_id == "asset_v2"
+        assert rerun.start_time == pytest.approx(0.0)
+
+    def test_a_missing_desired_start_still_appends(
+        self, database: V2Database
+    ) -> None:
+        """Omitted (None) keeps the lease path's behaviour exactly."""
+
+        _seed_workflow(database)
+        with database.session_factory() as session:
+            repo = TimelineRepository(session)
+            timeline = repo.get_by_workflow_id(_WORKFLOW_ID)
+            video_track = next(t for t in timeline.tracks if t.type == "video")
+            first, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_a",
+                track_id=video_track.track_id,
+                duration=2.0,
+                asset_id="asset_a",
+                asset_version_id=None,
+                label="A",
+            )
+            second, _ = repo.upsert_auto_clip_for_node(
+                timeline_id=timeline.timeline_id,
+                source_node_id="node_b",
+                track_id=video_track.track_id,
+                duration=3.0,
+                asset_id="asset_b",
+                asset_version_id=None,
+                label="B",
+                desired_start_time=None,
+            )
+            session.commit()
+
+        assert first.start_time == pytest.approx(0.0)
+        assert second.start_time == pytest.approx(2.0)
+
 
 # ---------------------------------------------------------------------------
 # Subtitle cue plan parsing

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 from time import monotonic
 
@@ -1144,12 +1144,18 @@ def create_agent_canvas_runtime(
         timeline_repository=_create_timeline_repository(),
     )
 
-    def _media_ready_publisher(node):
-        """Auto-create timeline clips when media nodes complete."""
+    def _media_ready_publisher(node, *, desired_start_time=None):
+        """Auto-create timeline clips when media nodes complete.
+
+        ``desired_start_time`` is where the clip belongs on its track, supplied
+        by callers that know a position (a published previs clip knows its
+        shot's start) and omitted by the lease path, which appends.
+        """
         try:
             timeline_clip_auto_creator.create_clip_from_node(
                 node,
                 output_asset_id=node.output_asset_id,
+                desired_start_time=desired_start_time,
             )
         except Exception as error:
             import logging
@@ -2690,7 +2696,14 @@ def publish_previs_clip(
         # The clip node never takes a lease, so the usual media-ready hook does
         # not fire for it. Lay it on the timeline here, or every published shot
         # would be on the canvas but missing from the film.
-        runtime.publish_media_to_timeline(published.node)
+        #
+        # ``desired_start_time`` comes from the shot the clip was cut from, so a
+        # director publishing shots out of order still gets a timeline that
+        # plays in shot order rather than in publish order.
+        runtime.publish_media_to_timeline(
+            published.node,
+            desired_start_time=_previs_clip_start_seconds(source_node, request.shot_id),
+        )
         workflow = runtime.projects.get_workflow(workflow_id)
         workflow = runtime.editing_responses.project_workflow(workflow)
         node = _projected_node(workflow, published.node.node_id)
@@ -4384,6 +4397,35 @@ def _http_error(
         status_code=status_code,
         detail={"code": code, "message": message, "details": details or {}},
     )
+
+
+def _previs_clip_start_seconds(source_node: Any, shot_id: str) -> float | None:
+    """Where a shot's clip belongs on the timeline, in seconds.
+
+    Read from the scene-3d node's own SceneScript rather than from the request,
+    so the value is the same one the render used. Returns None when the script
+    or the shot cannot be read — the caller then appends, which is wrong but
+    recoverable, whereas a guessed position would be wrong and silent.
+    """
+
+    raw = getattr(source_node, "structured_content", None) or {}
+    script = raw.get("scene_script") if isinstance(raw, dict) else None
+    if not isinstance(script, dict):
+        return None
+    scene = script.get("scene")
+    shots = script.get("shots")
+    if not isinstance(scene, dict) or not isinstance(shots, list):
+        return None
+    frame_rate = scene.get("frame_rate")
+    if not isinstance(frame_rate, (int, float)) or frame_rate <= 0:
+        return None
+    for shot in shots:
+        if not isinstance(shot, dict) or shot.get("id") != shot_id:
+            continue
+        start_frame = shot.get("start_frame")
+        if isinstance(start_frame, (int, float)):
+            return float(start_frame) / float(frame_rate)
+    return None
 
 
 def _projected_node(workflow: AgentCanvasWorkflowV2, node_id: str) -> CanvasNodeV2:

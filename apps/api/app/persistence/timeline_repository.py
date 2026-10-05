@@ -36,6 +36,14 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: Two clips whose starts differ by less than this are the same instant for a
+#: slot-occupancy test. Frame boundaries are an integer divided by an integer
+#: fps, so the only real source of sub-frame drift is the publisher's own
+#: rounding; half a frame at 30fps is generous and still far below any gap a
+#: user could have arranged deliberately.
+_CLIP_OVERLAP_EPSILON = 1.0 / 60.0
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -384,6 +392,7 @@ class TimelineRepository:
         asset_id: str | None,
         asset_version_id: str | None,
         label: str | None,
+        desired_start_time: float | None = None,
     ) -> tuple[TimelineClipV1, bool]:
         """Idempotently place a node's media on the timeline.
 
@@ -391,7 +400,18 @@ class TimelineRepository:
         duration only); the user's arrangement — start time, trim, fades,
         label — is preserved. New nodes append after the track's last clip.
         Returns ``(clip, created)``.
+
+        ``desired_start_time`` places a NEW clip where the caller says instead
+        of appending. It exists because publish order and shot order are
+        different things: a director publishing shots out of order should still
+        get a timeline that plays in shot order. It is honoured only when the
+        requested slot is free — a collision falls back to appending, because
+        overlapping a clip that is already there is worse than a clip that is
+        merely out of order. An EXISTING clip never moves: once it exists its
+        position is either an earlier request of ours or the user's own
+        arrangement, and neither is this call's to overwrite.
         """
+
         existing = self._session.execute(
             select(TimelineClipRow)
             .join(TimelineTrackRow, TimelineClipRow.track_id == TimelineTrackRow.track_id)
@@ -414,7 +434,7 @@ class TimelineRepository:
 
         created = self.add_clip(
             track_id=track_id,
-            start_time=self.get_next_start_time_for_track(track_id),
+            start_time=self._resolve_desired_start(track_id, desired_start_time),
             duration=duration,
             asset_id=asset_id,
             asset_version_id=asset_version_id,
@@ -422,6 +442,34 @@ class TimelineRepository:
             label=label,
         )
         return created, True
+
+    def _resolve_desired_start(
+        self,
+        track_id: str,
+        desired_start_time: float | None,
+    ) -> float:
+        """Where a new clip should actually land, given the caller's request.
+
+        None, negative, or an occupied slot all fall back to appending. The
+        collision test is "a clip starts before my end", which is the test that
+        matters: a clip starting exactly at my end is adjacent, not overlapping.
+        """
+
+        if desired_start_time is None or desired_start_time < 0:
+            return self.get_next_start_time_for_track(track_id)
+        clash = self._session.execute(
+            select(TimelineClipRow)
+            .where(
+                TimelineClipRow.track_id == track_id,
+                TimelineClipRow.start_time
+                < desired_start_time + _CLIP_OVERLAP_EPSILON,
+            )
+            .order_by(TimelineClipRow.start_time.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if clash is None:
+            return desired_start_time
+        return self.get_next_start_time_for_track(track_id)
 
     def sync_node_subtitle_clips(
         self,

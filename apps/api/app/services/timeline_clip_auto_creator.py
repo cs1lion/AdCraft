@@ -129,6 +129,12 @@ class AutoClipContext:
     output_asset_version_id: str | None
     title: str | None
     duration_hint: float | None = None  # seconds, if known
+    #: Where this clip belongs on its track, in seconds. Publish order is not
+    #: play order — a director publishing shots out of order should still get a
+    #: timeline that plays in shot order — so a caller that knows the shot's
+    #: position says so here instead of letting the clip append after whatever
+    #: happened to be published last.
+    desired_start_time: float | None = None
 
 
 # Node type → default track type mapping
@@ -274,6 +280,9 @@ class TimelineClipAutoCreator:
                     asset_id=context.output_asset_id,
                     asset_version_id=context.output_asset_version_id,
                     label=context.title or f"{context.node_type}: {context.node_id[:8]}",
+                    # Where the caller wants it. Only meaningful on create:
+                    # an existing clip keeps whatever position it already has.
+                    desired_start_time=context.desired_start_time,
                 )
 
                 action = "created" if created else "updated"
@@ -411,6 +420,7 @@ class TimelineClipAutoCreator:
         output_asset_id: str | None,
         output_asset_version_id: str | None = None,
         duration_hint: float | None = None,
+        desired_start_time: float | None = None,
     ) -> str | None:
         """Convenience: create a clip directly from a node object."""
         context = AutoClipContext(
@@ -422,5 +432,6 @@ class TimelineClipAutoCreator:
             output_asset_version_id=output_asset_version_id,
             title=node.title,
             duration_hint=duration_hint,
+            desired_start_time=desired_start_time,
         )
         return self.create_clip_for_node(context)

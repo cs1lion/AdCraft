@@ -59,17 +59,39 @@ def _runtime_with_publisher(publisher: Any) -> DynamicCanvasScheduler:
 class TestPublishMediaToTimeline:
     def test_hands_the_clip_to_the_same_publisher_an_executed_node_gets(self) -> None:
         seen: list[CanvasNodeV2] = []
-        runtime = _runtime_with_publisher(seen.append)
+        runtime = _runtime_with_publisher(
+            lambda node, *, desired_start_time=None: seen.append(node)
+        )
         node = _clip_node()
 
         assert runtime.publish_media_to_timeline(node) is True
         assert seen == [node]
 
+    def test_forwards_the_shots_own_start_so_the_track_plays_in_order(self) -> None:
+        """Publish order is not play order.
+
+        A director publishing shot 2 before shot 1 still gets a timeline that
+        opens on shot 1, which only works if the clip's position travels with
+        the publish instead of being decided by append order.
+        """
+
+        starts: list[float | None] = []
+        runtime = _runtime_with_publisher(
+            lambda node, *, desired_start_time=None: starts.append(desired_start_time)
+        )
+
+        assert (
+            runtime.publish_media_to_timeline(_clip_node(), desired_start_time=6.0) is True
+        )
+        assert starts == [6.0]
+
     def test_refuses_a_node_type_the_timeline_has_no_track_for(self) -> None:
         # A text node has no media track; handing it over would make the
         # publisher log a warning for something that was never pixelled.
         seen: list[CanvasNodeV2] = []
-        runtime = _runtime_with_publisher(seen.append)
+        runtime = _runtime_with_publisher(
+            lambda node, *, desired_start_time=None: seen.append(node)
+        )
 
         assert runtime.publish_media_to_timeline(_clip_node("text")) is False
         assert seen == []
@@ -89,6 +111,8 @@ class TestPublishMediaToTimeline:
 
         for node_type in NODE_TYPE_TO_TRACK:
             seen: list[CanvasNodeV2] = []
-            runtime = _runtime_with_publisher(seen.append)
+            runtime = _runtime_with_publisher(
+                lambda node, *, desired_start_time=None: seen.append(node)
+            )
             assert runtime.publish_media_to_timeline(_clip_node(node_type)) is True
             assert len(seen) == 1
