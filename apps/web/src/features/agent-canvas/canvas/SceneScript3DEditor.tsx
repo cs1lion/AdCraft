@@ -37,6 +37,7 @@ import {
 } from "./SceneScriptPlaybackContext";
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
+import { PrevisFilmStage } from "./PrevisFilmStage.tsx";
 import { SceneEditReportPanel } from "./SceneEditReportPanel.tsx";
 import { cameraLabel, shotForFrame, type SceneEditReport } from "./shotLabels.ts";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
@@ -1098,35 +1099,48 @@ function SceneScript3DEditorContent({
           </p>
         ))}
       <div className="scene-script-3d-editor__stage">
-        <SceneScript3DPreview
-          sceneScript={sceneScript}
-          height={previewHeight}
-          dialogueLines={dialogueLines}
-          speechAudioUrl={speechAudioUrl}
-          editMode
-          selectedObject={selectedObject}
-          onSelect={(ref) => {
-            setSelectedObject(ref);
-            // The pointer is the language layer's only clue about which object
-            // "这个" means (§8.2), so it goes up rather than staying in here.
-            onSelectionChange?.(ref);
-          }}
-          onDragCommit={handleDragCommit}
-          placementMode={placementMode}
-          onPlacementCommit={handlePlacementCommit}
-          onPlacementCancel={() => setPlacementMode(false)}
-          gestureMode={gestureMode}
-          onGestureCommit={handleGestureCommit}
-          onGestureCancel={() => {
-            setGestureMode(false);
-            setGestureError(null);
-          }}
-        />
+        {/* 成片预演态播的是成片（按镜头顺序的已发布片段），不是把 3D 编辑器拉宽。
+            编辑态才需要可拖拽的场景视口——两者不是同一个东西。 */}
+        {viewMode === "film" ? (
+          <PrevisFilmStage
+            workflowId={workflowId}
+            shots={sceneScript.shots}
+            cameras={sceneScript.cameras}
+            clips={publishedPrevisClips}
+            onSeekFrame={(frame) => playback.seekToFrame(frame)}
+          />
+        ) : (
+          <SceneScript3DPreview
+            sceneScript={sceneScript}
+            height={previewHeight}
+            dialogueLines={dialogueLines}
+            speechAudioUrl={speechAudioUrl}
+            editMode
+            selectedObject={selectedObject}
+            onSelect={(ref) => {
+              setSelectedObject(ref);
+              // The pointer is the language layer's only clue about which object
+              // "这个" means (§8.2), so it goes up rather than staying in here.
+              onSelectionChange?.(ref);
+            }}
+            onDragCommit={handleDragCommit}
+            placementMode={placementMode}
+            onPlacementCommit={handlePlacementCommit}
+            onPlacementCancel={() => setPlacementMode(false)}
+            gestureMode={gestureMode}
+            onGestureCommit={handleGestureCommit}
+            onGestureCancel={() => {
+              setGestureMode(false);
+              setGestureError(null);
+            }}
+          />
+        )}
         {/* The 机位 card. It floats over the viewport beside the shot it
             belongs to, because that adjacency is the whole point: a 3D scene
             and the clip published from one of its cameras otherwise read as two
-            unrelated surfaces. */}
-        {activeShotPreview && (
+            unrelated surfaces. Hidden in film mode, where the reel strip is the
+            same information with every shot visible at once. */}
+        {activeShotPreview && viewMode !== "film" && (
           <ShotPreviewCard
             label={activeShotPreview.label}
             shot={activeShotPreview.shot}

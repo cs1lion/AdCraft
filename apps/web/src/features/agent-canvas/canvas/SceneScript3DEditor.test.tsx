@@ -186,6 +186,31 @@ describe("SceneScript3DEditor dual view modes", () => {
     expect(screen.queryByTestId("scene-edit-report")).toBeNull();
   });
 
+  it("plays the reel in film mode instead of widening the 3D editor", () => {
+    // 成片预演 must show the FILM — the ordered published clips — not a wider
+    // scratch-able scene. Rendering the 3D preview in that mode is what made
+    // the view's name a lie.
+    renderEditor({});
+    expect(screen.queryByTestId("previs-film")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("previs-film")).toBeTruthy();
+    // "preview-mock" is the stubbed SceneScript3DPreview (mocked above): its
+    // absence is the point — film mode does not render the scene viewport.
+    expect(screen.queryByTestId("preview-mock")).toBeNull();
+    // The 机位 card belongs to the editing mode; the reel strip is the same
+    // information with every shot visible at once.
+    expect(screen.queryByTestId("shot-preview-card")).toBeNull();
+  });
+
+  it("returns to the scene viewport when leaving film mode", () => {
+    renderEditor({});
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    expect(screen.getByTestId("previs-film")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "场景调度" }));
+    expect(screen.queryByTestId("previs-film")).toBeNull();
+    expect(screen.getByTestId("preview-mock")).toBeTruthy();
+  });
+
   it("adopts the gate's report when a director preset passes", async () => {
     // The point of the whole layer: a preset applied through the gate must land
     // its per-shot account in the 审片 view, so "what did that actually change"

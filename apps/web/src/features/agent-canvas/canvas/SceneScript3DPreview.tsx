@@ -995,7 +995,10 @@ export function SceneScript3DPreview({
   }, [selectedObject, ghost, sceneScript, currentFrame]);
 
   return (
-    <div style={{ width: "100%", height, position: "relative", background: "#1a1a2e" }}>
+    <div
+      style={{ width: "100%", height, position: "relative", background: "#1a1a2e" }}
+      data-testid="scene-script-3d-preview"
+    >
       <Canvas
         shadows
         camera={{ position: [8, -12, 6], fov: 50 }}

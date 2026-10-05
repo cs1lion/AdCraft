@@ -1168,6 +1168,63 @@
   background: #07070c;
 }
 
+/* 参考卡形态的透明传输条：浮在画面左上，不另占一行。 */
+.shot-preview-card__transport {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: flex;
+  gap: 4px;
+  opacity: 0.72;
+  transition: opacity 120ms ease;
+}
+
+.shot-preview-card__stage:hover .shot-preview-card__transport {
+  opacity: 1;
+}
+
+.shot-preview-card__play,
+.shot-preview-card__fullscreen {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 3px;
+  background: rgba(7, 7, 12, 0.78);
+  color: #dfe4ee;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shot-preview-card__play:hover,
+.shot-preview-card__fullscreen:hover {
+  background: rgba(47, 127, 181, 0.85);
+  color: #fff;
+}
+
+/* 「放大到成片视口」：卡片右上角的出口，与 #1 的 film 态联动。 */
+.shot-preview-card__expand {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 2px 8px;
+  border: 1px solid rgba(79, 195, 247, 0.4);
+  border-radius: 3px;
+  background: rgba(7, 7, 12, 0.78);
+  color: #bde6fb;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.shot-preview-card__expand:hover {
+  background: rgba(47, 127, 181, 0.85);
+  color: #fff;
+}
+
 .shot-preview-card__empty {
   height: 100%;
   display: flex;
@@ -1320,6 +1377,159 @@
   color: #6f7789;
   font-size: 10px;
 }
+
+/* 成片预演视口（#1）：播的是"成片"——按镜头顺序的已发布片段，不是拉宽的 3D
+   编辑器。审片看节奏，所以画面占满舞台，下面是 reel 条。 */
+.previs-film {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.previs-film__stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #07070c;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.previs-film__video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #07070c;
+}
+
+.previs-film__placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  text-align: center;
+  color: #8a93a6;
+  font-size: 12px;
+}
+
+.previs-film__placeholder p {
+  margin: 0;
+}
+
+.previs-film__empty {
+  padding: 24px 0;
+  color: #6f7789;
+  font-size: 12px;
+  text-align: center;
+}
+
+.previs-film__hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 5px 10px;
+  background: linear-gradient(to bottom, rgba(7, 7, 12, 0.82), rgba(7, 7, 12, 0));
+  color: #ffe9a8;
+  font-size: 11px;
+}
+
+.previs-film__hud-count {
+  color: #8a93a6;
+  font-size: 10px;
+}
+
+.previs-film__transport {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(7, 7, 12, 0.8);
+}
+
+.previs-film__transport button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #dfe4ee;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.previs-film__transport button:hover:not(:disabled) {
+  background: rgba(47, 127, 181, 0.85);
+  color: #fff;
+}
+
+.previs-film__transport button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* reel 条：每个镜头一格，缺片段的镜头留空但不隐藏——"五镜里三镜有片"要能一眼
+   看出来，而不是让人去数。 */
+.previs-film__reel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.previs-film__reel-item button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: rgba(12, 12, 18, 0.85);
+  color: #8a93a6;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.previs-film__reel-item button:hover {
+  border-color: rgba(79, 195, 247, 0.45);
+  color: #bde6fb;
+}
+
+.previs-film__reel-item[data-active="true"] button {
+  border-color: rgba(255, 233, 168, 0.55);
+  background: rgba(47, 127, 181, 0.28);
+  color: #ffe9a8;
+}
+
+.previs-film__reel-item[data-has-clip="false"] button {
+  border-style: dashed;
+}
+
+.previs-film__reel-state {
+  font-size: 8px;
+}
+
+.previs-film__notice {
+  margin: 0;
+  color: #8a93a6;
+  font-size: 10px;
+}
+
 
 /* 调整回报面板：紧贴指令栏上方。顺序即因果——先看这次改了什么，再决定下一条
    指令改什么；放在指令栏下方会读成"对一个还没问的问题的回答"。 */
