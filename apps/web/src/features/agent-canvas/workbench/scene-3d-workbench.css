@@ -1288,8 +1288,12 @@
 
 /* 成片预演态：审片要的是画面与时间轴，编辑控件（资产托盘、工具栏、检查器）
    全部让位。用 display 藏起来而不是卸载，是为了保住它们内部的状态（选中项、
-   放置模式、手势进行中）——切回场景调度时作者回到原处，而不是从头再来。 */
-.scene-script-3d-editor--film .scene-3d-workbench__tray,
+   放置模式、手势进行中）——切回场景调度时作者回到原处，而不是从头再来。
+
+   选择器跟着 SceneAssetTray 的真实根类名走：它叫 .scene-asset-tray，不是
+   早期的 .scene-3d-workbench__tray。写错的那条 silently 没隐藏任何东西——
+   审片态一直挂着低模资产托盘，白占一块画面。 */
+.scene-script-3d-editor--film .scene-asset-tray,
 .scene-script-3d-editor--film .scene-script-3d-editor__toolbar,
 .scene-script-3d-editor--film .scene-script-3d-editor__takes,
 .scene-script-3d-editor--film .scene-script-3d-editor__inspector,
