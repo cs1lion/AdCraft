@@ -8,6 +8,8 @@
  */
 
 import { cleanup, fireEvent, render, screen, act, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
@@ -182,17 +184,31 @@ describe("SceneScript3DEditor dual view modes", () => {
     ).toBeTruthy();
   });
 
-  it("keeps the edit report out of the editing view", () => {
-    renderEditor({
-      lastEditReport: {
-        changes: { cam1: ["camera_moved"] },
-        shots: [],
-        shot_count: 1,
-        change_count: 1,
-        labels: {},
-      },
-    });
-    expect(screen.queryByTestId("scene-edit-report")).toBeNull();
+  it("hides the asset tray in film mode", () => {
+    // The tray is editing furniture. In 审片 mode it occupied a silent slab of
+    // the viewport for two rounds because the CSS selector named a class the
+    // component does not have. Assert on the component's own class name so the
+    // next rename fails here instead of shipping a blank corner.
+    renderEditor({});
+    const tray = screen.getByTestId("scene-asset-tray");
+    expect(tray.className).toContain("scene-asset-tray");
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+
+    const editor = screen.getByTestId("previs-film").closest(".scene-script-3d-editor");
+    expect(editor?.className).toContain("scene-script-3d-editor--film");
+    // The descendant selector the stylesheet must contain for this pairing to
+    // be hidden. jsdom does not apply imported CSS, so the rule is read from
+    // the stylesheet text rather than from computed style. ``process.cwd()``
+    // is the app root under vitest, the same anchor the budget script tests use.
+    const css = readFileSync(
+      join(
+        process.cwd(),
+        "src/features/agent-canvas/workbench/scene-3d-workbench.css",
+      ),
+      "utf8",
+    );
+    expect(css).toContain(".scene-script-3d-editor--film .scene-asset-tray");
+    expect(css).not.toContain(".scene-script-3d-editor--film .scene-3d-workbench__tray");
   });
 
   it("plays the reel in film mode instead of widening the 3D editor", () => {
