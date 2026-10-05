@@ -76,6 +76,8 @@ import { AgentCanvasContextMenu } from "./canvas/AgentCanvasContextMenu.tsx";
 import { AgentCanvasLayoutConfirmation } from "./canvas/AgentCanvasLayoutConfirmation.tsx";
 import { AgentCanvasNodePicker } from "./canvas/AgentCanvasNodePicker.tsx";
 import { OutlineStarter } from "./OutlineStarter.tsx";
+import { ProjectCheckupPanel } from "./canvas/ProjectCheckupPanel.tsx";
+import { createPrevisPipelineTemplate } from "./model/previsPipelineTemplate.ts";
 import { canvasProgressModel } from "./canvas/canvasProgressModel.ts";
 import { AgentCanvasPointerBackgrounds } from "./canvas/AgentCanvasPointerBackgrounds.tsx";
 import { AgentCanvasConnectionLine } from "./canvas/AgentCanvasConnectionLine.tsx";
@@ -324,6 +326,8 @@ export function AgentCanvasPage() {
   const [nodes, setNodes] = useNodesState<AgentCanvasFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [assetsOpen, setAssetsOpen] = useState(false);
+  const [checkupOpen, setCheckupOpen] = useState(false);
+  const [templateBusy, setTemplateBusy] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [canvasInteracting, setCanvasInteracting] = useState(false);
@@ -1946,6 +1950,16 @@ export function AgentCanvasPage() {
           >
             <AssetsIcon />
           </button>
+          <button
+            type="button"
+            className={checkupOpen ? "is-active" : ""}
+            aria-label="Project checkup"
+            aria-expanded={checkupOpen}
+            title="项目体检：流程缺口 / 静默降级 / 台词对账（只读）"
+            onClick={() => setCheckupOpen((current) => !current)}
+          >
+            <span aria-hidden="true">🩺</span>
+          </button>
           {running ? (
             <button
               type="button"
@@ -2101,6 +2115,8 @@ export function AgentCanvasPage() {
           </span>
         </div>
 
+        <ProjectCheckupPanel workflow={workflow} open={checkupOpen} onToggle={() => setCheckupOpen((current) => !current)} />
+
         <div className={workflow.nodes.length === 0 ? "agent-canvas-empty agent-canvas-empty--guided" : "agent-canvas-outline-progress"}>
         {workflow.nodes.length === 0 ? (
           <div>
@@ -2129,6 +2145,29 @@ export function AgentCanvasPage() {
                   <b>自由搭建</b>
                   <span className="agent-canvas-empty__mode-description">添加节点、连接参考素材，再填写内容并生成。</span>
                   <span className="agent-canvas-empty__mode-action">选择第一个节点 →</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="agent-canvas-empty__mode"
+                disabled={templateBusy}
+                onClick={() => {
+                  if (!workflow.workflow_id || templateBusy) return;
+                  setTemplateBusy(true);
+                  createPrevisPipelineTemplate(workflow.workflow_id)
+                    .then(() => refreshWorkflow())
+                    .then(() => setCheckupOpen(true))
+                    .catch((error) => {
+                      setSurfaceError(error instanceof Error ? error.message : "模板创建失败。");
+                    })
+                    .finally(() => setTemplateBusy(false));
+                }}
+              >
+                <span className="agent-canvas-empty__mode-icon" aria-hidden="true">🎬</span>
+                <span>
+                  <b>分镜预演流程</b>
+                  <span className="agent-canvas-empty__mode-description">一键搭好 剧本→3D预演→配音→剪辑 骨架并连好绑定，按指引六步走。</span>
+                  <span className="agent-canvas-empty__mode-action">{templateBusy ? "创建中…" : "搭建流程骨架 →"}</span>
                 </span>
               </button>
             </div>
