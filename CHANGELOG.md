@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — 预演默认渲染全帧动画：scene-3d 节点的预演终于会动（keyframes-only 改为显式 opt-in）
+
+- **动机**：用户反馈"部分分镜的预演没动起来，像空白场景静止几秒"。根因是 `scene3d_render_keyframes_only` 默认 `True`：节点跑一次只出每镜 5 张关键帧静帧，没有连续动作、没有运镜、没有切点。而这份 MP4 正是导演台发布成预演片段、作者据以判断节奏的东西。
+- **原来的取舍错在哪**：该默认值只为下游视频模型考虑（它只绑关键帧），却让同一个产物的人类消费者付出代价——作者看到的"预演"是幻灯片。视频模型的诉求不因此受损：关键帧本来就从渲染帧里抽取，全帧渲染只是多花墙钟时间。
+- **改动**：`config.py` 默认改 `False`；`SCENE3D_RENDER_KEYFRAMES_ONLY=true` 仍是逃生舱（节点仅作数据源、无人观看时用）。执行器注释同步重写。
+- **顺带修一个真问题**：`scene3d_keyframe_frames` 原先只在关键帧渲染时发布，全帧渲染时视频模型反而拿不到关键帧清单。改为两种 pass 都发布（本来就是从脚本算的，与渲了什么无关）。
+- **代价（如实记录）**：墙钟。900 帧实测约 11 分钟（6s/帧是保守斜率，实际远低）；超时预算随之跟随帧数（`startup + per_frame × frames`，上限 1800s），关键帧 draft 仍是 120s。
+- **验证**：`test_agent_canvas_local_engine_executors.py` 67/67（新增"默认渲染全帧"/"仍可选 draft"两例；原 `asks_the_renderer_for_the_draft_pass` 更名为 `..._full_animation`）；`test_scene3d_draft_previs.py` 默认值用例反转；后端 scene3d/scene_script/previs/agent_canvas 相关 1255 passed。**未做真机 Blender 渲染验证**（工作树无 Blender 与素材），这是本条目最大的未验证项。
+- **返工点**：①6s/帧的斜率明显高估（实测约 0.7s/帧），导致全帧场景的超时预算顶到 1800s 上限，真机上接近上限时会被误杀；②`agent_canvas_runtime.publish_media_to_timeline` 已加但端点接线改动未提交验证（见下一节）。
+
+### Added — 发布预演片段时同步落时间线（ADR 0017 的最后一段）
+
+- **动机**：预演片段节点由 publisher 以 `status="ready"` 直接创建，**从不走执行租约**，因此 `_on_lease_succeeded` 里的 media-ready 钩子对它永不触发——片段在画布上存在，却永远进不了时间线。这正是" clips 都在，成片却不在"。
+- **改动**：`AgentCanvasRuntime.publish_media_to_timeline(node)` 公开同一个 media-ready 钩子（带 node_type 守卫）；`POST /workflows/{id}/scene-3d-nodes/{id}/previs-clips` 发布成功后调用它。
+- **返工点**：`upsert_auto_clip_for_node` 不接受 `start_time`，片段按**发布顺序**追加而非镜头顺序；要按 shot 排布需要给 upsert 加位置参数。
+
 ### Added — 导出后置验收（playbook §4 媒体半场）：成片渲染后自动跑 ffmpeg 四组只读检查，报告随 last_successful_export 落节点
 
 - **动机**：v6 验收的媒体半场（切点/字幕烧录/cue 窗口有声/时长对齐）当时是手工 ffmpeg 跑的；固化进导出链路后每次出片自动体检，替代人眼。
