@@ -1378,6 +1378,48 @@
   font-size: 10px;
 }
 
+/* 指令栏的目标 chip：它随指令一起提交，所以必须可见——作者要能看出「这个」
+   现在指谁，才敢发送。 */
+.scene-script-3d-editor__instruction-subject {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 40%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid rgba(255, 233, 168, 0.45);
+  border-radius: 999px;
+  background: rgba(47, 127, 181, 0.22);
+  color: #ffe9a8;
+  font-size: 10px;
+}
+
+.scene-script-3d-editor__instruction-subject-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-script-3d-editor__instruction-subject button {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #ffe9a8;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__instruction-subject button:hover {
+  background: rgba(255, 233, 168, 0.28);
+}
+
 /* 成片预演视口（#1）：播的是"成片"——按镜头顺序的已发布片段，不是拉宽的 3D
    编辑器。审片看节奏，所以画面占满舞台，下面是 reel 条。 */
 .previs-film {
