@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from app.schemas.agent_canvas import CanvasNodeErrorV2
 from app.schemas.agent_canvas_editing import (
+    EditingExportAcceptanceV2,
     EditingExportRuntimeV2,
     EditingManifestV2,
     EditingSkippedInputV2,
@@ -97,6 +98,8 @@ class EditingExportCommitCommandV2(_EditingAuthorityModel):
     version_id: str | None = Field(default=None, max_length=160)
     asset_metadata: dict[str, JsonValue] = Field(default_factory=dict)
     node_content_patch: dict[str, JsonValue] = Field(default_factory=dict)
+    #: 渲染后置验收报告（只记录不阻断；None 表示该次导出未跑验收）。
+    acceptance: EditingExportAcceptanceV2 | None = None
     error: CanvasNodeErrorV2 | None = None
     committed_at: datetime
 

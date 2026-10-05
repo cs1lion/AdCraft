@@ -342,6 +342,7 @@ def _terminal_runtime(row, command, asset_id):
         bgm_node_id=cast(str | None, row["bgm_node_id"]),
         output_asset_id=asset_id,
         error=command.error,
+        acceptance=command.acceptance,
         started_at=cast(str | None, row["started_at"]),
         finished_at=command.committed_at.isoformat(),
     )

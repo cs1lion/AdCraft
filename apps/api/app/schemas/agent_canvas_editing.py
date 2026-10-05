@@ -247,6 +247,21 @@ EditingExportStatusV2 = Literal[
 ]
 
 
+class EditingExportAcceptanceCheckV2(_EditingModel):
+    """一条导出后置验收结果（playbook §4：媒体半场，只记录不阻断）。"""
+
+    check: str = Field(min_length=1, max_length=64)
+    status: Literal["pass", "warn", "fail", "skipped"]
+    detail: str = Field(default="", max_length=2_000)
+
+
+class EditingExportAcceptanceV2(_EditingModel):
+    """成片渲染后的一组只读 ffmpeg 验收报告。"""
+
+    checks: tuple[EditingExportAcceptanceCheckV2, ...] = ()
+    ran_at: datetime | None = None
+
+
 class EditingExportRuntimeV2(_EditingModel):
     export_id: str
     status: EditingExportStatusV2
@@ -259,6 +274,7 @@ class EditingExportRuntimeV2(_EditingModel):
     error: CanvasNodeErrorV2 | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    acceptance: EditingExportAcceptanceV2 | None = None
 
 
 class EditingNodeContentV2(_EditingModel):

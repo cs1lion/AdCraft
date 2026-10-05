@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 导出后置验收（playbook §4 媒体半场）：成片渲染后自动跑 ffmpeg 四组只读检查，报告随 last_successful_export 落节点
+
+- **动机**：v6 验收的媒体半场（切点/字幕烧录/cue 窗口有声/时长对齐）当时是手工 ffmpeg 跑的；固化进导出链路后每次出片自动体检，替代人眼。
+- **验收服务**（`services/agent_canvas_export_acceptance.py`）：①streams（音视频流存在性）；②subtitles_burned（`subtitle_burn_in` 开启时抽前 6 个 cue 中点帧，底部横带亮像素(>225) vs 无字幕基线 ×3 判"字幕是否真的烧上"——Windows 教训：rawvideo 抽帧必须走 bytes 通道，`text=True` 按 cp936 解码像素会长度对不上）；③cue_windows_audible（cue 窗口 volumedetect，<-50dB 判"字幕出现但没声音"）；④cuts_vs_entries（scene detect 与清单 `timeline_start_seconds` 按容差对账，缺切点 warn——相邻镜头可能视觉相似，不定 fail）；⑤duration_alignment（音画时长差 >1s 或与时间线设计偏差过大 warn）。ffprobe 时长解析兼容字符串/缺失回退容器时长。**任何异常收敛成一条 warn，绝不抛出、绝不改变导出结果**（降级 never block）。
+- **接线**：导出 worker 渲染完成后、资产提交前跑验收（可注入 runner）；`EditingExportRuntimeV2.acceptance` 可选字段随 `last_successful_export` 落节点，提交命令与 commit 仓库透传。前端 types/normalizer 增加对应可选字段，体检面板把 acceptance 的 fail/warn 逐条上浮、全部 skipped 时提示"媒体质量未经过检查"。
+- **验证**：单测 10（fake ffmpeg/ffprobe 四分支 + 异常降级）+ media 真机 2（lavfi 合成黑白硬切片：切点命中/静音 cue warn/有声 cue pass）全绿；editing 域回归 38 passed；tsc/eslint/契约检查通过。实机：《静海攻防》rev 13 导出五项全 PASS（streams 31.46/31.49s、字幕烧录 6 cue 亮像素达标（基线 54px）、6 个 cue 窗口有声、4 个设计切点全命中、时长对齐）。
+- **血缘视图（P1-B）本轮未做**：挂载点 `AgentCanvasNode.tsx` 是 3D 预演在途改动热区，按"不影响已做功能升级"约束显式推迟。
+
+### Added — 测试员流程协同两件套：项目体检面板 + 分镜预演流程模板（playbook P0 落地）
+
+- **动机**（`docs/plans/agent-autonomous-production-playbook.md` §4）：测试员用不起来根因是三个"看不见"——缺口看不见、静默降级没人看、正确顺序靠摸索。文档只解决顺序，这两个 P0 用产品机制解决另外两个。**不触碰 3D 预演功能面**（scene3d 服务/导演台/预演发布路径零改动，只读其产物）。
+- **项目体检面板**（`canvas/projectCheckup.ts` + `canvas/ProjectCheckupPanel.tsx`）：纯前端读 workflow 快照，六类发现——失败节点(fail)、身份层被绕过（有分镜/片段但无 character turnaround / scene_board，即 playbook §2 缺口）、导演台一致性/走位连续性提醒与 `animatic_audio` 降级原因（把埋在 structured_content 里的报告显性化）、预演片段↔分镜数量与 video_reference 锚定对账、剧本对白↔分镜 dialogue 断层、voice-cast 未配台词床（回退朗读预警）与 QA 提醒、导出失败/跳过输入。工具栏 🩺 按钮开关，收起时显示计数徽标；只读不给闸门，不影响任何既有流程。实机：《静海攻防》报 4 条准确发现（身份层/场景图/一致性×12/QA 响度）。
+- **分镜预演流程模板**（`model/previsPipelineTemplate.ts` + 空态第三入口「分镜预演流程」）：一键建 5 节点（流程指引 text → Script → scene-3d → Voice Cast → Editing）并连好 2 条 `script → text_context` 绑定（scene-3d 的场景描述与 voice-cast 的台词来源都落在剧本文本上）。两个关键留白：scene-3d 的 `generation_prompt` 置空（避免指引文本抢先成为场景描述）；voice-cast 台词床留待剧本 ready 后填（空床显式失败好过朗读整份剧本）。预演片段/分镜节点不预建——由导演台逐镜发布产生。实机：新项目一键建齐、位置成行、体检面板随即给出下一步提醒。
+- **验证**：新增 20 条 vitest（体检 12 + 模板 4 + 组件/契约逻辑）全绿；`tsc --noEmit`、eslint（六个改动文件）零告警；`check:agent-canvas-contract` 通过；全量 3033/3034（唯一失败为台账已登记的 routeProviders 偶发，单跑 15/15 通过）。
+
 ### Changed — 前端构建预算重定基线：core JS 上限 1281 KiB → 2048 KiB（含实测归因）
 
 - **为什么改**：1281 KiB 定于浏览器 3D 预演出现之前。累计探针实测，three.js 向 `SceneScript3DPreview` chunk 贡献 ~505 KiB，其中 **~356 KiB（70%）是 WebGLRenderer 的 GL 栈**（state / programs / bindingStates / shadow map / texture 管线），~149 KiB 是数学库 + 场景图 + 几何体 + 材质层。非 3D 应用代码约 1.24 MiB，旧上限只给整个浏览器 3D 栈留下 ~43 KiB——与 three 实际开销差 12 倍。

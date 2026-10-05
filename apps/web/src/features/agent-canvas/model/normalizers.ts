@@ -91,6 +91,8 @@ import type {
   CreativeElementDecisionV2,
   CreativeGoalV2,
   EditingExportRuntimeV2,
+  EditingExportAcceptanceV2,
+  EditingExportAcceptanceCheckV2,
   EditingExportAcceptedV2,
   EditingExportCancelResponseV2,
   CanvasEditingExportImportResponseV2,
@@ -4388,6 +4390,23 @@ export function normalizeEditingPreviewV2(value: unknown, path = "editing.previe
   } satisfies StrictRecordFieldsFor<EditingPreviewV2>);
 }
 
+export function normalizeEditingExportAcceptanceCheckV2(value: unknown, path = "editing.exportAcceptanceCheck"): EditingExportAcceptanceCheckV2 {
+  return normalizeStrictRecord(value, path, {
+    check: expectNonEmptyString,
+    status: (value, fieldPath) => expectLiteral(value, new Set(["pass", "warn", "fail", "skipped"]), fieldPath),
+    detail: (value, fieldPath) => value === undefined ? "" : expectString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<EditingExportAcceptanceCheckV2>);
+}
+
+export function normalizeEditingExportAcceptanceV2(value: unknown, path = "editing.exportAcceptance"): EditingExportAcceptanceV2 {
+  return normalizeStrictRecord(value, path, {
+    checks: (value, fieldPath) => expectArray(value, fieldPath).map((item, index) =>
+      normalizeEditingExportAcceptanceCheckV2(item, `${fieldPath}[${index}]`),
+    ),
+    ran_at: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+  } satisfies StrictRecordFieldsFor<EditingExportAcceptanceV2>);
+}
+
 export function normalizeEditingExportRuntimeV2(value: unknown, path = "editing.exportRuntime"): EditingExportRuntimeV2 {
   return normalizeStrictRecord(value, path, {
     export_id: expectNonEmptyString,
@@ -4403,6 +4422,7 @@ export function normalizeEditingExportRuntimeV2(value: unknown, path = "editing.
     error: (value, fieldPath) => value === null ? null : normalizeCanvasNodeErrorV2(value, fieldPath),
     started_at: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
     finished_at: (value, fieldPath) => value === undefined ? null : nullableString(value, fieldPath),
+    acceptance: (value, fieldPath) => value === undefined || value === null ? null : normalizeEditingExportAcceptanceV2(value, `${fieldPath}.acceptance`),
   } satisfies StrictRecordFieldsFor<EditingExportRuntimeV2>);
 }
 

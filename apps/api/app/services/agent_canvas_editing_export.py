@@ -26,9 +26,11 @@ from app.persistence.event_repository import EventRepository
 from app.schemas.agent_canvas import CanvasNodeErrorV2
 from app.schemas.agent_canvas_editing import (
     EditingExportAcceptedV2,
+    EditingExportAcceptanceV2,
     EditingExportCancelResponseV2,
     EditingExportRequestV2,
     EditingExportRuntimeV2,
+    EditingManifestV2,
 )
 from app.schemas.agent_canvas_editing_authority import (
     EditingExportCommitCommandV2,
@@ -45,9 +47,23 @@ from app.services.agent_canvas_composition_renderer import (
 )
 from app.services.agent_canvas_editing import EditingInputResolver, EditingNodeService
 from app.services.agent_canvas_editing_commit import AgentCanvasEditingExportCommitService
+from app.services.agent_canvas_export_acceptance import run_export_acceptance
 
 
 Clock = Callable[[], datetime]
+
+
+def _default_acceptance_runner(video_path: Path, manifest: EditingManifestV2) -> EditingExportAcceptanceV2:
+    """真机默认：用安装的 ffmpeg/ffprobe 跑只读验收。"""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return run_export_acceptance(
+        video_path,
+        manifest,
+        ffmpeg_path=settings.ffmpeg_path,
+        ffprobe_path=settings.ffprobe_path,
+    )
 
 
 class _EditingLeaseGuard:
@@ -112,6 +128,7 @@ class EditingExportService:
         commit_service: AgentCanvasEditingExportCommitService | None = None,
         on_completed: Callable[[str, str, str], object] | None = None,
         timeline_integration: object | None = None,
+        acceptance_runner: Callable[[Path, EditingManifestV2], EditingExportAcceptanceV2] | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._workflows = workflows
@@ -126,6 +143,7 @@ class EditingExportService:
         self._worker_id_factory = worker_id_factory
         self._on_completed = on_completed
         self._timeline_integration = timeline_integration
+        self._acceptance_runner = acceptance_runner or _default_acceptance_runner
         self._commits = commit_service or AgentCanvasEditingExportCommitService(
             AgentCanvasEditingExportCommitRepository(
                 exports.database,
@@ -318,6 +336,9 @@ class EditingExportService:
                 stage="rendered",
                 progress=0.75,
             )
+            # 后置验收（playbook §4 媒体半场）：只读 ffmpeg 检查，报告随
+            # last_successful_export 落节点；失败不阻断导出。
+            acceptance_report = self._acceptance_runner(result.output_path, manifest)
             self._require_current_manifest(workflow_id, node_id, runtime)
             prepared, lease = self._with_heartbeat(
                 lease,
@@ -353,6 +374,7 @@ class EditingExportService:
                     version_id=prepared.version_id,
                     asset_metadata=prepared.asset_metadata,
                     committed_at=committed_at,
+                    acceptance=acceptance_report,
                 )
             )
             self._cleanup_staging(workflow_id, export_id)

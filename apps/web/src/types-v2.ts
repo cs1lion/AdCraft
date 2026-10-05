@@ -3231,6 +3231,17 @@ export interface EditingPreviewV2 {
   warnings: string[];
 }
 
+export interface EditingExportAcceptanceCheckV2 {
+  check: string;
+  status: "pass" | "warn" | "fail" | "skipped";
+  detail: string;
+}
+
+export interface EditingExportAcceptanceV2 {
+  checks: EditingExportAcceptanceCheckV2[];
+  ran_at: string | null;
+}
+
 export interface EditingExportRuntimeV2 {
   export_id: string;
   status: "queued" | "exporting" | "completed" | "failed" | "cancelled";
@@ -3243,6 +3254,7 @@ export interface EditingExportRuntimeV2 {
   error: CanvasNodeErrorV2 | null;
   started_at: string | null;
   finished_at: string | null;
+  acceptance: EditingExportAcceptanceV2 | null;
 }
 
 export interface EditingNodeContentV2 {
