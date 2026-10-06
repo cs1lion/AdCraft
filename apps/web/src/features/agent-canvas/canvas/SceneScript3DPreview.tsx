@@ -46,6 +46,7 @@ import {
   useThree,
 } from "./LeanSceneCanvas";
 import { cameraLabel, cameraLabelsById, shotForFrame } from "./shotLabels";
+import { shotCameraPoseAtFrame } from "./sceneDepthPass";
 import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSceneScriptPlayback } from "./SceneScriptPlaybackContext";
@@ -70,6 +71,7 @@ import {
   type CharacterSegment,
 } from "./lowPolyHumanRig";
 import { objectLodTier } from "./sceneFidelity";
+import { DepthPassRecorder, type ControlDepthPassOptions } from "./sceneDepthPassRecorder";
 import {
   sceneToThreePosition,
   sceneYawToThreeRotation,
@@ -933,6 +935,15 @@ export interface SceneScript3DPreviewProps {
    * test harness to count what the character actually drew.
    */
   children?: ReactNode;
+  /**
+   * DEPTH control pass (ADR 0005 §4, three.js-renderer plan §4.5). When set,
+   * the preview renders a second depth pass at each shot's 5 keyframe frames
+   * and delivers `depth_<N>.png` for them — the exact file layout
+   * `control_passes.collect_control_passes` collects beside the colour
+   * frames. Absent in the authoring UI (a preview should not spend a second
+   * render per frame on a pass nobody asked for).
+   */
+  controlDepthPass?: ControlDepthPassOptions;
 }
 
 /** One dialogue line as the live overlay consumes it. */
@@ -963,6 +974,7 @@ export function SceneScript3DPreview({
   onGestureCancel,
   captureFrames = false,
   children,
+  controlDepthPass,
 }: SceneScript3DPreviewProps) {
   const { currentFrame, isPlaying, totalFrames, toggle, seekToFrame, pause } =
     useSceneScriptPlayback();
@@ -1006,6 +1018,17 @@ export function SceneScript3DPreview({
     () => shotForFrame(sceneScript, currentFrame)?.camera ?? sceneScript.shots[0]?.camera ?? "",
     [currentFrame, sceneScript],
   );
+
+  // Where the viewport camera is, at this frame. The script's own camera
+  // keyframes, interpolated — the same function the depth pass uses, so the
+  // preview, the control pass and the captured frames cannot disagree about it.
+  // Falls back to the old orbit rig only when the script has no shot camera at
+  // all (a fresh, empty scene), so an unwritable viewport is never an option.
+  const shotPose = useMemo(() => {
+    const shot = shotForFrame(sceneScript, currentFrame);
+    const posed = shotCameraPoseAtFrame(sceneScript.cameras, shot, currentFrame);
+    return posed ?? { position: [8, -12, 6], lookAt: [0, 0, 0], cameraId: "" };
+  }, [sceneScript, currentFrame]);
 
   // Kinds this build has no geometry for. Normally empty; a non-empty list means
   // the script came from a backend newer than this bundle, and the magenta boxes
@@ -1055,7 +1078,18 @@ export function SceneScript3DPreview({
       <Canvas
         shadows
         captureFrames={captureFrames}
-        camera={{ position: [8, -12, 6], fov: 50 }}
+        // The viewport camera FOLLOWS THE SHOT CAMERA, not a fixed orbit.
+        //
+        // It used to be a hardcoded [8, -12, 6] orbit rig, which meant the
+        // headless render captured all 720 frames from one vantage point: shot
+        // cuts and camera moves — the entire point of a previs — never reached
+        // the output. `shotCameraPoseAtFrame` interpolates the script's own
+        // camera keyframes, so the preview, the depth pass and the captured
+        // frames all agree on where the camera is.
+        camera={{
+          position: shotPose.position as [number, number, number],
+          fov: 50,
+        }}
         style={{ width: "100%", height: "100%" }}
         onPointerMissed={() => {
           if (!editMode) return;
@@ -1238,7 +1272,12 @@ export function SceneScript3DPreview({
 
                 <OrbitControls
                   makeDefault
-                  enabled={!drag.active}
+                  // Shot camera wins by default: with `makeDefault` an enabled
+                  // OrbitControls owns the camera and would fight the
+                  // interpolated shot pose on every rendered frame. In edit mode
+                  // the author genuinely wants to fly around, and the shot pose
+                  // resumes as soon as the playhead moves or the mode is left.
+                  enabled={Boolean(editMode) && !drag.active}
                   enableDamping
                   dampingFactor={0.05}
                   minDistance={2}
@@ -1252,6 +1291,16 @@ export function SceneScript3DPreview({
             );
           }}
         </SceneDragLayer>
+
+        {/* DEPTH control pass: opt-in, and only ever a second render of the
+            frame the author is already looking at. */}
+        {controlDepthPass && (
+          <DepthPassRecorder
+            sceneScript={sceneScript}
+            onFrame={controlDepthPass.onFrame}
+            enabled={controlDepthPass.enabled}
+          />
+        )}
       </Canvas>
 
       {/* HUD overlay */}
