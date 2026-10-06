@@ -930,6 +930,12 @@ export interface LeanCanvasProps {
   children?: ReactNode;
   camera?: { position?: [number, number, number]; fov?: number };
   shadows?: boolean;
+  /**
+   * Keep the drawing buffer readable after compositing. Required by the frame
+   * capture path, which reads pixels outside the render callback; costs a
+   * buffer copy per frame, so it is opt-in rather than always on.
+   */
+  captureFrames?: boolean;
   style?: CSSProperties;
   onPointerMissed?: (event: MouseEvent) => void;
 }
@@ -1028,6 +1034,7 @@ function SceneCanvas({
   children,
   camera,
   shadows,
+  captureFrames,
   style,
   onPointerMissed,
 }: LeanCanvasProps) {
@@ -1063,7 +1070,15 @@ function SceneCanvas({
     // mount replay. Tearing down a live GL context to satisfy a dev-only
     // invariant would be both wasteful and visible as context churn.
     if (!stateRef.current) {
-      const gl = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+      // `preserveDrawingBuffer` is off by default (it costs a buffer copy
+      // per frame) and only enabled by the frame-capture path, which reads
+      // pixels OUTSIDE the render callback.
+      const gl = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: false,
+        preserveDrawingBuffer: Boolean(captureFrames),
+      });
       gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       gl.setClearColor(new THREE.Color("#1a1a2e"));
       if (shadows) {
