@@ -125,6 +125,11 @@ _SCENE_CONFLICT_CATEGORIES = {
 }
 
 
+#: Creative roles whose output is a 3D previs animation. A video segment bound to
+#: one of these is anchored on a blockout, which is the only situation where the
+#: grey-model look can leak into the deliverable.
+_PREVIS_SOURCE_ROLES = frozenset({"scene_3d_previs"})
+
 class AgentCanvasRolePromptCompiler:
     """Compile stable provider-neutral prompts from one strict role brief."""
 
@@ -239,6 +244,10 @@ class AgentCanvasRolePromptCompiler:
             and context.video_representation_mode == "illustration_to_live_action"
         ):
             prompt = f"{prompt}\n\n{_LIVE_ACTION_IDENTITY_GUARDRAIL(context)}"
+        if context.role_variant == "video_segment" and _PREVIS_SOURCE_ROLES & {
+            binding.source_role for binding in context.bindings
+        }:
+            prompt = f"{prompt}\n\n{_PREVIS_ANCHOR_GUARDRAIL(context)}"
         if context.role_variant == "script":
             duration = context.explicit_controls.get("duration_seconds")
             if (
@@ -890,6 +899,48 @@ def _structured_content(
             content["background_music"] = False
         return content
     raise _error("node_prompt_brief_invalid", "Role brief is unsupported.")
+
+
+def _PREVIS_ANCHOR_GUARDRAIL(context: RolePromptPreparationContextV2) -> str:
+    """Override the look of a bound 3D previs, keeping only what it is for.
+
+    Observed twice on real renders (CHANGELOG v1 and v3): a video model anchored
+    on previs keyframes rasterises the blockout itself, so the first shot came
+    back as a Blender grey model. The composition follows the previs perfectly
+    and the footage is unusable. The playbook records the fix as a mandatory
+    per-shot style suffix ("v4/v6 实测有效"), but nothing implemented it — the
+    only record of it is the author hand-rewriting prompts.
+
+    This is the implementation, and it is deliberately narrow: it fires only when
+    a video segment actually has a previs binding. Without previs anchoring
+    there is no blockout look to override, and telling every unrelated video
+    "do not look like a grey model" is noise the author has to read past.
+
+    What the previs keeps: shot cuts, camera motion, spatial relationships.
+    What it loses: every visual property.
+    """
+
+    facts: list[str] = []
+    for binding in context.bindings:
+        if binding.source_role not in _PREVIS_SOURCE_ROLES:
+            continue
+        identity = "the bound 3D previs AssetVersion"
+        if binding.source_node_id:
+            identity += f" from node {binding.source_node_id}"
+        facts.append(identity)
+    references = "; ".join(facts) or "the bound 3D previs"
+    return (
+        f"{references} is a low-fidelity animation reference only. Follow it for shot "
+        "cutting, camera motion, blocking, timing, and spatial relationships between "
+        "characters and environment. Do not follow it for appearance. Rebuild the scene "
+        "at true human proportions with natural materials and contact: no low-poly, "
+        "untextured, blockout, grey-model, or 3D-render look may survive into the "
+        "output. Character silhouettes, body scales, and prop proportions in the "
+        "reference are schematic, not directives. Final deliverable is live-action "
+        "cinematic footage with coherent lighting, materials, and photoreal texture. "
+        "These constraints are the final instruction and override any style guidance "
+        "above."
+    )
 
 
 def _LIVE_ACTION_IDENTITY_GUARDRAIL(context: RolePromptPreparationContextV2) -> str:
