@@ -1672,6 +1672,35 @@
 /* reel 条：时间轴上的一段。每个镜头按自己在时间线上的起点和时长定位——
    这正是 Editing 节点将要装配的位置，所以这里读到的就是成片的节奏。
    缺片段的镜头留在轴上作为空档，而不是被挤掉。 */
+/* 秒刻度尺（图3）：固定 5s 一档，与片段无关。读节奏要一把不变的尺——
+   镜头会增删改，尺不跟着动，作者才对得出"这一刀落在第几秒"。 */
+.previs-film__ruler {
+  position: relative;
+  height: 13px;
+  margin-top: 2px;
+  overflow: hidden;
+}
+
+.previs-film__ruler-tick {
+  position: absolute;
+  top: 0;
+  color: #6f7789;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(2px);
+}
+
+.previs-film__ruler-tick::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: 0;
+  width: 1px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
 .previs-film__reel {
   position: relative;
   height: 26px;
@@ -1730,6 +1759,18 @@
     rgba(255, 255, 255, 0.05) 4px,
     rgba(255, 255, 255, 0.05) 8px
   );
+}
+
+/* 每镜时长：参考轴标的是 00:02 / 00:04 / 00:06，即"这一刀多长"。
+   与 left 一起才读得出节奏——只有位置没有长度，六镜和两镜看起来一样。 */
+.previs-film__reel-duration {
+  flex: none;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #bde6fb;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 .previs-film__reel-state {

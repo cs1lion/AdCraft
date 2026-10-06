@@ -184,6 +184,37 @@ describe("PrevisFilmStage", () => {
     expect(screen.getByTestId("previs-film-title").textContent).toBe("cam_gone");
   });
 
+  it("draws a fixed second ruler, independent of the shots", async () => {
+    // The reference axis reads 0s/5s/10s…/25s. It is a pacing ruler: it does
+    // not move when shots are added, so the author can tell "this cut lands on
+    // second 10" without knowing how many cuts there are.
+    mockedItems = [videoItem("asset-1"), videoItem("asset-2")];
+    mockedTimeline = null;
+    render(stage({ clips: [clip("shot_1", "asset-1"), clip("shot_2", "asset-2")] }));
+
+    const ruler = await screen.findByTestId("previs-film-ruler");
+    const ticks = ruler.querySelectorAll(".previs-film__ruler-tick");
+    const labels = Array.from(ticks).map((tick) => tick.textContent);
+    // shot_1 is 5s (frames 0..149), shot_2 is 1s (150..179) → the film is 6s.
+    // Ruler = 0, 5, then the closing 6 (a partial step still gets a label, or
+    // the last second of the film has no tick at all).
+    expect(labels).toEqual(["0s", "5s", "6s"]);
+  });
+
+  it("labels each shot with its own duration", async () => {
+    // 00:02 / 00:04 style labels in the reference: a cut reads as a LENGTH.
+    // Position alone makes two shots and six shots look equally fast.
+    mockedItems = [videoItem("asset-1"), videoItem("asset-2")];
+    mockedTimeline = null;
+    render(stage({ clips: [clip("shot_1", "asset-1"), clip("shot_2", "asset-2")] }));
+
+    const durations = await screen.findAllByTestId("previs-film-reel-duration");
+    const byText = new Map(durations.map((node) => [node.textContent, node]));
+    // shot_1 is frames 0..149 = 150 frames = 5s; shot_2 is 150..179 = 1s.
+    expect(byText.has("5s")).toBe(true);
+    expect(byText.has("1s")).toBe(true);
+  });
+
   it("says the scene has no shots rather than rendering an empty reel", () => {
     render(stage({ shots: [] }));
     expect(screen.getByTestId("previs-film").textContent).toContain("还没有分镜");

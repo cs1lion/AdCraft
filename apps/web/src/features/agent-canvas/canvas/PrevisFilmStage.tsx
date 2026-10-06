@@ -31,7 +31,7 @@ import { useAgentCanvasAssets } from "../assets/useAgentCanvasAssets.ts";
 import { getTimeline } from "../timeline/timelineApi.ts";
 import type { TimelineClipV1 } from "../timeline/timelineTypes.ts";
 import { mediaAssetContentPath } from "../../../workflow/mediaPreview.ts";
-import { cameraLabel } from "./shotLabels.ts";
+import { cameraLabel, formatSegmentSeconds, shotDurationSeconds } from "./shotLabels.ts";
 
 /** Pixels per second on the reel's time axis — the timeline panel's own scale,
  *  so a shot that is 3s wide here is 3s wide there. */
@@ -62,6 +62,9 @@ interface ReelEntry {
   url: string | null;
   /** True when the lineage exists but the bytes are still resolving. */
   resolving: boolean;
+  /** This shot's own length in seconds — the reference axis labels cuts
+   *  00:02 / 00:04 …, so a cut reads as a length, not only a position. */
+  shotDuration: number;
   /**
    * Where this shot sits on the reel, in seconds. The timeline's video-track
    * clip position when the shot has one; otherwise the shot's own start, so a
@@ -170,6 +173,7 @@ export function PrevisFilmStage({
           label,
           url: url || null,
           resolving: Boolean(clip) && !url,
+          shotDuration: shotDurationSeconds(shot, frameRate),
           startSeconds,
           timelineClip,
         };
@@ -179,10 +183,26 @@ export function PrevisFilmStage({
   const playableCount = reel.filter((entry) => entry.url).length;
   const safeIndex = Math.min(Math.max(index, 0), Math.max(reel.length - 1, 0));
   const current = reel[safeIndex] ?? null;
+  // The span of the reel. A shot that has no timeline clip still has its own
+  // length, and the ruler is a pacing clock — falling back to 0 when the
+  // timeline is unreadable would draw a 0s axis and hide the film entirely.
   const totalSeconds = reel.reduce(
-    (max, entry) => Math.max(max, entry.startSeconds + (entry.timelineClip?.duration ?? 0)),
+    (max, entry) =>
+      Math.max(max, entry.startSeconds + (entry.timelineClip?.duration ?? entry.shotDuration)),
     0,
   );
+
+  // Ruler ticks: every 5s, at 0s and at the end. The reference axis reads
+  // 0s / 5s / 10s … / 25s, which is a pacing ruler, not a per-shot one — it
+  // stays constant while shots change, so the author reads cuts against a
+  // fixed clock.
+  const rulerTicks = useMemo(() => {
+    const end = Math.max(totalSeconds, 5);
+    const ticks: number[] = [];
+    for (let second = 0; second <= end; second += 5) ticks.push(second);
+    if (ticks[ticks.length - 1] !== end) ticks.push(end);
+    return ticks;
+  }, [totalSeconds]);
 
   // Keep the 3D preview underneath on the same cut as the reel. Seeking only
   // when the cut changes — not on every parent render — so dragging the reel
@@ -302,6 +322,23 @@ export function PrevisFilmStage({
           and offset come from the timeline, so what the author reads here is
           what the Editing node will assemble. Missing shots keep their place on
           the axis as empty gaps rather than being packed out. */}
+      {/* 秒刻度尺：固定 5s 一档，与片段无关。读节奏要有不变的钟。 */}
+      <div
+        className="previs-film__ruler"
+        data-testid="previs-film-ruler"
+        style={{ width: Math.max(totalSeconds * PIXELS_PER_SECOND, 240) }}
+      >
+        {rulerTicks.map((second) => (
+          <span
+            key={second}
+            className="previs-film__ruler-tick"
+            style={{ left: second * PIXELS_PER_SECOND }}
+          >
+            {Math.round(second)}s
+          </span>
+        ))}
+      </div>
+
       <ol
         className="previs-film__reel previs-film__reel--timeline"
         data-testid="previs-film-reel"
@@ -337,6 +374,9 @@ export function PrevisFilmStage({
               title={`${entry.label} · ${entry.startSeconds.toFixed(1)}s`}
             >
               <span className="previs-film__reel-label">{entry.label}</span>
+              <span className="previs-film__reel-duration" data-testid="previs-film-reel-duration">
+                {formatSegmentSeconds(entry.shotDuration)}
+              </span>
               <span className="previs-film__reel-state">
                 {entry.url ? "●" : entry.resolving ? "◐" : "○"}
               </span>
