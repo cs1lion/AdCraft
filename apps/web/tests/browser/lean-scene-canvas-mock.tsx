@@ -4,6 +4,13 @@ import { Canvas as DefaultCanvas, useFrame as defaultUseFrame, useThree as defau
 import { Grid as DefaultGrid, Html as DefaultHtml, OrbitControls as DefaultOrbitControls } from "@react-three/drei";
 import { Mesh as ThreeMesh, Vector3 } from "three";
 import {
+  BoxGeometry as ThreeBoxGeometry,
+  ConeGeometry as ThreeConeGeometry,
+  CylinderGeometry as ThreeCylinderGeometry,
+  PlaneGeometry as ThreePlaneGeometry,
+  SphereGeometry as ThreeSphereGeometry,
+} from "three";
+import {
   AmbientLight as LeanAmbientLight,
   BoxGeometry as LeanBoxGeometry,
   BufferAttribute as LeanBufferAttribute,
@@ -71,7 +78,7 @@ let resolved = false;
 let loading: Promise<void> | null = null;
 let latest: RootState | null = null;
 let ticks = 0;
-const stats = { sceneRenders: 0, sceneSetups: 0, sceneCleanups: 0, selected: 0, missed: 0, drags: 0, color: "", width: 0, height: 0, left: 0, top: 0, meshes: 0, orbit: "" };
+const stats = { sceneRenders: 0, sceneSetups: 0, sceneCleanups: 0, selected: 0, missed: 0, drags: 0, color: "", width: 0, height: 0, left: 0, top: 0, meshes: 0, orbit: "", characterMeshes: 0, characterParts: {} as Record<string, number> };
 Object.assign(window, { leanScene: {
   stats,
   snapshot: () => ({ ...stats, ticks, triangles: latest?.gl.info.render.triangles ?? 0, lost: latest?.gl.getContext().isContextLost() ?? true }),
@@ -174,6 +181,58 @@ function ProductionFixture() {
     <SceneScript3DPreview sceneScript={productionScene} height={400} editMode selectedObject={selection} onSelect={setSelection} dialogueLines={[{ character_id: "actor", text: "real preview context", start_time: 0, end_time: 2 }]} />
   </SceneScriptPlaybackProvider>;
 }
+/**
+ * Counts the meshes the mounted preview draws, by geometry class, and writes
+ * them into the SAME `leanScene` stats object the harness already exposes — no
+ * second global. It rides inside the preview's own canvas through the preview's
+ * `children` seam, because a mesh count taken from outside that canvas cannot
+ * see the scene graph. The Grid is a shaded plane, not a scene object, so it is
+ * excluded: with a one-character scene mounted, what remains IS the character.
+ */
+function CharacterMeshProbe() {
+  const state = leanUseThree();
+  leanUseFrame(() => {
+    const parts: Record<string, number> = {};
+    let total = 0;
+    state.scene.traverse((object) => {
+      if (!(object instanceof ThreeMesh)) return;
+      const geometry = object.geometry;
+      if (geometry instanceof ThreePlaneGeometry) return;
+      const kind =
+        // ConeGeometry EXTENDS CylinderGeometry in three.js, so the cone test
+        // has to come first or every cone is miscounted as a cylinder.
+        geometry instanceof ThreeConeGeometry ? "cone"
+          : geometry instanceof ThreeCylinderGeometry ? "cylinder"
+            : geometry instanceof ThreeBoxGeometry ? "box"
+              : geometry instanceof ThreeSphereGeometry ? "sphere" : "other";
+      parts[kind] = (parts[kind] ?? 0) + 1;
+      ++total;
+    });
+    stats.characterMeshes = total;
+    stats.characterParts = parts;
+  });
+  return null;
+}
+// One character, nothing else: no props, no environment, no camera gizmo, no
+// selection ring (nothing is selected and edit mode is off, so there is no grab
+// proxy either). Whatever the scene draws is the character and the grid.
+const loneCharacterScene = {
+  scene: { name: "Lone character rig", environment: "indoor", lighting: "cool", duration: 2, frame_rate: 30 },
+  characters: [{ id: "lone", type: "lowpoly_human", appearance: { color: "#FF4422", height: 1.7, scale: 1 }, keyframes: [{ frame: 0, position: [0, 0, 0], rotation_y: 0, action: "talk" }] }],
+  props: [],
+  environment: [],
+  cameras: [],
+  shots: [{ id: "shot", camera: "stand-in", start_frame: 0, end_frame: 59, description: "rig" }],
+  speech_bindings: [],
+} as SceneScriptRoot;
+function CharacterFixture() {
+  return <SceneScriptPlaybackProvider sceneScript={loneCharacterScene}>
+    <output data-testid="character-fixture">lone</output>
+    <SceneScript3DPreview sceneScript={loneCharacterScene} height={400} editMode={false} selectedObject={null} dialogueLines={[{ character_id: "lone", text: "rig check", start_time: 0, end_time: 2 }]}>
+      <CharacterMeshProbe />
+    </SceneScript3DPreview>
+  </SceneScriptPlaybackProvider>;
+}
 const camera = { position: [0, 3, 7] as [number, number, number], fov: 50 };
 function Fixture() {
   const [color, setColor] = useState("red");
@@ -203,4 +262,5 @@ function Fixture() {
     </div>
   </>;
 }
-createRoot(document.getElementById("root")!).render(<StrictMode>{new URLSearchParams(location.search).has("production") ? <ProductionFixture /> : <Fixture />}</StrictMode>);
+const mode = new URLSearchParams(location.search).has("production") ? "production" : new URLSearchParams(location.search).has("character") ? "character" : "scene";
+createRoot(document.getElementById("root")!).render(<StrictMode>{mode === "production" ? <ProductionFixture /> : mode === "character" ? <CharacterFixture /> : <Fixture />}</StrictMode>);
