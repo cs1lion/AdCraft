@@ -12,6 +12,14 @@
  *      directory — the SAME layout the Blender renderer produced, so the
  *      encoder, keyframe extraction and clip publisher are untouched.
  *
+ * `--control-depth` additionally renders the DEPTH control pass (ADR 0005 §4):
+ * for every shot's 5 keyframe frames it writes `<out>/control_depth/depth_<N>.png`,
+ * N the 0-based SceneScript frame — the layout
+ * `control_passes.collect_control_passes` collects beside the colour frames,
+ * and the same one the Blender renderer produced before the three.js swap. A
+ * depth frame the page reports as having no geometry is a failure, not a black
+ * PNG on disk: that is the trap that let 12 identical black frames "pass".
+ *
  * CAPTURE PATH — read this before "optimising" it.
  * The first implementation captured in-page with `canvas.toDataURL()` and
  * produced 481 byte-identical PNGs while the playhead advanced correctly. The
@@ -36,7 +44,7 @@
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { chromium } from "playwright";
 
@@ -70,6 +78,9 @@ const HEIGHT = Number(arg("height", "540"));
  *  0 means "any repeat is a bug". Real scenes do hold still for a frame or two
  *  at a cut, so the default tolerates a short hold but not a frozen canvas. */
 const MAX_REPEAT = Number(arg("max-repeat", "3"));
+/** Depth control pass: write `<out>/control_depth/depth_<N>.png` per shot
+ *  keyframe, the layout `control_passes.collect_control_passes` collects. */
+const CONTROL_DEPTH = process.argv.includes("--control-depth");
 
 function fail(code, message) {
   process.stderr.write(`${code}: ${message}\n`);
@@ -101,6 +112,7 @@ const browser = await chromium.launch({ channel: "chrome" });
 const rendered = [];
 let previousHash = null;
 let identicalRun = 0;
+let wanted = [];
 const startedAt = Date.now();
 try {
   const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT } });
@@ -111,14 +123,35 @@ try {
   await page.waitForFunction("() => !!window.__previsSeek", null, { timeout: 60_000 });
 
   const meta = await page.evaluate(() => window.__previsRender.meta());
-  const end = Number.isFinite(Number(arg("end", "")))
-    ? Number(arg("end"))
-    : meta.frames - 1;
+  // A discrete frame list (keyframes-only renders) or a contiguous range.
+  // --frames takes precedence over --start/--end because "which instants" is
+  // the whole point of a keyframes-only pass.
+  const framesArg = arg("frames", "");
+  const endArg = arg("end", "");
+  // `wanted` lives in the outer scope because the stdout report needs it. An
+  // IIFE-local const is how this once crashed AFTER every frame had been
+  // written correctly — a perfect render reported as a failure.
+  if (framesArg) {
+    wanted = framesArg
+      .split(",")
+      .map((v) => Number(v.trim()))
+      .filter((v) => Number.isInteger(v) && v >= 0);
+  } else {
+    // `Number("")` is 0 and `Number.isFinite(0)` is true, so an ABSENT --end used
+    // to compute as "frame 0" rather than "not supplied" — the caller asked for
+    // a full sequence and got one frame. Treat blank as unset and fall back to
+    // the scene's own frame count.
+    const end = endArg.trim() ? Number(endArg) : meta.frames - 1;
+    if (!Number.isFinite(end)) fail("render_bad_end", `--end is not a number: ${endArg}`);
+    wanted = [];
+    for (let f = START; f <= end; f += 1) wanted.push(f);
+  }
+  if (!wanted.length) fail("render_no_frames", "no frames selected");
 
   const canvas = page.locator("canvas").first();
   await canvas.waitFor({ state: "visible", timeout: 60_000 });
 
-  for (let frame = START; frame <= end; frame += 1) {
+  for (const frame of wanted) {
     await page.evaluate((f) => window.__previsRender.seek(f), frame);
     const shot = await canvas.screenshot();
     const buffer = Buffer.from(shot);
@@ -147,6 +180,32 @@ try {
     await writeFile(join(OUT, `frame_${String(frame + 1).padStart(4, "0")}.png`), buffer);
     rendered.push(frame);
   }
+
+  // --- DEPTH control pass -----------------------------------------------------
+  // Same 5-keyframes-per-shot sampling the collector re-derives, but the page
+  // owns the plan (it must match what the preview renders) — ask it rather than
+  // recompute the shot maths here.
+  const depthRendered = [];
+  if (CONTROL_DEPTH) {
+    const depthFrames = await page.evaluate(() => window.__previsRender.depthFrames());
+    const depthDir = join(OUT, "control_depth");
+    mkdirSync(depthDir, { recursive: true });
+    for (const frame of depthFrames) {
+      const { png, stats } = await page.evaluate((f) => window.__previsRender.captureDepth(f), frame);
+      const buffer = Buffer.from(png, "base64");
+      // The page reports how much of the frame actually has geometry: a depth
+      // PNG with nothing in it is a broken capture, not a dark frame, and must
+      // not reach the collector (which would count it as an available pass).
+      if (!stats || stats.geometryPixels === 0) {
+        fail("render_depth_black", `frame ${frame} depth pass has no geometry`);
+      }
+      if (buffer.length < 200) {
+        fail("render_depth_black", `frame ${frame} depth pass is ${buffer.length} bytes`);
+      }
+      await writeFile(join(depthDir, `depth_${frame}.png`), buffer);
+      depthRendered.push(frame);
+    }
+  }
 } finally {
   await browser.close();
   server.close();
@@ -160,6 +219,8 @@ process.stdout.write(
     frames: rendered.length,
     first: rendered[0],
     last: rendered.at(-1),
+    requested: wanted.length,
+    depth_frames: CONTROL_DEPTH ? depthRendered.length : null,
     seconds: Math.round(seconds * 10) / 10,
     ms_per_frame: rendered.length ? Math.round((seconds * 1000) / rendered.length) : null,
   }) + "\n",

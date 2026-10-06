@@ -49,8 +49,24 @@ from .blender_converter import keyframe_render_frames
 from .blender_renderer import BlenderCapability, RenderResult, degraded_asset_ids
 
 #: Where the render driver and the built frontend live.
-RENDER_DRIVER = Path(__file__).resolve().parents[3] / "web" / "scripts" / "render-frames.mjs"
-WEB_ROOT = Path(__file__).resolve().parents[3] / "web"
+#: Resolved by walking UP from this file to the repository root — the directory
+#: that contains ``apps/`` — rather than counting parents. Counting broke twice:
+#: first ``parents[3] / "web"`` (which is apps/api/web, missing one level), then
+#: ``parents[4] / "apps" / "web"`` (which is apps/apps/web, one too many). The
+#: capability check surfaced both as "unsupported", and the resolver's silent
+#: Blender fallback turned them into a dead three.js path that looked fine.
+_HERE = Path(__file__).resolve()
+_MARKER = "apps"
+_WEB_ROOT: Path | None = None
+for _candidate in [_HERE, *_HERE.parents]:
+    if _candidate.name == _MARKER and (_candidate / "api" / "app").is_dir():
+        _WEB_ROOT = _candidate / "web"
+        break
+if _WEB_ROOT is None:  # pragma: no cover - only if the package is relocated
+    raise RuntimeError("cannot locate the apps/web frontend from " + str(_HERE))
+
+RENDER_DRIVER = _WEB_ROOT / "scripts" / "render-frames.mjs"
+WEB_ROOT = _WEB_ROOT
 
 #: The driver's exit codes. 2 is its own coded failure; anything else is an
 #: unexpected crash and is reported with the exit code attached.
@@ -208,8 +224,6 @@ def threejs_render_capability() -> BlenderCapability:
     queryable state, never a surprise at render time.
     """
 
-    from app.services.blender_renderer import BlenderCapability
-
     if not RENDER_DRIVER.exists():
         return BlenderCapability(
             state="unsupported",
@@ -225,4 +239,49 @@ def threejs_render_capability() -> BlenderCapability:
                           capture_output=True).returncode != 0:
             return BlenderCapability(state="unsupported", error=f"{executable} not found")
     return BlenderCapability(state="ready", executable="node")
+
+
+def resolve_scene3d_renderer(settings):
+    """Pick the previs renderer from settings.
+
+    The seam is ``Scene3DNodeExecutor``'s ``renderer`` injection, so switching
+    backends changes nothing in the orchestration: both candidates have the same
+    signature and return the same ``RenderResult``.
+
+    An unready three.js backend falls back to Blender rather than failing the
+    node, because the three.js path depends on a built frontend and a drivable
+    Chromium — optional infrastructure. An UNKNOWN backend value, by contrast,
+    fails loudly: an operator who wrote ``threejs`` and got Blender anyway would
+    be measuring the wrong thing without ever knowing.
+    """
+
+    from .blender_renderer import render_scene_script
+
+    backend = getattr(settings, "scene3d_renderer_backend", "blender")
+    if backend == "blender":
+        return render_scene_script
+    if backend == "threejs":
+        if threejs_render_capability().state != "ready":
+            return render_scene_script
+        return render_scene_script_threejs
+    raise ValueError(
+        f"scene3d_renderer_backend must be 'blender' or 'threejs', got {backend!r}"
+    )
+
+
+def resolve_scene3d_capability_probe(settings):
+    """The capability check that matches the configured backend.
+
+    Coupled to the renderer on purpose: the three.js path must not be rejected
+    by ``blender --version`` — exactly the failure a naive wiring produces once
+    Blender is uninstalled, and one that would read as "Blender broken" rather
+    than "wrong renderer configured".
+    """
+
+    from .blender_renderer import get_blender_capability
+
+    if getattr(settings, "scene3d_renderer_backend", "blender") == "threejs":
+        return threejs_render_capability
+    return get_blender_capability
+
 

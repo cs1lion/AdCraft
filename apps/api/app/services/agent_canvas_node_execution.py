@@ -116,9 +116,9 @@ from app.services.scene3d.emotion_continuity import check_emotion_continuity
 from app.services.scene3d.transition_intent_reconciliation import (
     reconcile_transition_intents,
 )
-from app.services.scene3d.blender_renderer import (
-    get_blender_capability,
-    render_scene_script,
+from app.services.scene3d.threejs_renderer import (
+    resolve_scene3d_capability_probe,
+    resolve_scene3d_renderer,
 )
 from app.services.scene3d.encoder import encode_png_sequence, mux_audio_to_video
 from app.services.scene3d.keyframes import rendered_frame_files
@@ -2076,8 +2076,8 @@ class Scene3DNodeExecutor:
         white_model_generator: Any | None = None,
     ) -> None:
         self._settings = settings
-        self._capability_probe = capability_probe or get_blender_capability
-        self._renderer = renderer or render_scene_script
+        self._capability_probe = capability_probe or resolve_scene3d_capability_probe(settings)
+        self._renderer = renderer or resolve_scene3d_renderer(settings)
         self._encoder = encoder or encode_png_sequence
         # Animatic mux (V0.2 §14.9): the emitted previs carries the dialogue
         # bed when one resolves, so a reviewer watches the RENDER with sound,

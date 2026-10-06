@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -28,6 +29,22 @@ def _read_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_backend(name: str, default: str) -> str:
+    """Read one of a fixed set of backend names, rejecting anything else.
+
+    A typo in ``SCENE3D_RENDERER_BACKEND`` must not silently resolve to the
+    default: an operator who asked for ``threejs`` and quietly got Blender would
+    be measuring the wrong renderer without knowing it. An unexpected value is
+    therefore passed through and rejected where the renderer is resolved, where
+    the error can name the field.
+    """
+
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
 
 
 def _read_int(name: str, default: int) -> int:
@@ -248,6 +265,13 @@ class Settings:
     # Set true only when the node is being run purely as a data source and
     # nobody will watch the result.
     scene3d_render_keyframes_only: bool = False
+    # Which renderer produces the previs frames.
+    #   "blender"  — the headless Blender renderer (the long-standing default)
+    #   "threejs"  — headless Chrome rendering the same SceneScript3DPreview the
+    #                author edits in, so there is one scene implementation
+    #                instead of two (see docs/plans/threejs-renderer-replacement.md)
+    # Default stays "blender" so nothing changes until it is opted into.
+    scene3d_renderer_backend: Literal["blender", "threejs"] = "blender"
     # Timeout budget derived from the frame count instead of a flat guess:
     #   timeout = startup + per_frame * frames_rendered
     # The flat ``scene3d_render_timeout_seconds`` above stays as the ceiling, so
@@ -650,6 +674,10 @@ class Settings:
             scene3d_render_keyframes_only=_read_bool(
                 "SCENE3D_RENDER_KEYFRAMES_ONLY",
                 cls.scene3d_render_keyframes_only,
+            ),
+            scene3d_renderer_backend=_read_backend(
+                "SCENE3D_RENDERER_BACKEND",
+                cls.scene3d_renderer_backend,
             ),
             scene3d_render_startup_seconds=max(
                 0,
