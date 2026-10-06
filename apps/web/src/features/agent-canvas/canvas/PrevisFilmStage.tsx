@@ -37,6 +37,12 @@ import { cameraLabel, formatSegmentSeconds, shotDurationSeconds } from "./shotLa
  *  so a shot that is 3s wide here is 3s wide there. */
 const PIXELS_PER_SECOND = 40;
 
+/** Zoom for the preview surface. 1 = fit the window; the reference card's
+ *  slider sits at ~40% and the "适应窗口" button returns there. */
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 0.1;
+
 export interface PrevisFilmStageProps {
   /** Owning workflow, used to resolve clip asset URLs and read the timeline. */
   workflowId: string | null;
@@ -116,6 +122,21 @@ export function PrevisFilmStage({
   const playerRef = useRef<HTMLVideoElement>(null);
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
+  // Zoom is held as the integer step index, not the ratio. `Math.round`
+  // quantisation of the RATIO is not enough: 1.2/0.1 is 11.999999999999998, so
+  // round(x/0.1)*0.1 still returns 1.2000000000000002 — a value that can never
+  // equal the slider's own 1. Holding steps as an integer makes every reachable
+  // zoom exactly representable and the fit button's "am I at fit" test exact.
+  const [zoomStep, setZoomStep] = useState(0);
+  const zoom = ZOOM_MIN + zoomStep * ZOOM_STEP;
+  const clampStep = useCallback((step: number) => {
+    const max = Math.round((ZOOM_MAX - ZOOM_MIN) / ZOOM_STEP);
+    return Math.min(max, Math.max(0, step));
+  }, []);
+  // Zoom applies to the SURFACE only. The ruler and the reel keep the fixed
+  // 40px/秒 scale, otherwise the axis would re-measure itself under the author
+  // and "second 10" would stop meaning second 10.
+  const zoomStyle = { transform: `scale(${zoom})`, transformOrigin: "center" as const };
   const trackClips = useVideoTrack(workflowId);
 
   const assets = useAgentCanvasAssets({
@@ -258,12 +279,17 @@ export function PrevisFilmStage({
             className="previs-film__video"
             data-testid="previs-film-video"
             src={current.url}
+            style={zoomStyle}
             playsInline
             preload="metadata"
             onEnded={advance}
           />
         ) : (
-          <div className="previs-film__placeholder" data-testid="previs-film-placeholder">
+          <div
+            className="previs-film__placeholder"
+            data-testid="previs-film-placeholder"
+            style={zoomStyle}
+          >
             <p>
               这一镜还没有发布预演片段
               {current.resolving ? "（血缘已在，素材解析中）" : ""}
@@ -315,6 +341,39 @@ export function PrevisFilmStage({
           >
             ⏭
           </button>
+          <div className="previs-film__zoom" data-testid="previs-film-zoom">
+            <button
+              type="button"
+              data-testid="previs-film-zoom-in"
+              aria-label="放大预演画面"
+              disabled={zoom >= ZOOM_MAX}
+              onClick={() => setZoomStep((value) => clampStep(value + 1))}
+            >
+              +
+            </button>
+            <input
+              type="range"
+              className="previs-film__zoom-slider"
+              data-testid="previs-film-zoom-slider"
+              aria-label="预演画面缩放"
+              min={ZOOM_MIN}
+              max={ZOOM_MAX}
+              step={ZOOM_STEP}
+              value={zoom}
+              onChange={(event) =>
+                setZoomStep(clampStep(Math.round((Number(event.target.value) - ZOOM_MIN) / ZOOM_STEP)))
+              }
+            />
+            <button
+              type="button"
+              data-testid="previs-film-zoom-fit"
+              aria-label="画面适应窗口"
+              aria-pressed={zoom === ZOOM_MIN}
+              onClick={() => setZoomStep(0)}
+            >
+              ⤢
+            </button>
+          </div>
         </div>
       </div>
 

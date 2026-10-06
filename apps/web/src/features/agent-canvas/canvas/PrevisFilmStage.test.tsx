@@ -215,6 +215,56 @@ describe("PrevisFilmStage", () => {
     expect(byText.has("1s")).toBe(true);
   });
 
+  it("zooms the surface without re-measuring the time axis", async () => {
+    // The ruler is a pacing clock. If it scaled with the surface, "second 10"
+    // would stop being second 10 — so the two must move independently.
+    mockedItems = [videoItem("asset-1"), videoItem("asset-2")];
+    mockedTimeline = null;
+    render(stage({ clips: [clip("shot_1", "asset-1"), clip("shot_2", "asset-2")] }));
+
+    const video = await screen.findByTestId("previs-film-video");
+    expect(video.style.transform).toBe("scale(1)");
+    const rulerBefore = screen.getByTestId("previs-film-ruler").style.width;
+
+    fireEvent.click(screen.getByTestId("previs-film-zoom-in"));
+
+    expect(video.style.transform).toBe("scale(1.1)");
+    // The ruler's pixel width is untouched: one second is still 40px.
+    expect(screen.getByTestId("previs-film-ruler").style.width).toBe(rulerBefore);
+  });
+
+  it("returns the surface to fit from the zoom slider's minimum", async () => {
+    mockedItems = [videoItem("asset-1"), videoItem("asset-2")];
+    mockedTimeline = null;
+    render(stage({ clips: [clip("shot_1", "asset-1"), clip("shot_2", "asset-2")] }));
+
+    fireEvent.click(screen.getByTestId("previs-film-zoom-in"));
+    fireEvent.click(screen.getByTestId("previs-film-zoom-in"));
+    const video = screen.getByTestId("previs-film-video");
+    expect(video.style.transform).toBe("scale(1.2)");
+
+    fireEvent.click(screen.getByTestId("previs-film-zoom-fit"));
+    expect(video.style.transform).toBe("scale(1)");
+    expect(
+      screen.getByTestId("previs-film-zoom-fit").getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("disables zoom-in at the ceiling so the slider cannot run past it", async () => {
+    mockedItems = [videoItem("asset-1")];
+    mockedTimeline = null;
+    render(stage({ clips: [clip("shot_1", "asset-1")] }));
+    const slider = screen.getByTestId("previs-film-zoom-slider") as HTMLInputElement;
+
+    expect(slider.min).toBe("1");
+    expect(slider.max).toBe("3");
+    expect((screen.getByTestId("previs-film-zoom-in") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.change(slider, { target: { value: "3" } });
+    expect((screen.getByTestId("previs-film-zoom-in") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("previs-film-video").style.transform).toBe("scale(3)");
+  });
+
   it("says the scene has no shots rather than rendering an empty reel", () => {
     render(stage({ shots: [] }));
     expect(screen.getByTestId("previs-film").textContent).toContain("还没有分镜");

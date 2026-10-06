@@ -1669,6 +1669,72 @@
   cursor: default;
 }
 
+/* 缩放控件（图3 操作栏最右侧）：加号 + 滑块 + 适应窗口。滑块左侧在参考图里
+   位于中间偏左，即默认略大于 1 倍——所以 fit 按钮以「回到 1」为准，
+   aria-pressed 标出当前是否已是适应态。 */
+.previs-film__zoom {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.previs-film__zoom button {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #dfe4ee;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.previs-film__zoom button:hover:not(:disabled) {
+  background: rgba(47, 127, 181, 0.85);
+  color: #fff;
+}
+
+.previs-film__zoom button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.previs-film__zoom-slider {
+  width: 56px;
+  height: 3px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+  outline: none;
+  cursor: pointer;
+}
+
+.previs-film__zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.previs-film__zoom-slider::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border: none;
+  border-radius: 999px;
+  background: #fff;
+  cursor: pointer;
+}
+
 /* reel 条：时间轴上的一段。每个镜头按自己在时间线上的起点和时长定位——
    这正是 Editing 节点将要装配的位置，所以这里读到的就是成片的节奏。
    缺片段的镜头留在轴上作为空档，而不是被挤掉。 */
