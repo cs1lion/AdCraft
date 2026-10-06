@@ -113,6 +113,10 @@ const rendered = [];
 let previousHash = null;
 let identicalRun = 0;
 let wanted = [];
+// Depth-pass frames, in the outer scope for the same reason as `wanted`: the
+// stdout report runs after the try block, and a scoped const here would crash
+// AFTER every frame (colour and depth) had been written correctly.
+let depthRendered = [];
 const startedAt = Date.now();
 try {
   const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT } });
@@ -185,7 +189,6 @@ try {
   // Same 5-keyframes-per-shot sampling the collector re-derives, but the page
   // owns the plan (it must match what the preview renders) — ask it rather than
   // recompute the shot maths here.
-  const depthRendered = [];
   if (CONTROL_DEPTH) {
     const depthFrames = await page.evaluate(() => window.__previsRender.depthFrames());
     const depthDir = join(OUT, "control_depth");
