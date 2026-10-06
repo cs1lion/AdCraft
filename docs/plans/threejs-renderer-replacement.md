@@ -206,20 +206,61 @@ three.js 用 `DepthTexture` / `gl.readPixels` 读深度缓冲，输出到同一 
 
 ---
 
-## 6. 建议的实施分期
+## 6. 实施分期（截至本回合的实际进度）
 
-| 阶段 | 内容 | 出口判据 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| **0. 已完成** | 最小验证（§1） | 720 帧 75s、帧间有差异、镜头切换可见 |
-| **1. 角色 rig** | §3.6 移植四肢到 three.js 预览 | 预览剪影与 Blender 渲染一致；既有视口回归通过 |
-| **2. 页内捕获通道** | §4.2 + §4.1-A | N 帧回传 → ffmpeg → MP4 可播放 |
-| **3. 编排接线** | §4.3 节点状态机 + 心跳 | curl 触发 → 浏览器渲染 → 节点 ready，全链路端到端 |
-| **4. depth pass** | §4.5 | `collect_control_passes` 契约通过 |
-| **5. 退役 Blender** | §3.1 / §3.2 / §3.8 | 全量测试改造后回归；`.env` 移除 `BLENDER_EXECUTABLE` |
-| **6.（可选）无人值守兜底** | §4.1-B | 实测 headless 速度 vs Blender，再决定是否保留 Blender |
+| **0** | 最小验证（§1） | 完成 |
+| **1** | 角色 rig（§3.6） | 完成 |
+| **2** | 服务端渲染通道（捕获 + 编码） | 完成 |
+| **3** | 编排接线（`SCENE3D_RENDERER_BACKEND=threejs`） | 完成 |
+| **4** | depth control pass（§4.5） | 完成 |
+| **5** | 视口相机跟随分镜相机 | 完成（depth subagent 暴露的缺口） |
+| **6** | 退役 Blender（默认切换 / 移除依赖 / 旧测试处置） | **未做** |
 
-**每阶段结束后跑一次真机主线**，不叠加到最后一口气验证——本会话的教训是：连续多轮
+### 本回合实测数字
+
+| 项 | 结果 |
+|---|---|
+| 720 帧渲染（服务端 headless Chrome） | **77.2 秒**（Blender 同场景约 530 秒，约 6.9 倍） |
+| 深度通道 | 20 张 `depth_<N>.png`（每镜 5 个），喂给真实 `collect_control_passes` -> `completeness: partial`，帧号与它重新推导的一致 |
+| 编码（仓库 `encode_png_sequence`，未改） | `success=True, frame_count=720`；产物 h264 / 1264x540 / 721 帧 / 24.03s |
+| 相机跟随 | 镜内差异 bbox 局部、切镜扩到全宽；10 对连续帧 0 对相同 |
+| 回归 | canvas+timeline 1348 测试全过；后端全量 2742 passed（3 个并行调度 flaky 单独复跑 18/18） |
+
+每阶段结束后跑一次真机主线，不叠加到最后一口气验证——本会话的教训是：连续多轮
 "测试全绿"之后，一次端到端就抓出致命 bug（预演片段发布 500）。
+
+### 仍未做 / 需要决策
+
+1. **无人值守执行模型**（§4.3）：渲染由一个 headless Chrome 会话完成，API 进程持有它。
+   批跑多镜头时是串行占用；尚未做节点状态机的"等待会话"语义与心跳。
+2. **默认切换**：开关默认仍是 `SCENE3D_RENDERER_BACKEND=blender`。切默认前需要一次更大规模真机对比
+   （多场景 x 多镜头 x 与 Blender 产物的目视比对）。
+3. **退役清单**：`blender_renderer.py`、`blender_converter.py`、
+   `blender_mcp_client.py`、`BLENDER_EXECUTABLE` 仍在仓库里。
+4. **§5 的两个 schema 缺口**（道具/环境无 keyframes、action 无姿态实现）——
+   与渲染器无关，独立排期。
+5. **相机 FOV**：schema 无镜头字段，当前用预览的 50 度；Blender 由 `lens` 推导。
+
+---
+
+## 7. 本回合被真机抓出、而单测全部放过的四个 bug
+
+记录在此是因为它们形状相同，且每一个都足以让整条链"看起来是好的"：
+
+1. **`Number("")` 是 0 且 `Number.isFinite(0)` 为真** -> 缺省 `--end` 被算成"第 0 帧"而非
+   "未传"，调用方要整段只得一帧。
+2. **父目录数错**（先 `apps/api/web`，后 `apps/apps/web`）-> capability 报
+   unsupported，resolver 静默回落 Blender，一次"成功"的渲染其实是 Blender 干的。
+   测试抓不住它，因为那个用例在 capability 非 ready 时直接 return——已改成无条件
+   断言驱动路径。
+3. **块内 const 的报告变量**（`wanted` / `depthRendered`）-> 全部帧写成功后崩在
+   stdout，一次完美的渲染被报成失败。
+4. **硬编码 orbit 相机** -> 720 帧全从一个视点拍，分镜与运镜完全没进产物。
+
+第 2 条尤其值得记住：**一个"跳过断言"比"断言错误"更危险**，因为它同时移除了
+失败信号和修复压力。
 
 ---
 
