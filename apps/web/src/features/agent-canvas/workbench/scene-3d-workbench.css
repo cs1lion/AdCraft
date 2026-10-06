@@ -1527,28 +1527,40 @@
   cursor: default;
 }
 
-/* reel 条：每个镜头一格，缺片段的镜头留空但不隐藏——"五镜里三镜有片"要能一眼
-   看出来，而不是让人去数。 */
+/* reel 条：时间轴上的一段。每个镜头按自己在时间线上的起点和时长定位——
+   这正是 Editing 节点将要装配的位置，所以这里读到的就是成片的节奏。
+   缺片段的镜头留在轴上作为空档，而不是被挤掉。 */
 .previs-film__reel {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  position: relative;
+  height: 26px;
   margin: 0;
   padding: 0;
   list-style: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.previs-film__reel-item {
+  position: absolute;
+  top: 0;
+  height: 100%;
 }
 
 .previs-film__reel-item button {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  width: 100%;
+  height: 100%;
+  padding: 3px 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 4px;
   background: rgba(12, 12, 18, 0.85);
   color: #8a93a6;
   font-size: 10px;
   cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .previs-film__reel-item button:hover {
@@ -1564,6 +1576,18 @@
 
 .previs-film__reel-item[data-has-clip="false"] button {
   border-style: dashed;
+}
+
+/* 未落到时间线上的镜头（没发布，或时间线读不到）：斜纹底，一眼看出它不是
+   "时长为 0"而是"还没上轨"。 */
+.previs-film__reel-item[data-on-timeline="false"] button {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(12, 12, 18, 0.85),
+    rgba(12, 12, 18, 0.85) 4px,
+    rgba(255, 255, 255, 0.05) 4px,
+    rgba(255, 255, 255, 0.05) 8px
+  );
 }
 
 .previs-film__reel-state {

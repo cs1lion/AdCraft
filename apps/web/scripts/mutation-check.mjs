@@ -64,6 +64,16 @@ const MUTANTS = [
     from: `return (shot.end_frame - shot.start_frame + 1) / frameRate;`,
     to: `return (shot.end_frame - shot.start_frame) / frameRate;`,
   },
+  {
+    name: "film stage: ignores the timeline's position for a shot that has one",
+    file: "src/features/agent-canvas/canvas/PrevisFilmStage.tsx",
+    from: `        const startSeconds = timelineClip
+          ? timelineClip.start_time
+          :`,
+    to: `        const startSeconds = timelineClip
+          ? shot.start_frame / frameRate
+          :`,
+  },
 ];
 
 let killed = 0;

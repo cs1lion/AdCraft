@@ -1193,6 +1193,7 @@ function SceneScript3DEditorContent({
             shots={sceneScript.shots}
             cameras={sceneScript.cameras}
             clips={publishedPrevisClips}
+            frameRate={sceneScript.scene.frame_rate}
             onSeekFrame={(frame) => playback.seekToFrame(frame)}
           />
         ) : (
