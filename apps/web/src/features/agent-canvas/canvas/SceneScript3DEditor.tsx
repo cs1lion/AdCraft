@@ -38,6 +38,7 @@ import {
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
 import { PrevisFilmStage } from "./PrevisFilmStage.tsx";
+import { PrevisDeliveryOverlay } from "./PrevisDeliveryOverlay.tsx";
 import { Scene3DPillRow } from "./Scene3DPillRow.tsx";
 import { SceneEditReportPanel } from "./SceneEditReportPanel.tsx";
 import { cameraLabel, shotForFrame, type SceneEditReport } from "./shotLabels.ts";
@@ -642,6 +643,24 @@ function SceneScript3DEditorContent({
   const [editReport, setEditReport] = useState<SceneEditReport | null>(lastEditReport);
   const lastEditReportRef = useRef(lastEditReport);
   lastEditReportRef.current = lastEditReport;
+  // 交付报告浮层的开关，以及"这条指令没能执行"时要说明的目标。
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [pendingSubject, setPendingSubject] = useState<{
+    label: string;
+    scope: "object" | "shot";
+  } | null>(null);
+
+  // 提交指令：这条链路目前没有执行端（agent 通道未接），所以打开浮层并如实
+  // 记录它本应作用的对象——比什么都不说更接近作者想要的反馈。
+  const submitFilmInstruction = useCallback(
+    (instruction: string, subject: FilmInstructionSubject | null) => {
+      if (!onFilmInstruction) return;
+      setPendingSubject(subject ? { label: subject.label, scope: subject.scope } : null);
+      setDeliveryOpen(true);
+      onFilmInstruction(instruction, subject);
+    },
+    [onFilmInstruction],
+  );
   const playback = useSceneScriptPlayback();
 
   // The shot under the playhead, its camera, its label, and its published clip
@@ -1064,7 +1083,11 @@ function SceneScript3DEditorContent({
         selectedObject={selectedObject}
         playheadFrame={playback.currentFrame}
         onNudge={(next) => onChange(next)}
-        onEditReport={setEditReport}
+        onEditReport={(report) => {
+          setEditReport(report);
+          setPendingSubject(null);
+          setDeliveryOpen(true);
+        }}
         disabled={saving}
       />
       <StoryboardPanel
@@ -1303,12 +1326,23 @@ function SceneScript3DEditorContent({
           指令栏上方，因为一条指令的回报是它上面那块——顺序即因果。 */}
       {viewMode === "film" && (
         <>
+          {/* 交付报告浮层：覆盖视口中央。作者做了一次操作就应该看到回应——
+              这是"我说了话，然后呢？"的唯一答案位置。 */}
+          {deliveryOpen && (
+            <PrevisDeliveryOverlay
+              sceneScript={sceneScript}
+              clips={publishedPrevisClips}
+              editReport={editReport}
+              pendingSubject={pendingSubject}
+              onDismiss={() => setDeliveryOpen(false)}
+            />
+          )}
           <SceneEditReportPanel
             report={editReport}
             frameRate={sceneScript.scene.frame_rate}
           />
           <FilmInstructionBar
-            onSubmit={onFilmInstruction}
+            onSubmit={submitFilmInstruction}
             subject={filmSubject}
             onClearSubject={clearObjectSubject}
           />

@@ -140,6 +140,38 @@ describe("SceneScript3DEditor dual view modes", () => {
     expect(save.disabled).toBe(false);
   });
 
+  it("opens the delivery card when an instruction is submitted", async () => {
+    // The author types, hits send, and must see SOMETHING answer. The channel
+    // is not wired, but the card still opens — it says what the instruction
+    // would have hit, instead of the bar just going quiet.
+    const onFilmInstruction = vi.fn();
+    renderEditor({ onFilmInstruction });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    fireEvent.change(screen.getByLabelText("AI 场景指令"), {
+      target: { value: "把飞船往左移两米" },
+    });
+    fireEvent.click(screen.getByLabelText("发送指令"));
+
+    const card = screen.getByTestId("previs-delivery");
+    expect(card.textContent).toContain("个分镜");
+    expect(card.textContent).toContain("指令尚未接线");
+    // The target it would have applied to is named, not left as a guess.
+    expect(card.textContent).toContain("机位01");
+    expect(onFilmInstruction).toHaveBeenCalled();
+  });
+
+  it("closes the delivery card on dismiss", async () => {
+    renderEditor({ onFilmInstruction: vi.fn() });
+    fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
+    fireEvent.change(screen.getByLabelText("AI 场景指令"), {
+      target: { value: "拉远一点" },
+    });
+    fireEvent.click(screen.getByLabelText("发送指令"));
+    expect(screen.getByTestId("previs-delivery")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("关闭交付报告"));
+    expect(screen.queryByTestId("previs-delivery")).toBeNull();
+  });
+
   it("routes a submitted instruction to the caller", () => {
     // With nothing selected, the target is the shot under the playhead — the
     // instruction and its target travel together so the (future) executor
