@@ -37,6 +37,7 @@ import {
 } from "./SceneScriptPlaybackContext";
 import { SceneScript3DPreview, type SpeechOverlayLine } from "./SceneScript3DPreview";
 import { ShotPreviewCard } from "./ShotPreviewCard.tsx";
+import { SceneObjectList } from "./SceneObjectList.tsx";
 import { PrevisFilmStage } from "./PrevisFilmStage.tsx";
 import { PrevisDeliveryOverlay } from "./PrevisDeliveryOverlay.tsx";
 import { Scene3DPillRow } from "./Scene3DPillRow.tsx";
@@ -1349,6 +1350,13 @@ function SceneScript3DEditorContent({
         </>
       )}
       <aside className="scene-script-3d-editor__inspector">
+        {/* 项目资产列表（图1 右侧面板）：先把场景里有什么摆出来，再编辑选中的
+            那一个。没有它，检查器是一条死路——必须靠肉眼在视口里找对象。 */}
+        <SceneObjectList
+          sceneScript={sceneScript}
+          selected={selectedObject}
+          onSelect={(ref) => setSelectedObject(ref)}
+        />
         <SceneScriptEditPanel
           sceneScript={sceneScript}
           selectedObject={selectedObject}

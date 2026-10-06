@@ -63,6 +63,100 @@
   border-radius: 8px;
 }
 
+/* 项目资产列表（图1 右侧）：紧凑、可扫读；选中行高亮，与视口/检查器同一
+   selectedObject，所以三处不会各说各话。 */
+.scene-object-list {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.scene-object-list__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.scene-object-list__icon {
+  font-size: 11px;
+}
+
+.scene-object-list__title {
+  flex: 1;
+  color: #cfd6e4;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scene-object-list__count {
+  color: #6f7789;
+  font-size: 10px;
+}
+
+.scene-object-list__items {
+  margin: 0;
+  padding: 0;
+  max-height: 168px;
+  overflow-y: auto;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scene-object-list__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #8a93a6;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scene-object-list__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #dfe4ee;
+}
+
+.scene-object-list__item[data-selected="true"] {
+  border-color: rgba(255, 233, 168, 0.55);
+  background: rgba(47, 127, 181, 0.28);
+  color: #ffe9a8;
+}
+
+.scene-object-list__item-icon {
+  flex: none;
+  font-size: 10px;
+}
+
+.scene-object-list__item-kind {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 9px;
+}
+
+.scene-object-list__item-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-object-list__empty {
+  margin: 0;
+  color: #6f7789;
+  font-size: 11px;
+}
+
 .scene-script-3d-editor__panel-header {
   display: flex;
   align-items: baseline;

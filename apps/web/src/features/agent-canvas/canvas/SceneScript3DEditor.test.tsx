@@ -286,6 +286,18 @@ describe("SceneScript3DEditor dual view modes", () => {
     expect(screen.getByTestId("scene-3d-pill-scene-script-3d-director")).toBeTruthy();
   });
 
+  it("selects an object from the project-asset list and shows its fields", () => {
+    // Without the list, the inspector is a dead end: an author must find the
+    // object in the viewport by eye before any field becomes editable.
+    renderEditor({});
+    const rows = screen.getAllByTestId("scene-object-list-item");
+    const prop = rows.find((row) => row.textContent?.includes("crate1"));
+    fireEvent.click(prop!);
+    expect(screen.getByTestId("scene-object-list").textContent).toContain("项目资产");
+    // The inspector now shows that object's fields, not the empty prompt.
+    expect(screen.queryByText("在 3D 视口中点击角色、道具或相机进行编辑。")).toBeNull();
+  });
+
   it("keeps the pills in scene-editing mode only, where their targets live", () => {
     renderEditor({});
     fireEvent.click(screen.getByRole("button", { name: "成片预演" }));
