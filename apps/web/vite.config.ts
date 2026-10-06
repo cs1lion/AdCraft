@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import type { IncomingMessage } from "node:http";
@@ -56,6 +58,13 @@ export default defineConfig({
   plugins: [react(), configureAgentIconCache(), agentRoleRetryPlugin()],
   build: {
     rollupOptions: {
+      // The render harness is a second entry: a standalone page a headless
+      // browser loads to produce the animatic frames. Keeping it out of the
+      // app bundle is what lets the renderer run without a dev server.
+      input: {
+        main: resolve(__dirname, "index.html"),
+        render: resolve(__dirname, "render.html"),
+      },
       output: {
         manualChunks(id) {
           if (id.includes("vite/preload-helper")) {

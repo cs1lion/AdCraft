@@ -63,6 +63,12 @@ import type {
 } from "../../../types/scene-script";
 import { PLACEHOLDER_ASSET_COLOR } from "../../../types/scene-script.generated";
 import { assetGeometryFor, unimplementedKinds } from "./sceneScriptGeometry";
+import {
+  CHARACTER_SKIN_COLOR,
+  characterRig,
+  DEFAULT_CHARACTER_COLOR,
+  type CharacterSegment,
+} from "./lowPolyHumanRig";
 import { objectLodTier } from "./sceneFidelity";
 import {
   sceneToThreePosition,
@@ -152,6 +158,19 @@ function interpolateCameraKeyframes(
 // Low-poly Human
 // ---------------------------------------------------------------------------
 
+/** The geometry one rig segment renders with, at the segment's own scale. */
+function SegmentGeometry({ segment }: { segment: CharacterSegment }) {
+  if (segment.geometry.kind === "box") return <BoxGeometry args={segment.geometry.size} />;
+  if (segment.geometry.kind === "cylinder") {
+    return (
+      <CylinderGeometry
+        args={[segment.geometry.radius, segment.geometry.radius, segment.geometry.depth, 8]}
+      />
+    );
+  }
+  return <SphereGeometry args={[segment.geometry.radius, 8, 8]} />;
+}
+
 function LowPolyHuman({
   character,
   frame,
@@ -165,11 +184,19 @@ function LowPolyHuman({
   frameRate: number;
   handlers: EditHandlers;
 }) {
-  const color = character.appearance.color ?? "#8B4513";
-  const height = character.appearance.height ?? 1.7;
-  const scale = character.appearance.scale ?? 1.0;
-  const bodyHeight = height * 0.55 * scale;
-  const headRadius = height * 0.18 * scale;
+  const color = character.appearance.color ?? DEFAULT_CHARACTER_COLOR;
+  // The body is the rig the Blender converter emits — seven segments at the
+  // converter's own proportions of `height`, not a box with a sphere on top.
+  // A box character in the preview and a leg-having character in the render
+  // is the disagreement this closes (docs/plans/threejs-renderer-replacement
+  // .md §3.6): after the renderer swap, the preview IS the render.
+  const rig = useMemo(() => characterRig(character.appearance), [character.appearance]);
+  const { height, headY, headRadius } = rig;
+  // The head is a rig segment like any other, except that a gesture keyframe
+  // tilts it: it renders inside its own group so the tilt cannot drag the
+  // torso, the mouth or the label with it.
+  const head = rig.segments.find((segment) => segment.part === "head")!;
+  const bodySegments = rig.segments.filter((segment) => segment.part !== "head");
 
   const ref = useMemo<SceneObjectRef>(() => ({ kind: "character", id: character.id }), [character.id]);
   const interpolated = useMemo(() => {
@@ -191,28 +218,39 @@ function LowPolyHuman({
   const activeLine = activeDialogueLineAtFrame(dialogueLines, character.id, frame, frameRate);
   return (
     <Group position={threePosition} rotation={[0, interpolated.rotationY, 0]}>
-      {/* Body */}
-      <Mesh position={[0, bodyHeight / 2, 0]} castShadow>
-        <BoxGeometry args={[height * 0.35 * scale, bodyHeight, height * 0.35 * scale]} />
-        <MeshStandardMaterial
-          color={color}
-          emissive={handlers.selected ? "#FFD166" : "#000000"}
-          emissiveIntensity={handlers.selected ? 0.35 : 0}
-        />
-      </Mesh>
-      {/* Head: a gesture keyframe tilts the whole head group forward ~15 deg */}
-      <Group rotation={[headTilt, 0, 0]} position={[0, bodyHeight + headRadius * 0.8, 0]}
+      {/* Body: the converter's segments. The whole figure highlights when
+          selected — a highlight that stopped at the torso would leave the
+          author selecting legs that do not answer. */}
+      {bodySegments.map((segment) => (
+        <Mesh key={segment.part} position={segment.position} castShadow>
+          <SegmentGeometry segment={segment} />
+          <MeshStandardMaterial
+            color={segment.paint === "skin" ? CHARACTER_SKIN_COLOR : color}
+            emissive={handlers.selected ? "#FFD166" : "#000000"}
+            emissiveIntensity={handlers.selected ? 0.35 : 0}
+          />
+        </Mesh>
+      ))}
+      {/* Head: a gesture keyframe tilts the whole head group forward ~15 deg.
+          The segment's own position is the head centre, which this group
+          carries, so the mesh sits at its group's origin. */}
+      <Group rotation={[headTilt, 0, 0]} position={[0, headY, 0]}
         data-gesturing={isGesturing ? "true" : "false"}>
         <Mesh castShadow>
-          <SphereGeometry args={[headRadius, 8, 8]} />
-          <MeshStandardMaterial color="#E8D5C4" />
+          <SegmentGeometry segment={head} />
+          <MeshStandardMaterial
+            color={CHARACTER_SKIN_COLOR}
+            emissive={handlers.selected ? "#FFD166" : "#000000"}
+            emissiveIntensity={handlers.selected ? 0.35 : 0}
+          />
         </Mesh>
       </Group>
       {/* Mouth: opens on the talk keyframes the dialogue pipeline wrote.
           Deterministic from the frame (no animation loop) so the preview,
-          the inspector and the Blender render agree. */}
+          the inspector and the Blender render agree. Anchored to the head
+          exactly as before: just below the head centre, forward of the face. */}
       <Mesh
-        position={[0, bodyHeight + headRadius * 0.62, headRadius * 0.82]}
+        position={[0, headY - headRadius * 0.18, headRadius * 0.82]}
         data-testid={`character-mouth-${character.id}`}
         data-speaking={isSpeaking ? "true" : "false"}
       >
@@ -223,28 +261,28 @@ function LowPolyHuman({
           DOM (not troika text): the viewport already loads three.js and drei,
           and a canvas-texture sprite would cost a texture upload per line. */}
       {activeLine && (
-        <Html position={[0, bodyHeight + headRadius * 2.6, 0]} center distanceFactor={10}>
+        <Html position={[0, headY + headRadius * 1.8, 0]} center distanceFactor={10}>
           <div className="scene-script-speech-overlay" data-testid={`speech-overlay-${character.id}`}>
             {activeLine.text}
           </div>
         </Html>
       )}
       {/* ID label (small cone on top) */}
-      <Mesh position={[0, bodyHeight + headRadius * 2 + 0.1, 0]}>
+      <Mesh position={[0, headY + headRadius * 1.2 + 0.1, 0]}>
         <ConeGeometry args={[0.08, 0.15, 4]} />
         <MeshStandardMaterial color={color} emissive={color} emissiveIntensity={0.3} />
       </Mesh>
-      {/* Grab proxy: body/head meshes are small targets, so edit mode adds a
+      {/* Grab proxy: the segment meshes are small targets, so edit mode adds a
           transparent cylinder covering the whole silhouette. (Invisible meshes
           are NOT raycast by three.js — hence opacity 0, not visible={false}.) */}
       {handlers.editMode && (
         <Mesh
-          position={[0, height * 0.5 * scale, 0]}
+          position={[0, height * 0.5, 0]}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlers.onDragEnd}
         >
-          <CylinderGeometry args={[height * 0.3 * scale, height * 0.3 * scale, height * scale, 8]} />
+          <CylinderGeometry args={[height * 0.3, height * 0.3, height, 8]} />
           <MeshBasicMaterial transparent opacity={0} depthWrite={false} />
         </Mesh>
       )}
@@ -853,6 +891,12 @@ export interface SceneScript3DPreviewProps {
   height?: number;
   /** Interactive editing mode (3D director workbench). Read-only when false. */
   editMode?: boolean;
+  /**
+   * Keep the drawing buffer readable after compositing, so a caller can read
+   * pixels OUTSIDE the render callback. Required by the headless render path;
+   * off by default because it costs a buffer copy per frame.
+   */
+  captureFrames?: boolean;
   selectedObject?: SceneObjectRef | null;
   onSelect?: (ref: SceneObjectRef | null) => void;
   /** Live drag updates: local preview state only. */
@@ -882,6 +926,13 @@ export interface SceneScript3DPreviewProps {
    * keyframes the lip-sync wrote).
    */
   dialogueLines?: readonly SpeechOverlayLine[];
+  /**
+   * Extra scene content rendered INSIDE the preview's canvas, after the scene
+   * itself. Same contract as the canvas' own children: the elements live in
+   * the scene graph and can read `useThree`/`useFrame`. Used by the browser
+   * test harness to count what the character actually drew.
+   */
+  children?: ReactNode;
 }
 
 /** One dialogue line as the live overlay consumes it. */
@@ -910,6 +961,8 @@ export function SceneScript3DPreview({
   onPlacementCancel,
   onGestureCommit,
   onGestureCancel,
+  captureFrames = false,
+  children,
 }: SceneScript3DPreviewProps) {
   const { currentFrame, isPlaying, totalFrames, toggle, seekToFrame, pause } =
     useSceneScriptPlayback();
@@ -1001,6 +1054,7 @@ export function SceneScript3DPreview({
     >
       <Canvas
         shadows
+        captureFrames={captureFrames}
         camera={{ position: [8, -12, 6], fov: 50 }}
         style={{ width: "100%", height: "100%" }}
         onPointerMissed={() => {
@@ -1191,6 +1245,9 @@ export function SceneScript3DPreview({
                   maxDistance={30}
                   maxPolarAngle={Math.PI / 2 - 0.1}
                 />
+
+                {/* Caller-supplied scene content (test probes, future overlays). */}
+                {children}
               </>
             );
           }}
