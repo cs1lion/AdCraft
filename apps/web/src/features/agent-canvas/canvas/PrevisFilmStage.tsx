@@ -1,17 +1,22 @@
 /**
  * PrevisFilmStage — the 成片预演 viewport.
  *
- * The reference framework's film mode plays ONE continuous reel: the shots in
- * order, each as its published previs clip, so the author watches pacing
- * rather than a 3D editor. Until now this viewport showed the live 3D preview
- * widened, which is a different thing — one is a scrub-able scene, the other
- * is the film.
+ * The reference framework's film mode plays ONE continuous reel laid out on a
+ * real time axis: the shots in order, each as its published previs clip, so the
+ * author watches pacing rather than a 3D editor. Until now this viewport showed
+ * the live 3D preview widened, which is a different thing — one is a scrub-able
+ * scene, the other is the film.
  *
- * Honest about the data model: the "film" is the ordered list of clips
- * published from this scene's shots (`published_previs_clips`), NOT a single
- * pre-assembled video. So the stage is a sequence player — it plays one clip,
- * then the next — and it names the shots that have no clip yet instead of
- * silently skipping them.
+ * The time axis is the TIMELINE's video track, not an evenly spaced list of
+ * shots. The two disagree, and disagreeing in a specific direction: a shot
+ * published out of order is placed by the timeline at its shot's start, so the
+ * reel reads in play order regardless of publish order. Reading the track (as
+ * opposed to recomputing positions from the shots) also means what the author
+ * sees here is what the Editing node will assemble — one source of truth, the
+ * same one the timeline panel uses.
+ *
+ * Missing shots stay visible as gaps on the axis rather than being dropped:
+ * "three of five shots have footage" is information, not a blemish to hide.
  *
  * The stage resolves its own clip URLs from the project asset list. That is a
  * fetch the rest of the 3D panel does not need, so keeping it here means the
@@ -23,11 +28,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SceneCamera, SceneShot } from "../../../types/scene-script";
 import type { PublishedPrevisClipEntryV2 } from "../../../types-v2.ts";
 import { useAgentCanvasAssets } from "../assets/useAgentCanvasAssets.ts";
+import { getTimeline } from "../timeline/timelineApi.ts";
+import type { TimelineClipV1 } from "../timeline/timelineTypes.ts";
 import { mediaAssetContentPath } from "../../../workflow/mediaPreview.ts";
 import { cameraLabel } from "./shotLabels.ts";
 
+/** Pixels per second on the reel's time axis — the timeline panel's own scale,
+ *  so a shot that is 3s wide here is 3s wide there. */
+const PIXELS_PER_SECOND = 40;
+
 export interface PrevisFilmStageProps {
-  /** Owning workflow, used to resolve clip asset URLs. */
+  /** Owning workflow, used to resolve clip asset URLs and read the timeline. */
   workflowId: string | null;
   /** The scene's shots, in timeline order. */
   shots: readonly SceneShot[];
@@ -35,6 +46,8 @@ export interface PrevisFilmStageProps {
   cameras: readonly SceneCamera[];
   /** Clips published from those shots. */
   clips: readonly PublishedPrevisClipEntryV2[];
+  /** The scene's frame rate, for placing shots the timeline has no clip for. */
+  frameRate: number;
   /**
    * Seek the SceneScript playhead into a shot, so the 3D view underneath stays
    * on the same cut the reel is showing.
@@ -49,6 +62,44 @@ interface ReelEntry {
   url: string | null;
   /** True when the lineage exists but the bytes are still resolving. */
   resolving: boolean;
+  /**
+   * Where this shot sits on the reel, in seconds. The timeline's video-track
+   * clip position when the shot has one; otherwise the shot's own start, so a
+   * gap still occupies its real place on the axis.
+   */
+  startSeconds: number;
+  /** The timeline clip backing this shot, when it reached the track. */
+  timelineClip: TimelineClipV1 | null;
+}
+
+/** Read the timeline's video track. Null on any failure: the stage can still
+ *  play from the published clips, it just loses the assembled positions. */
+function useVideoTrack(workflowId: string | null): TimelineClipV1[] | null {
+  const [clips, setClips] = useState<TimelineClipV1[] | null>(null);
+
+  useEffect(() => {
+    if (!workflowId) {
+      setClips(null);
+      return;
+    }
+    let cancelled = false;
+    getTimeline(workflowId)
+      .then((timeline) => {
+        if (cancelled) return;
+        const track = timeline.tracks.find((item) => item.type === "video");
+        setClips(track ? [...track.clips] : []);
+      })
+      .catch(() => {
+        // A missing or unreadable timeline must not blank the reel: the clips
+        // are still playable, we just fall back to shot order.
+        if (!cancelled) setClips(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowId]);
+
+  return clips;
 }
 
 export function PrevisFilmStage({
@@ -56,11 +107,13 @@ export function PrevisFilmStage({
   shots,
   cameras,
   clips,
+  frameRate,
   onSeekFrame,
 }: PrevisFilmStageProps) {
   const playerRef = useRef<HTMLVideoElement>(null);
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const trackClips = useVideoTrack(workflowId);
 
   const assets = useAgentCanvasAssets({
     // The editor's workflowId is nullable; the hook treats undefined as
@@ -86,7 +139,15 @@ export function PrevisFilmStage({
       const asset = item.projectAsset;
       if (asset) assetById.set(asset.asset_id, mediaAssetContentPath(asset));
     }
-    const cameraById = new Map(cameras.map((camera, position) => [camera.id, { camera, position }]));
+    // The timeline clip for a published shot is found through the lineage the
+    // publisher writes: its clip node is the timeline clip's source node.
+    const clipByNodeId = new Map<string, TimelineClipV1>();
+    for (const clip of trackClips ?? []) {
+      if (clip.source_node_id) clipByNodeId.set(clip.source_node_id, clip);
+    }
+    const cameraById = new Map(
+      cameras.map((camera, position) => [camera.id, { camera, position }]),
+    );
     return [...shots]
       .sort((left, right) => left.start_frame - right.start_frame)
       .map((shot) => {
@@ -97,18 +158,31 @@ export function PrevisFilmStage({
         // borrow another camera's name: that would relabel the cut exactly
         // where the author needs to see something is wrong.
         const label = match ? cameraLabel(match.camera, match.position) : shot.camera;
+        const timelineClip = clip ? clipByNodeId.get(clip.node_id) ?? null : null;
+        const startSeconds = timelineClip
+          ? timelineClip.start_time
+          : // No timeline clip yet (not published, or the track could not be
+            // read): fall back to the shot's own start so the axis keeps its
+            // real shape instead of packing everything against zero.
+            shot.start_frame / frameRate;
         return {
           shot,
           label,
           url: url || null,
           resolving: Boolean(clip) && !url,
+          startSeconds,
+          timelineClip,
         };
       });
-  }, [shots, cameras, clipByShotId, assets.items]);
+  }, [shots, cameras, clipByShotId, assets.items, trackClips, frameRate]);
 
   const playableCount = reel.filter((entry) => entry.url).length;
   const safeIndex = Math.min(Math.max(index, 0), Math.max(reel.length - 1, 0));
   const current = reel[safeIndex] ?? null;
+  const totalSeconds = reel.reduce(
+    (max, entry) => Math.max(max, entry.startSeconds + (entry.timelineClip?.duration ?? 0)),
+    0,
+  );
 
   // Keep the 3D preview underneath on the same cut as the reel. Seeking only
   // when the cut changes — not on every parent render — so dragging the reel
@@ -224,16 +298,33 @@ export function PrevisFilmStage({
         </div>
       </div>
 
-      {/* The reel strip: every shot, its clip state at a glance. Missing clips
-          stay visible as gaps rather than being dropped, so "three of five
-          shots have footage" is readable without counting. */}
-      <ol className="previs-film__reel" data-testid="previs-film-reel">
+      {/* The reel is a TIME AXIS, not an evenly spaced list: each shot's width
+          and offset come from the timeline, so what the author reads here is
+          what the Editing node will assemble. Missing shots keep their place on
+          the axis as empty gaps rather than being packed out. */}
+      <ol
+        className="previs-film__reel previs-film__reel--timeline"
+        data-testid="previs-film-reel"
+        data-total-seconds={totalSeconds.toFixed(2)}
+        style={{ width: Math.max(totalSeconds * PIXELS_PER_SECOND, 240) }}
+      >
         {reel.map((entry, position) => (
           <li
             key={entry.shot.id}
             className="previs-film__reel-item"
             data-active={position === safeIndex ? "true" : "false"}
             data-has-clip={entry.url ? "true" : "false"}
+            data-on-timeline={entry.timelineClip ? "true" : "false"}
+            style={{
+              position: "absolute",
+              left: entry.startSeconds * PIXELS_PER_SECOND,
+              // The timeline knows the real width; a shot without one keeps a
+              // one-frame sliver rather than disappearing.
+              width: Math.max(
+                (entry.timelineClip?.duration ?? 0) * PIXELS_PER_SECOND,
+                6,
+              ),
+            }}
           >
             <button
               type="button"
@@ -243,6 +334,7 @@ export function PrevisFilmStage({
               }}
               aria-label={`跳到 ${entry.label}`}
               aria-current={position === safeIndex}
+              title={`${entry.label} · ${entry.startSeconds.toFixed(1)}s`}
             >
               <span className="previs-film__reel-label">{entry.label}</span>
               <span className="previs-film__reel-state">

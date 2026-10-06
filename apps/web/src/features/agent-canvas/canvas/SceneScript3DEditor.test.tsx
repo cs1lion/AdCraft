@@ -89,7 +89,15 @@ function inspectorSpinbuttons(): HTMLInputElement[] {
   return Array.from(panel?.querySelectorAll("input[type=number]") ?? []);
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Restore spies at MODULE level, not per describe. A spy installed by one
+  // suite and restored only by that suite's own afterEach leaks into every
+  // suite that runs after it in the same worker — which is how a director
+  // round-trip test intermittently found no status row at all. (Same shape as
+  // the localStorage leak recorded in the CHANGELOG.)
+  vi.restoreAllMocks();
+});
 
 describe("SceneScript3DEditor dual view modes", () => {
   it("opens in schedule mode with the editing surface present", () => {
@@ -409,10 +417,6 @@ describe("SceneScript3DEditor", () => {
     expect(adopted.scene.name).toBe("gate-applied");
     const status = screen.getByTestId("scene-script-3d-director-status");
     expect(status.textContent).toContain("已过闸门");
-  });
-  // Restore the module-level spy between tests.
-  afterEach(() => {
-    vi.restoreAllMocks();
   });
   it("passes editMode + callbacks to the preview", () => {
     renderEditor();
