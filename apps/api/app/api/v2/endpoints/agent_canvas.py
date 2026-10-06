@@ -2700,7 +2700,10 @@ def publish_previs_clip(
         # ``desired_start_time`` comes from the shot the clip was cut from, so a
         # director publishing shots out of order still gets a timeline that
         # plays in shot order rather than in publish order.
-        runtime.publish_media_to_timeline(
+        #
+        # The method lives on the SCHEDULER, not on this runtime facade — the
+        # publisher hook it reuses is the one the lease path already owns.
+        runtime.scheduler.publish_media_to_timeline(
             published.node,
             desired_start_time=_previs_clip_start_seconds(source_node, request.shot_id),
         )

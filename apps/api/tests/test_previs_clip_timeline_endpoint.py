@@ -113,8 +113,35 @@ class _FakePublisher:
         )()
 
 
+class _RecordingScheduler:
+    """The only place the endpoint may ask for a timeline handoff.
+
+    Deliberately named ``scheduler``: an earlier version of this fake carried
+    ``publish_media_to_timeline`` directly on the runtime, so the endpoint
+    calling the wrong object passed here and 500'd against a real server — the
+    test agreed with the bug.
+    """
+
+    def __init__(self, calls: list[tuple[str, float | None]]) -> None:
+        self._calls = calls
+
+    def publish_media_to_timeline(
+        self,
+        node: CanvasNodeV2,
+        desired_start_time: float | None = None,
+    ) -> bool:
+        self._calls.append((node.node_id, desired_start_time))
+        return True
+
+
 class _RecordingRuntime:
-    """The runtime surface this endpoint touches, recording the timeline call."""
+    """The runtime surface this endpoint touches, recording the timeline call.
+
+    Shaped like the real ``AgentCanvasRuntime`` in the one way that matters:
+    the handoff lives on ``scheduler``, not on the facade. Anything else raises
+    instead of recording, so a regression in WHERE the endpoint reaches for the
+    method fails here rather than in production.
+    """
 
     def __init__(self, node: CanvasNodeV2) -> None:
         self.node = node
@@ -126,10 +153,21 @@ class _RecordingRuntime:
         self.assets = self
         self.publisher = _FakePublisher()
         self.timeline_calls: list[tuple[str, float | None]] = []
+        self.scheduler = _RecordingScheduler(self.timeline_calls)
         # The endpoint projects its response out of a workflow it re-reads after
         # the publish; that read must contain the new clip node, or a request
         # that actually succeeded is reported as a 404.
         self.projected_workflow: AgentCanvasWorkflowV2 | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        # The real runtime facade has no publish_media_to_timeline. Reaching for
+        # one here is the exact bug that shipped, so make it loud.
+        if "publish_media_to_timeline" in name:
+            raise AssertionError(
+                "the endpoint must call scheduler.publish_media_to_timeline, "
+                "not a method on the runtime facade"
+            )
+        raise AttributeError(name)
 
     # --- an asset service surface the publisher constructor is handed -------
     def resolve_asset_path(self, asset_id: str) -> Any:
@@ -159,15 +197,6 @@ class _RecordingRuntime:
 
     def validate(self, **_: Any) -> None:
         return None
-
-    # --- the seam under test -------------------------------------------------
-    def publish_media_to_timeline(
-        self,
-        node: CanvasNodeV2,
-        desired_start_time: float | None = None,
-    ) -> bool:
-        self.timeline_calls.append((node.node_id, desired_start_time))
-        return True
 
 
 def _source_node() -> CanvasNodeV2:
