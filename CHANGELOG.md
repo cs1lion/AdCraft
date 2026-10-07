@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 预演构图工具：渲完看图，而不是看测试数
+
+- **动机**：相机修好之后第一次真看 `jinghai_scenescript.json` 的 720 帧，发现四个镜头几乎每一帧都被前景几何占满——而这件事此前**没有任何人能发现**，因为相机坏着的时候没有人看得到画面。要改构图就需要一个"渲完看图"的闭环，否则只能靠猜。
+- **`apps/api/scripts/previs_camera_sightlines.py`**：算出每个镜头"相机→look_at"这条线上站着什么。每个资产按前端几何表折算成竖直圆柱，逐段求最近距离。对着 `jinghai_scenescript.json` 跑出来：
+  - `shot_moon_wide` 开场：`helium_tower_a` 在 15.6m 处**挡死**
+  - `shot_airlock_run` 起止：相机**在 `landing_pad` 内部**（`platform` scale 5 = 25×2×25 的板，z 跨 1..3，相机 z=1.6）
+  - `shot_firefight` 收尾：`dropship_queqiao` 在 9.2m 处挡死
+  - `shot_dropship` 开场：`landing_pad` 在 4.7m 处挡死
+- **已知局限，写在脚本里而不是藏起来**：圆柱模型对 `wall` / `platform` 这类板状物只是近似；第一版把 `wall` 当成 25m 高的柱子，报告它挡住了两个镜头——那是**错的**（`wall` 实际是 30×25×1.5 的板），会让人去躲一个根本不存在的墙。把板当柱子造出的假遮挡比漏报真遮挡更糟。`fence` 是一排柱子不是圆盘，按展开半径建模会让它挡住每一个镜头，所以按柱体建模并在注释里声明"这个测试不会报告穿过视野的围栏"。
+- **`apps/api/scripts/previs_compose_check.py`**：经 API 渲一遍，从**交付的 MP4**（不是帧目录）采样每个镜头的首尾帧，拼成 contact sheet，并量角色占画面的百分比。最后那个数字是构图唯一可量化的指标——一个角色只占 0.3% 像素的"广角"其实是广角拍了一根柱子。
+- **用它改出来的东西**：`test-materials/jinghai_recomposed.json`。四镜视线全部 clear（剩下的 graze 只有 `hanxiao` 与 `airlock_gate`，正是镜头该拍的东西）。但真正让画面成立的不是机位，是**尺度**：`pillar` scale 4.5 是 19m 高、`wall` scale 5 是 30×25m 的大板、`platform` scale 5 是 25×25m 的甲板——人形只有 1.85m，所以塔是人的十倍。**这些数字从来没有被校验过，因为没有人看得见。** 把环境尺度拉回人形相对范围并重写机位之后，渲染出来的基地终于是基地、人是人。
+- **顺带记录一个渲染器之外的事实**：`dropship_queqiao` 在全部 720 帧里静止在 `[5,-3,6]`——第四镜的描述是"鹊桥号穿梭机掠过基地上空"，而 `SceneProp` 没有 keyframes，所以它飞不起来。这不是渲染器的问题，是同事那份 prop-keyframes 计划要解决的那一项。
+
 ### Fixed — `/api/v1/scene-3d/render` 从不理会渲染器开关：产品路径与这个端点用的是两台渲染器
 
 - **动机**：为验证"预演真的能出片"而在真实 API 上跑了一次渲染，发现开关只接了一半。
