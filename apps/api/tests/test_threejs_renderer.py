@@ -198,6 +198,18 @@ class TestContract:
         threejs_renderer.render_scene_script_threejs(_script(), "out", timeout_seconds=60)
         assert "--control-depth" not in commands[0]
 
+    def test_accepts_a_blender_executable_override_without_complaining(self, calls):
+        # The seam's claim is that both renderers are interchangeable, so their
+        # signatures must match. `/api/v1/scene-3d/render` was switched to
+        # resolve its renderer instead of importing the Blender one, and passed
+        # `executable=` unconditionally — which raised TypeError and surfaced as
+        # a bare HTTP 500. Verified on the real API before it was fixed.
+        result = threejs_renderer.render_scene_script_threejs(
+            _script(), "out", timeout_seconds=60, executable=r"D:\blender\blender.exe"
+        )
+        assert result.success is False  # the fixture run writes no frames
+        assert "TypeError" not in (result.error or "")
+
     def test_scene_script_travels_as_a_temp_file_not_a_command_line(self, calls):
         # A real scene is tens of kilobytes; Windows caps the command line well
         # below that, and a truncated script would render a different scene.

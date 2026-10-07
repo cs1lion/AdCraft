@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `/api/v1/scene-3d/render` 从不理会渲染器开关：产品路径与这个端点用的是两台渲染器
+
+- **动机**：为验证"预演真的能出片"而在真实 API 上跑了一次渲染，发现开关只接了一半。
+- **问题**：`agent_canvas_node_execution` 通过 `resolve_scene3d_renderer` 取渲染器，而 `/api/v1/scene-3d/render` 直接 `from ... import render_scene_script`。于是 `SCENE3D_RENDERER_BACKEND=threejs` 时：**节点执行走 three.js，这个端点仍然只找 Blender**，在没装 Blender 的机器上直接返回 `"Blender not available: Blender executable not found: blender"`——而渲染器其实就绪。`/scene-3d/capability` 同样无条件探测 Blender，操作者读到"Blender 不可用"会得出"哪一半坏了"的错误结论。
+- **改动**：
+  - `render_scene` 改为经 `resolve_scene3d_renderer` / `resolve_scene3d_capability_probe` 取渲染器，与节点执行同一来源；不再 import `render_scene_script`。逐请求的 `blender_executable` 覆盖仍直接指名 Blender，此时探针也一并钉到 Blender，不让两半对不上。
+  - `/scene-3d/capability` 改为探测配置所选的那台渲染器。
+  - 错误文案从"Blender not available"改为"Renderer not available"——文案里点名一个可能根本没在跑的渲染器，正是这类半接线最会误导人的地方。
+- **连带发现（同一个缝的第二层）**：切过去之后第一次真跑就 500 了——`render_scene_script_threejs() got an unexpected keyword argument 'executable'`。docstring 一直声称"drop-in：same arguments"，但签名并不相同（`executable` 是 Blender 独有），而 seam 两侧从没有真的互相调用过。现在补上该参数（接受并忽略，同时用 INFO 记录被忽略的理由——开关才是渲染器的唯一真相，静默接受一个过期覆盖号正是这条缝要防的事）。
+- **测试**：`test_accepts_a_blender_executable_override_without_complaining`。变异复验：从签名移除该参数 → 5 failed（其余用例也一并被签名 TypeError 打断，这本身就说明 seam 两侧此前从未互相验证过）；还原 → 12 passed。
+- **真机（经 API，非 CLI）**：`jinghai_scenescript.json`（4 镜 / 720 帧 / 24s）→ `success=True`、`frame_count=720`、`blender_version=None`（确实没有 Blender 跑过）、71.1 秒。产物用 ffprobe 独立复核：h264 / 1264x540 / 721 帧 / duration=24.033s（正是该场景的 24.0 秒）。每镜 5 张关键帧**落盘核对**（不是只信返回的列表）：`[0,60,119,178,238]` / `[240,284,329,374,418]` / `[420,464,509,554,598]` / `[600,630,659,688,718]`，4 镜共 20/20 文件存在。
+- **验证**：ruff 我改的两个文件全净（全仓 1 个既有 F401 在 `test_scene3d_llm_json_salvage.py`，非我所改）；scene3d 相关 83 passed。
+
 ### Fixed — 视口相机：补上"轴"与"朝向"两层，并让交付帧不再带编辑辅助物
 
 合并 `fix/preview-shot-camera`（相机 + `--root` + `include_control_passes`）时的复核结论。前两个提交修好了根因（`camera` prop 只在挂载时被读一次），但漏了两层，且它们自己的规格抓不到——因为那条规格的断言全是**相对**的（"动过"/"不是种子值"/"超过三个不同位置"/"切镜时距离 > 0.5"），一台被镜像摆放且没有朝向的相机四条全过。

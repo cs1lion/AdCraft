@@ -25,14 +25,20 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel, Field
 
 from app.schemas.scene_script import SceneScriptRoot
+from app.core.config import get_settings
 from app.services.scene3d.speech_orchestration import SpeechSegment
 from app.services.scene3d.transition_proposals import (
     audit_declared_intent,
     propose_transitions,
 )
-from app.services.scene3d.blender_renderer import (
-    get_blender_capability,
-    render_scene_script,
+# `render_scene_script` is deliberately NOT imported here: the renderer comes
+# from `resolve_scene3d_renderer` so this endpoint cannot pick a different one
+# than the node executor does. Only the per-request executable override still
+# names Blender directly, and it pins the probe to match.
+from app.services.scene3d.blender_renderer import get_blender_capability
+from app.services.scene3d.threejs_renderer import (
+    resolve_scene3d_capability_probe,
+    resolve_scene3d_renderer,
 )
 from app.services.scene3d.encoder import encode_png_sequence, mux_audio_to_video
 from app.services.scene3d.keyframes import extract_keyframes, keyframe_manifest
@@ -268,8 +274,15 @@ def _validate_scene_script(data: dict[str, Any]) -> SceneScriptRoot:
 
 @router.get("/capability", response_model=CapabilityResponse)
 async def get_capability() -> CapabilityResponse:
-    """Query Blender renderer availability and version."""
-    cap = get_blender_capability()
+    """Query renderer availability and version.
+
+    Probes the renderer the CONFIGURATION selects, not Blender unconditionally.
+    Probing Blender here while the render below used three.js is how an operator
+    reads "Blender executable not found" on a machine where the renderer that
+    would actually run is installed and ready — and concludes the wrong thing
+    about which half is broken.
+    """
+    cap = resolve_scene3d_capability_probe(get_settings())()
     return CapabilityResponse(
         state=cap.state,
         version=cap.version,
@@ -329,8 +342,21 @@ def _run_render_pipeline(
 ) -> dict[str, Any]:
     """Execute the blocking Blender render + encode + keyframe pipeline."""
 
-    # Check capability first
-    cap = get_blender_capability(blender_executable)
+    # The renderer comes from the configuration, so this endpoint and the node
+    # executor cannot disagree about which one is in use. They used to: the node
+    # executor resolved `scene3d_renderer_backend` while this endpoint imported
+    # `render_scene_script` directly, so with `SCENE3D_RENDERER_BACKEND=threejs`
+    # the product path rendered in three.js and this endpoint answered "Blender
+    # not available" — a switch that was half-wired, and the kind of half-wiring
+    # that reads as "the feature is broken" rather than "one call site missed".
+    settings = get_settings()
+    capability_probe = resolve_scene3d_capability_probe(settings)
+    renderer = resolve_scene3d_renderer(settings)
+
+    # Check capability first. A per-request `blender_executable` override only
+    # means anything to the Blender renderer, so it pins the probe to Blender too
+    # rather than leaving the two halves disagreeing about the executable.
+    cap = get_blender_capability(blender_executable) if blender_executable else capability_probe()
     if cap.state == "unsupported":
         return {
             "success": False,
@@ -342,7 +368,7 @@ def _run_render_pipeline(
             "keyframes": [],
             "duration_seconds": 0.0,
             "blender_version": None,
-            "error": f"Blender not available: {cap.error}",
+            "error": f"Renderer not available: {cap.error}",
         }
 
     # Create output directory
@@ -350,8 +376,10 @@ def _run_render_pipeline(
     frames_dir = os.path.join(output_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
 
-    # Render PNG frames
-    render_result = render_scene_script(
+    # Render PNG frames. `executable` is passed only for the Blender renderer,
+    # which is the only one that takes it; the three.js renderer shares the
+    # signature and ignores it.
+    render_result = renderer(
         scene_script,
         frames_dir,
         executable=blender_executable,

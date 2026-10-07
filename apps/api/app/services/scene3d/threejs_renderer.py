@@ -37,6 +37,7 @@ Two measured facts worth keeping in mind before editing this file:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -72,6 +73,8 @@ WEB_ROOT = _WEB_ROOT
 #: unexpected crash and is reported with the exit code attached.
 _DRIVER_FAILURE = 2
 
+LOGGER = logging.getLogger(__name__)
+
 
 def _settings() -> Settings:
     from app.core.config import get_settings
@@ -101,12 +104,22 @@ def render_scene_script_threejs(
     include_control_passes: bool = False,
     width: int | None = None,
     height: int | None = None,
+    executable: str | None = None,
 ) -> RenderResult:
     """Render ``scene_script`` to ``frame_<NNNN>.png`` files in ``output_dir``.
 
-    Drop-in for ``render_scene_script``: same arguments, same result type. See
-    the module docstring for why it spawns Node rather than replacing the
-    orchestration.
+    Drop-in for ``render_scene_script``: same result type, and — as of the
+    ``executable`` parameter — the same signature too. See the module docstring
+    for why it spawns Node rather than replacing the orchestration.
+
+    ``executable`` is accepted and ignored. It names a Blender binary, which
+    means nothing here; it exists so a call site can pass one renderer or the
+    other without branching on which one it got. It was missing when
+    ``/api/v1/scene-3d/render`` was switched over to resolve its renderer
+    instead of importing the Blender one, and the resulting ``TypeError``
+    surfaced as a bare HTTP 500 with the real cause only in the server log —
+    which is the same "mechanism exists but does not fit" shape as the camera
+    prop that only ever seeded the viewport.
     """
 
     import time
@@ -149,6 +162,18 @@ def render_scene_script_threejs(
         # files at all while a hand-run CLI did — the parameter was a lie.
         if include_control_passes:
             command.append("--control-depth")
+        if executable:
+            # Not an error: a caller passing a Blender override while the
+            # three.js backend is configured is configuring something else. The
+            # backend switch is the single source of truth for which renderer
+            # runs, so quietly honouring a stale override here would be the
+            # silent-divergence bug this seam exists to prevent. Named so the
+            # reason is in the node error rather than nowhere.
+            LOGGER.info(
+                "three.js renderer ignoring executable=%r: it names a Blender "
+                "binary and SCENE3D_RENDERER_BACKEND selected three.js",
+                executable,
+            )
         if keyframes_only:
             frames = _keyframe_frames(scene_script)
             if not frames:
