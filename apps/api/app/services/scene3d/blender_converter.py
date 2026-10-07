@@ -16,8 +16,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas.scene_script import SceneScriptRoot
-
 from app.services.scene3d.held_items import held_keyframe_positions
+
 # Imported rather than reimplemented: the draft pass must render exactly the
 # frames ``extract_keyframes`` copies and ``control_passes`` aligns to, or a
 # keyframe deliverable would silently miss frames the full pass produces.
@@ -658,6 +658,20 @@ def scene_script_to_blender(
                 rotation_y=env.rotation_y,
                 scale=env.scale,
             ))
+            # A structure that moves: same contract as props.
+            if env.keyframes:
+                lines.append(f"# Environment motion keyframes: {env.id}")
+                lines.append(f'env_obj = bpy.data.objects["{_esc(env.id)}"]')
+                for kf in env.keyframes:
+                    rx, ry, rz = kf.rotation
+                    lines.append(f"# frame {kf.frame}")
+                    lines.append(f"env_obj.location = {_vec(kf.position)}")
+                    lines.append(f"env_obj.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
+                    lines.append(f"env_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
+                    lines.append(f"env_obj.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
+                    if kf.scale is not None and abs(kf.scale - env.scale) > 1e-9:
+                        lines.append(f"env_obj.scale = ({kf.scale!r}, {kf.scale!r}, {kf.scale!r})")
+                        lines.append(f"env_obj.keyframe_insert(data_path='scale', frame={kf.frame + 1})")
         lines.append("")
 
     # Props
@@ -684,6 +698,24 @@ def scene_script_to_blender(
                         lines.append(f"# frame {frame}")
                         lines.append(f"prop_obj.location = {_vec(hand_position)}")
                         lines.append(f"prop_obj.keyframe_insert(data_path='location', frame={frame + 1})")
+            elif prop.keyframes:
+                # Own motion: the prop moves itself. The held branch above is
+                # mutually exclusive (the schema rejects a prop that is both),
+                # so exactly one of these two ever emits keyframes — two
+                # writers on one object is the ambiguity that validation
+                # prevents.
+                lines.append(f"# Prop motion keyframes: {prop.id}")
+                lines.append(f'prop_obj = bpy.data.objects["{_esc(prop.id)}"]')
+                for kf in prop.keyframes:
+                    rx, ry, rz = kf.rotation
+                    lines.append(f"# frame {kf.frame}")
+                    lines.append(f"prop_obj.location = {_vec(kf.position)}")
+                    lines.append(f"prop_obj.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
+                    lines.append(f"prop_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
+                    lines.append(f"prop_obj.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
+                    if kf.scale is not None and abs(kf.scale - prop.scale) > 1e-9:
+                        lines.append(f"prop_obj.scale = ({kf.scale!r}, {kf.scale!r}, {kf.scale!r})")
+                        lines.append(f"prop_obj.keyframe_insert(data_path='scale', frame={kf.frame + 1})")
         lines.append("")
 
     # Characters

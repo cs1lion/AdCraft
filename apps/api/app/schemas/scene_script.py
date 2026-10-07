@@ -12,7 +12,7 @@ See: docs/adr/0005-3d-low-fidelity-previs.md
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,10 +22,23 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 ShotType = Literal["wide", "medium", "closeup", "over_shoulder", "pov"]
 CharacterAction = Literal["stand", "talk", "walk", "sit", "gesture"]
+# Non-human actors. A door that swings open, a wheel that turns and a vehicle
+# that crosses the frame are all "characters" in the only sense that matters to
+# a previs: the scene acts through them. They are authored in `characters[]`
+# rather than `props[]` because a prop is furniture (it has a position and
+# nothing else happens) and these have a motion, which is what
+# `keyframes[].action` drives. The human type stays first and stays the default.
+NonHumanActorAction = Literal["door_swing_open", "spin", "drive", "flyover"]
 SpeechMode = Literal["bound", "free"]
 EnvironmentKind = Literal["indoor", "outdoor", "mixed"]
 LightingPreset = Literal["warm", "cool", "neutral", "dramatic", "soft", "hard"]
-CharacterType = Literal["lowpoly_human"]
+# Open on purpose. The renderers build every prop/environment kind from one
+# table already, so the set of buildable actors is exactly the union of those
+# two enums — enumerating it here would go stale the moment a kind is added,
+# and an unbuildable type already fails loudly as a magenta box reported by
+# `unimplementedKinds`. The closed `Literal["lowpoly_human"]` this replaces is
+# why "put the door in characters and open it" was not expressible at all.
+CharacterType = Literal["lowpoly_human", "door", "crate", "box", "pillar"]
 
 PropType = Literal[
     "round_table",
@@ -181,7 +194,13 @@ class CharacterKeyframe(BaseModel):
     frame: int = Field(ge=0, description="Frame number (0-based)")
     position: list[float] = Field(description="[x, y, z] position in meters")
     rotation_y: float = Field(description="Y-axis rotation in degrees (0=facing +Y)")
-    action: CharacterAction = Field(default="stand", description="Character action at this keyframe")
+    # Human actions first, then the non-human ones. A keyframe on a character
+    # whose `type` is not lowpoly_human must use a non-human action: a door
+    # with action "walk" is authoring noise, and the renderers would each have
+    # to decide what it means. `_validate_actor_actions` rejects it.
+    action: CharacterAction | NonHumanActorAction = Field(
+        default="stand", description="Character action at this keyframe"
+    )
 
     @field_validator("position")
     @classmethod
@@ -227,6 +246,53 @@ class SceneCharacter(BaseModel):
         return {}
 
 
+class PropKeyframe(BaseModel):
+    """A single prop keyframe: where the prop is, at this frame.
+
+    Separate from ``CharacterKeyframe`` even though the fields look alike, for
+    one reason: a character's keyframe carries an ``action`` (a pose name) and
+    a prop's carries a motion delta. Sharing the model would mean either props
+    gaining a meaningless ``action`` or characters losing theirs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    frame: int = Field(ge=0, description="Frame number (0-based)")
+    position: list[float] = Field(description="[x, y, z] position in meters")
+    # Full rotation, not just yaw: a wheel turning and a door swinging open both
+    # rotate about a horizontal axis, which `rotation_y` cannot express. Degrees
+    # about [x, y, z], applied at the prop's pivot.
+    rotation: list[float] = Field(
+        default=[0.0, 0.0, 0.0],
+        description="Rotation in degrees about [x, y, z]",
+    )
+    scale: float | None = Field(default=None, gt=0, le=50.0, description="Uniform scale at this frame")
+
+    @field_validator("position")
+    @classmethod
+    def _check_position(cls, v: list[float]) -> list[float]:
+        return _validate_position(v, "position")
+
+    @field_validator("rotation")
+    @classmethod
+    def _check_rotation(cls, v: list[float]) -> list[float]:
+        if len(v) != 3:
+            raise ValueError("rotation must be [x, y, z] degrees")
+        return [float(value) for value in v]
+
+    @field_validator("scale")
+    @classmethod
+    def _check_scale(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if not (0 < v <= 50):
+            raise ValueError(
+                f"scale={v} is outside the realistic range (0, 50]; a keyframe "
+                "scale is a multiplier, so 1 means unchanged"
+            )
+        return v
+
+
 class SceneProp(BaseModel):
     """A movable/interactive prop in the scene."""
 
@@ -238,6 +304,13 @@ class SceneProp(BaseModel):
     position: list[float] = Field(description="[x, y, z] in meters")
     scale: float = Field(default=1.0, gt=0, le=10.0)
     rotation_y: float = Field(default=0.0, description="Y-axis rotation in degrees")
+    # Motion. Empty means the prop is furniture (the pre-existing behaviour,
+    # byte for byte); any keyframe here overrides `position`/`rotation_y` while
+    # that frame is current, which is what makes a wheel turn and a door swing.
+    keyframes: list[PropKeyframe] = Field(
+        default_factory=list,
+        description="Empty = static. Non-empty = the prop moves along these.",
+    )
     # Held items (V0.2 §5 Continuity State): a prop declared held follows its
     # holder's hand across every shot, so the item cannot vanish or switch
     # hands at a cut. The authored position becomes the prop's rest position
@@ -274,6 +347,11 @@ class SceneEnvironmentObject(BaseModel):
     position: list[float] = Field(description="[x, y, z] in meters")
     scale: float = Field(default=1.0, gt=0, le=50.0)
     rotation_y: float = Field(default=0.0, description="Y-axis rotation in degrees")
+    # Same contract as SceneProp.keyframes: empty = still, non-empty = it moves.
+    keyframes: list[PropKeyframe] = Field(
+        default_factory=list,
+        description="Empty = static. Non-empty = the structure moves along these.",
+    )
 
     @field_validator("position")
     @classmethod
@@ -508,6 +586,38 @@ class SceneScriptRoot(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_actor_actions(self) -> SceneScriptRoot:
+        """A character's actions must match the body it declared.
+
+        Fail closed, and for a specific reason: a door authored with
+        ``action: "walk"`` has no legs, and every consumer would have to invent
+        its own meaning for it — the renderer, the pose library, the summary.
+        One validator naming it is the difference between a loud error and two
+        renderers quietly disagreeing about what a door walking looks like.
+
+        The rule is simple: a lowpoly_human may use either family (a human
+        figure sliding along a path is a legitimate move), and anything else may
+        only use the non-human family.
+        """
+        human_actions = set(get_args(CharacterAction))
+        nonhuman_actions = set(get_args(NonHumanActorAction))
+        for character in self.characters:
+            allowed = (
+                human_actions | nonhuman_actions
+                if character.type == "lowpoly_human"
+                else nonhuman_actions
+            )
+            for keyframe in character.keyframes:
+                if keyframe.action not in allowed:
+                    raise ValueError(
+                        f"character '{character.id}' has type "
+                        f"'{character.type}' but keyframe {keyframe.frame} declares "
+                        f"action '{keyframe.action}', which that body cannot perform; "
+                        f"allowed: {sorted(allowed)}"
+                    )
+        return self
+
+    @model_validator(mode="after")
     def _validate_shot_ranges(self) -> SceneScriptRoot:
         """Shots must not overlap and must be within total frame count."""
         if not self.shots:
@@ -552,6 +662,51 @@ class SceneScriptRoot(BaseModel):
                         f"camera '{cam.id}' keyframe at frame {kf.frame} exceeds "
                         f"total frames ({total})"
                     )
+        # Props and environment are checked here too. It used to be that they
+        # had no keyframes at all, so there was nothing to check; now that they
+        # do, an out-of-range keyframe would render as a prop that never moves
+        # (the renderer clamps to the last frame it has) while the script claims
+        # a motion past the end. Same failure, same message, same rule.
+        for prop in self.props:
+            for kf in prop.keyframes:
+                if kf.frame > total:
+                    raise ValueError(
+                        f"prop '{prop.id}' keyframe at frame {kf.frame} exceeds "
+                        f"total frames ({total})"
+                    )
+        for env in self.environment:
+            for kf in env.keyframes:
+                if kf.frame > total:
+                    raise ValueError(
+                        f"environment '{env.id}' keyframe at frame {kf.frame} exceeds "
+                        f"total frames ({total})"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_held_and_keyframed(self) -> SceneScriptRoot:
+        """A held prop may not also be keyframed.
+
+        Two drivers of one prop, and nothing that says which wins. The existing
+        precedent is ``_validate_held_references``: a held item's position is
+        DERIVED from its holder's hand (``held_items.hand_offset``), which is
+        the Continuity State guarantee — the item cannot vanish at a cut or
+        switch hands, because those states are not representable. A keyframe
+        that moves the item away from the hand would make both of those possible
+        again, silently, and the two renderers would have to agree on which
+        source wins.
+
+        Rejected rather than merged: the alternative is picking a precedence
+        rule and documenting it, which is how a prop ends up "usually in the
+        hand" — the exact drift the Continuity State layer exists to prevent.
+        """
+        for prop in self.props:
+            if prop.held_by is not None and prop.keyframes:
+                raise ValueError(
+                    f"prop '{prop.id}' is both held by '{prop.held_by}' and has "
+                    f"{len(prop.keyframes)} keyframes; a held item's position comes "
+                    f"from its holder's hand, so it cannot also be animated"
+                )
         return self
 
     @model_validator(mode="after")

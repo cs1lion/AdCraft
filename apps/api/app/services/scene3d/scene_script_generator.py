@@ -17,13 +17,11 @@ node executor can fail closed with an explicit error.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
 import httpx
 
 from app.core.config import Settings
-from typing import get_args
-
 from app.schemas.scene_script import EnvironmentType, PropType, SceneScriptRoot
 from app.services.scene3d import asset_dimensions
 from app.services.scene3d.parser import parse_llm_output
@@ -84,12 +82,19 @@ The object must follow this shape:
     {{"id": string, "type": "lowpoly_human", \
 "appearance": {{"color": "#RRGGBB", "height": number, "scale": number}}, \
 "keyframes": [{{"frame": int, "position": [x, y, z], "rotation_y": number, \
-"action": "stand" | "walk" | "sit" | "talk" | "gesture"}}]}}
+"action": "stand" | "walk" | "sit" | "talk" | "gesture"}}]}},
+    {{"id": string, "type": "door" | "crate" | "box" | "pillar", \
+"appearance": {{"color": "#RRGGBB"}}, \
+"keyframes": [{{"frame": int, "position": [x, y, z], "rotation_y": number, \
+"action": "door_swing_open" | "spin" | "drive" | "flyover"}}]}}
   ],
   "props": [{{"id": string, "type": {_PROP_TYPES}, "position": [x, y, z], \
-"scale": number, "rotation_y": number}}],
+"scale": number, "rotation_y": number, "keyframes": [{{"frame": int, \
+"position": [x, y, z], "rotation": [rx, ry, rz] in degrees, "scale": number}}]}}],
   "environment": [{{"id": string, "type": {_ENVIRONMENT_TYPES}, \
-"position": [x, y, z], "scale": number, "rotation_y": number}}],
+"position": [x, y, z], "scale": number, "rotation_y": number, "keyframes": [ \
+{{"frame": int, "position": [x, y, z], "rotation": [rx, ry, rz] in degrees, \
+"scale": number}}]}}],
   "cameras": [
     {{"id": string, "shot_type": "wide" | "medium" | "closeup" | \
 "over_shoulder" | "pov", "keyframes": [{{"frame": int, \
@@ -99,6 +104,17 @@ The object must follow this shape:
 "end_frame": int, "description": string}}],
   "speech_bindings": []
 }}
+
+Props and environment objects move the same way: "keyframes" holds those \
+frames and stays empty (or is omitted) for anything that never moves. A prop \
+with keyframes moves along them, and its "position"/"rotation_y" become its \
+rest pose — a keyframe overrides them while that frame is current. Use \
+"rotation", the full [x, y, z] triple in degrees, for anything that turns on \
+its own axis: a wheel turns about a horizontal axis, which "rotation_y" \
+cannot express. A keyframe whose "frame" is past the scene's total frames \
+(round(scene.duration * scene.frame_rate)) is rejected, and so is a prop that \
+is both held_by a character and keyframed — a held item's position comes from \
+that character's hand, so it cannot also be animated.
 
 Hard rules:
 - At least one camera and one shot. The shot's "camera" must equal a camera id.

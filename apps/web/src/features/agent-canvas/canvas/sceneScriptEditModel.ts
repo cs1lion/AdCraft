@@ -266,6 +266,82 @@ export function characterActionAtFrame(
 }
 
 /**
+ * A prop or environment object's state at `frame`.
+ *
+ * Third interpolation of the same rule in the codebase (after
+ * `characterStateAtFrame` here and `held_items._pose_at` on the backend), and
+ * deliberately the same shape: shared keyframes between two frames, clamped
+ * outside their span. They are kept separate rather than unified because a
+ * prop's keyframe carries a full rotation triple and a scale where a
+ * character's carries an `action`, and merging the models would force one to
+ * carry the other's field.
+ *
+ * `keyframes` empty returns null so callers can fall through to the authored
+ * rest pose without special-casing: a prop that has never moved is not a
+ * different code path, it is the same one with no keyframes.
+ */
+export function propStateAtFrame(
+  prop: {
+    position: SceneVec3;
+    rotation_y?: number;
+    scale?: number;
+    keyframes?: readonly {
+      frame: number;
+      position: SceneVec3;
+      rotation?: readonly number[];
+      scale?: number | null;
+    }[];
+  },
+  frame: number,
+): { position: SceneVec3; rotation: [number, number, number]; scale?: number } | null {
+  const keyframes = prop.keyframes;
+  if (!keyframes || keyframes.length === 0) return null;
+
+  const rotationOf = (keyframe: (typeof keyframes)[number]): [number, number, number] => {
+    // A keyframe may state only the axes it changes; the rest fall back to the
+    // authored rest yaw so a partial keyframe is not a teleport to 0.
+    const rotation = keyframe.rotation ?? [0, prop.rotation_y ?? 0, 0];
+    return [rotation[0] ?? 0, rotation[1] ?? 0, rotation[2] ?? 0];
+  };
+  const at = (keyframe: (typeof keyframes)[number]) => ({
+    position: keyframe.position,
+    rotation: rotationOf(keyframe),
+    scale: keyframe.scale ?? prop.scale,
+  });
+
+  const first = keyframes[0];
+  if (keyframes.length === 1 || frame <= first.frame) return at(first);
+  const last = keyframes[keyframes.length - 1];
+  if (frame >= last.frame) return at(last);
+
+  for (let index = 0; index < keyframes.length - 1; index += 1) {
+    const a = keyframes[index];
+    const b = keyframes[index + 1];
+    if (frame >= a.frame && frame <= b.frame) {
+      const t = (frame - a.frame) / (b.frame - a.frame || 1);
+      const from = at(a);
+      const to = at(b);
+      return {
+        position: [
+          from.position[0] + (to.position[0] - from.position[0]) * t,
+          from.position[1] + (to.position[1] - from.position[1]) * t,
+          from.position[2] + (to.position[2] - from.position[2]) * t,
+        ],
+        rotation: [
+          from.rotation[0] + (to.rotation[0] - from.rotation[0]) * t,
+          from.rotation[1] + (to.rotation[1] - from.rotation[1]) * t,
+          from.rotation[2] + (to.rotation[2] - from.rotation[2]) * t,
+        ],
+        scale: from.scale === undefined || to.scale === undefined
+          ? undefined
+          : from.scale + (to.scale - from.scale) * t,
+      };
+    }
+  }
+  return at(first);
+}
+
+/**
  * Add an environment object (or prop) from a palette kind, at a default
  * spiral position so repeated clicks never stack into one spot. The kind is
  * validated against the generated enum lists by the caller (the tray UI);
@@ -975,9 +1051,17 @@ export function sceneObjectPositionAtFrame(
       return character ? characterPositionAtFrame(character, frame) : null;
     }
     case "prop":
-      return script.props.find((candidate) => candidate.id === ref.id)?.position ?? null;
-    case "environment":
-      return script.environment.find((candidate) => candidate.id === ref.id)?.position ?? null;
+    case "environment": {
+      const object = (ref.kind === "prop" ? script.props : script.environment).find(
+        (candidate) => candidate.id === ref.id,
+      );
+      if (!object) return null;
+      // A keyframed prop moves: where it IS at this frame, not where it rests.
+      // Without this the preview showed the rest pose for every frame while
+      // the render (which reads the keyframes) moved — the same class of
+      // disagreement the shot-camera fix closed.
+      return propStateAtFrame(object, frame)?.position ?? object.position;
+    }
     case "camera": {
       const camera = script.cameras.find((candidate) => candidate.id === ref.id);
       if (!camera) return null;
