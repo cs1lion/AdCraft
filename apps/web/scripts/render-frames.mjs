@@ -45,7 +45,14 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import {
+  dirname,
+  extname,
+  join,
+  normalize,
+  resolve,
+} from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const MIME = {
@@ -67,7 +74,13 @@ function arg(name, fallback) {
   return i === -1 ? fallback : process.argv[i + 1];
 }
 
-const WEB_ROOT = resolve(arg("root", "D:/project/myAdCraft/apps/web"));
+// The frontend root this driver renders. Resolved from the DRIVER'S OWN
+// LOCATION, never a hardcoded path: a literal here means an operator on another
+// machine renders a different checkout's frontend and never knows. The API
+// passes `--root` explicitly; this is the fallback for a manual run.
+const HERE = fileURLToPath(import.meta.url);
+const DRIVER_DIR = dirname(HERE); // .../apps/web/scripts
+const WEB_ROOT = arg("root") ? resolve(arg("root")) : dirname(DRIVER_DIR);
 const DIST = join(WEB_ROOT, "dist");
 const SCRIPT = resolve(arg("script"));
 const OUT = resolve(arg("out"));

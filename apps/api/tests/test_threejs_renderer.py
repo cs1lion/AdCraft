@@ -168,6 +168,22 @@ class TestContract:
             _script(), "out", timeout_seconds=60
         ).__class__ is RenderResult
 
+    def test_the_command_carries_the_resolved_frontend_root(self, calls):
+        # The driver's --root used to default to a hardcoded path in one
+        # checkout, so every OTHER checkout rendered that machine's frontend
+        # (or nothing) with no signal. Asserting the flag is present is what
+        # keeps that from coming back silently.
+        commands, _ = calls
+        threejs_renderer.render_scene_script_threejs(_script(), "out", timeout_seconds=60)
+        command = commands[0]
+        assert "--root" in command, "the driver was not told which frontend to render"
+        flag = command.index("--root") + 1
+        root = Path(command[flag])
+        assert root.is_absolute(), f"--root is not absolute: {root}"
+        assert threejs_renderer.RENDER_DRIVER.is_relative_to(root), (
+            f"--root {root} does not contain the driver {threejs_renderer.RENDER_DRIVER}"
+        )
+
     def test_scene_script_travels_as_a_temp_file_not_a_command_line(self, calls):
         # A real scene is tens of kilobytes; Windows caps the command line well
         # below that, and a truncated script would render a different scene.

@@ -135,6 +135,13 @@ def render_scene_script_threejs(
             script_file,
             "--out",
             os.path.abspath(output_dir),
+            # The driver's --root used to default to a hardcoded path in ONE
+            # checkout. Omitting it therefore did not fall back to "the
+            # nearest frontend" — it silently rendered whatever frontend that
+            # literal points at, which on any other machine is the wrong code
+            # (or nothing at all). Always pass the root this module resolved.
+            "--root",
+            str(WEB_ROOT),
         ]
         if keyframes_only:
             frames = _keyframe_frames(scene_script)
