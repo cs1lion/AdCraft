@@ -46,6 +46,13 @@ import {
   useFrame,
   useThree,
 } from "./LeanSceneCanvas";
+import {
+  bobOffset,
+  cyclePhaseForDistance,
+  segmentPoseAt,
+  travelledMetres,
+  type SegmentPose,
+} from "./characterPose";
 import { cameraLabel, cameraLabelsById, shotForFrame } from "./shotLabels";
 import { shotCameraPoseAtFrame } from "./sceneDepthPass";
 import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
@@ -209,31 +216,85 @@ function LowPolyHuman({
   const scenePosition = handlers.overridePosition ?? interpolated.position;
   const threePosition = sceneToThreePosition(scenePosition);
   const { handlePointerDown, handlePointerMove } = useEditHandlers(handlers, ref, scenePosition);
-  // Lip-sync visibility: the talk keyframes the dialogue pipeline wrote are
+// Lip-sync visibility: the talk keyframes the dialogue pipeline wrote are
   // the same state the Blender render animates — the viewport must show the
   // mouth open at exactly those frames, or "who speaks now" is invisible.
-  const isSpeaking = characterActionAtFrame(character, frame) === "talk";
+  const action = characterActionAtFrame(character, frame);
+  const isSpeaking = action === "talk";
+  const isGesturing = action === "gesture";
   const mouthOpen = isSpeaking ? headRadius * 0.5 : headRadius * 0.08;
-  // V3 ④ 台词即表演：gesture 关键帧携带 15° 前倾的 rotation_y，预览把头颈画出来。
-  const isGesturing = characterActionAtFrame(character, frame) === "gesture";
-  const headTilt = isGesturing ? -0.26 : 0; // ≈15° forward lean, three.js X
+
+  // The POSE: what the limbs are doing at this frame. Before this existed the
+  // rig built the seven segments once and never rotated them again, so `walk`
+  // slid the whole body along the ground with its legs welded in place — the
+  // schema had said "walk" all along and nothing translated it.
+  //
+  // Phase comes from how far the character has TRAVELLED, not from the wall
+  // clock: a character whose keyframes hold it still keeps both feet down, and
+  // one that runs takes more steps per second. A clock would also desynchronise
+  // from the motion, and the feet would skate.
+  const pose = useMemo(() => {
+    const keyframes = character.keyframes;
+    const distance = travelledMetres(
+      keyframes.map((keyframe) => keyframe.position),
+      keyframes.map((keyframe) => keyframe.frame),
+      frame,
+    );
+    return segmentPoseAt(action, cyclePhaseForDistance(distance));
+  }, [character, frame, action]);
+
+  // The bob is a TRANSLATION of the whole figure, and it is deliberately not
+  // multiplied by a limb length: that is how a walk ends up bouncing someone off
+  // the ground.
+  const bob = bobOffset(pose, rig);
+  // A gesture keyframe tilts the whole head group forward ~15 deg; the pose's
+  // own head pitch rides with it.
+  const headTilt = (isGesturing ? -0.26 : 0) + (pose.head ?? 0);
   // The line whose time window covers "now" for THIS speaker.
   const activeLine = activeDialogueLineAtFrame(dialogueLines, character.id, frame, frameRate);
   return (
-    <Group position={threePosition} rotation={[0, interpolated.rotationY, 0]}>
+    <Group
+      position={[threePosition[0], threePosition[1] + bob, threePosition[2]]}
+      rotation={[0, interpolated.rotationY, 0]}
+    >
       {/* Body: the converter's segments. The whole figure highlights when
           selected — a highlight that stopped at the torso would leave the
-          author selecting legs that do not answer. */}
-      {bodySegments.map((segment) => (
-        <Mesh key={segment.part} position={segment.position} castShadow>
-          <SegmentGeometry segment={segment} />
-          <MeshStandardMaterial
-            color={segment.paint === "skin" ? CHARACTER_SKIN_COLOR : color}
-            emissive={handlers.selected ? "#FFD166" : "#000000"}
-            emissiveIntensity={handlers.selected ? 0.35 : 0}
-          />
-        </Mesh>
-      ))}
+          author selecting legs that do not answer.
+
+          Each segment is wrapped in a group pinned to its PROXIMAL end (the
+          hip for a leg, the shoulder for an arm), and the mesh is offset down
+          inside it. That is what makes the segment swing rather than orbit: a
+          rotation applied to the segment's own centre would carry the foot
+          sideways in an arc, which reads as a puppet on strings. The rig has no
+          bones — seven boxes is what the converter emits — so pivoting about
+          the top end is the whole of the articulation. */}
+      {bodySegments.map((segment) => {
+                const pitchField = POSE_FIELD[segment.part];
+        const pitch = pitchField ? (pose[pitchField] ?? 0) : 0;
+        // The pivot is the segment's TOP end, so the extent below it is what
+        // matters: a box's height, a cylinder's depth, and a sphere has none
+        // (the head carries no limb rotation, and its own pitch is on its group).
+        const reach =
+          segment.geometry.kind === "box" ? segment.geometry.size[1] / 2
+            : segment.geometry.kind === "cylinder" ? segment.geometry.depth / 2
+              : 0;
+        return (
+          <Group
+            key={segment.part}
+            position={[segment.position[0], segment.position[1] + reach, segment.position[2]]}
+            rotation={[pitch, 0, 0]}
+          >
+            <Mesh position={[0, -reach, 0]} castShadow>
+              <SegmentGeometry segment={segment} />
+              <MeshStandardMaterial
+                color={segment.paint === "skin" ? CHARACTER_SKIN_COLOR : color}
+                emissive={handlers.selected ? "#FFD166" : "#000000"}
+                emissiveIntensity={handlers.selected ? 0.35 : 0}
+              />
+            </Mesh>
+          </Group>
+        );
+      })}
       {/* Head: a gesture keyframe tilts the whole head group forward ~15 deg.
           The segment's own position is the head centre, which this group
           carries, so the mesh sits at its group's origin. */}
@@ -637,6 +698,16 @@ function ShotCameraRig({
 
   return null;
 }
+
+/** Which pose field drives which segment. A segment with no entry never moves. */
+const POSE_FIELD: Partial<Record<string, keyof SegmentPose>> = {
+  torso: "torso",
+  LegL: "legL",
+  LegR: "legR",
+  ArmL: "armL",
+  ArmR: "armR",
+  neck: "spine",
+};
 
 // ---------------------------------------------------------------------------
 // Ground-plane drag layer (lives inside the Canvas: needs useThree)
