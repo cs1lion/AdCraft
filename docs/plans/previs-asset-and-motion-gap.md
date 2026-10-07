@@ -114,6 +114,40 @@ CharacterType = Literal["lowpoly_human"]
 
 这是同事那份计划的第一优先。评估见下节——**它确实该做且与渲染器无关**，但它解决的是"物"，不是"人"。
 
+### 2.6 场景尺度从来没有被校验过（这一条使前面几条都变得可修）
+
+**这一条应该排在最前面做**，因为它决定其余各项做完之后画面能不能看。
+
+**证据**：`test-materials/jinghai_scenescript.json`（24 秒 / 4 镜 / 720 帧，是这份清单反复拿来对照的那个场景）。人形高 1.85 m，而场景里：
+
+| 资产 | schema 里的 scale | 实际渲染尺寸 |
+|---|---|---|
+| `pillar`（`helium_tower_a`） | 4.5 | **19 m 高、半径 1.35 m** |
+| `platform`（`landing_pad`） | 5 | **25 × 2 × 25 m 的一整块板**，z 跨 1..3 |
+| `wall`（`habitat_dome_a`） | 5 | 30 × 25 × 1.5 m 的大板 |
+| `ground`（`moon_ground`） | 40 | 600 × 4 × 600 m |
+
+即：**塔是人的十倍，甲板横跨整个战区**。
+
+**一个更硬的后果，不只是不好看**：`platform` 的几何是 `BoxGeometry [5s, 0.4s, 5s]`、中心抬高 `0.4s`（`sceneScriptGeometry.tsx`）。scale 5 时这块板占 z 1..3——而**所有角色的 keyframes 都在 z=0，也就是站在这块板下面**。八分之六的机位同样落在板内。这就是渲染出来的帧中央那一大片棕色的来源：不是机位选得不好，是相机和角色都被埋在一块 25 m 见方的板子里。
+
+**为什么没人发现**：相机此前从未被摆过（`threejs-renderer-replacement.md` §6 与本文档成稿前的多轮修复），渲染出来是空屏。**没有人看得见，所以这些数字从来没有被校验过**——它们是 LLM 在 `scene_script_generator.py` 的 prompt 下盲写出来的，而 prompt 里没有告诉它任何图元的真实尺寸。
+
+**根因不是"几个数字填错了"，是三个契约缺失**：
+
+1. **生成端不知道图元尺寸**。`scene-script.generated.ts` 已经把**枚举与配色**从 `PropType` / `EnvironmentType` / `blender_converter._ASSET_COLORS` 生成出去，并让"新增 kind 不编译就红"。**尺寸没有走同一条路**——而尺寸恰恰是生成端最需要知道的那一项（填 `scale: 4.5` 的人不知道那是 19 m）。
+2. **`scale` 在不同 kind 之间含义不同，且没有共同契约**。`pillar` 的 scale 是半径/高度的乘子，`platform` 是半边长乘子，`wall` 是宽/高/厚三个乘子。schema 只给了宽泛上限（`SceneProp.scale` `le=10.0`、`SceneEnvironmentObject.scale` `le=50.0`），50 在 `pillar` 上是 210 m，在 `platform` 上是 250 m——两种都是荒谬值，却都合法。
+3. **没有任何"合不合理"的校验**。没有一处检查会把"塔比人高十倍"当回事，因为没有任何地方知道塔应该比人高多少。
+
+**建议的修法（按代价排序）**：
+
+- **最便宜、收益最大**：把每个 kind 的**真实尺寸表**按 `scene-script.generated.ts` 的同一条路生成出去，喂给 `scene_script_generator.py` 的 prompt。让填 `scale` 的人（或模型）知道自己在填什么。这一个改动就能让未来生成的场景不再是盲的。
+- **其次**：schema 层给 `scale` 一个**按 kind 的合理区间**（而不是全局 `le=50`），越界直接拒绝而不是渲染出来才发现。
+- **再次**：视口里放一个 1.75 m 的人形参考物（可关）。尺度错误在**编辑时**就该看得见，而不是在交付帧里。
+- **配套**：把 `apps/api/scripts/previs_camera_sightlines.py` 的"相机在盒子里"检查接成一个 lint——它抓到的不只是构图问题，还有"角色站在平台下面"这类数据错误。
+
+**我做过的一次性修补要写清楚**：为了让对比渲染能看，我在 `test-materials/jinghai_recomposed.json` 里把环境 scale 拉回了人形相对范围（`pillar` 4.5→1.2、`platform` 5→1.6 等）。**但"合理值是多少"没有权威依据**——那是我看着渲染结果改的，不是从契约推出来的。所以那份文件是一个可用的样本，不是一个正确的答案。真正的答案是上面第一条。
+
 ---
 
 ## 3. 与同事那份计划的差异（重要）
@@ -180,6 +214,7 @@ CharacterType = Literal["lowpoly_human"]
 
 按"解锁的东西"排，不按实现难度：
 
+0. **2.6 场景尺度契约**（尺寸表喂给生成端 + schema 按 kind 限幅 + 视口人形参考物）——**这一条排第一**，因为它决定其余各项做完之后画面能不能看。在此之前，任何"画面不好看"的反馈都无法归因：是尺度错、是机位错，还是姿态缺失
 1. **2.4 姿态库**（含先定下关键帧语义是步进还是插值）——把木桩变成人
 2. **2.1 非人角色**（`CharacterType` 扩枚举 + 体型参数化 + 前端几何同步）——schema 加法，两个渲染器同时受益
 3. **2.5 prop/environment keyframes**（同事的 ①，注意 §3 的四个漏项）——解锁物
@@ -187,3 +222,5 @@ CharacterType = Literal["lowpoly_human"]
 5. **2.3 场景装饰**（枚举 or 参数化几何，值得单独评估）
 
 每一项做完的标准：**用真实场景渲一段视频，用像素对比说明画面变成了什么样**，不是用测试数量说明。
+
+已有的闭环让这件事从"猜"变成了"看"：`apps/api/scripts/previs_compose_check.py` 渲一遍并从交付的 MP4 采样拼 contact sheet，`previs_camera_sightlines.py` 先算遮挡。**2.6 之所以以前没人发现，就是因为这两个工具不存在**——它们是本轮才补上的。
