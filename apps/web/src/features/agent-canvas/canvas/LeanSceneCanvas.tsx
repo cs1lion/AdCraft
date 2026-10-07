@@ -68,6 +68,20 @@ export interface LeanCanvasSize {
   left: number;
 }
 
+declare global {
+  interface Window {
+    /**
+     * The LIVE viewport camera's position, published by the canvas.
+     *
+     * Read by the render harness so a spec can assert the camera actually
+     * followed the shot camera. It must be the live camera, not the prop that
+     * was handed in: reporting the prop would pass even when the prop was
+     * ignored, which is precisely the bug this exists to catch.
+     */
+    __previsLiveCameraPosition?: () => [number, number, number];
+  }
+}
+
 type FrameCallback = (state: LeanRootState, delta: number) => void;
 
 export interface LeanRootState {
@@ -1054,6 +1068,59 @@ function SceneCanvas({
   missedRef.current = onPointerMissed;
   // Failures raised inside the scene root, relayed out to the main tree.
   const [relay, setRelay] = useState<{ error?: unknown; blocked?: boolean } | null>(null);
+
+  // Stage 0: the CAMERA PROP IS NOT A ONE-TIME SEED.
+  //
+  // It was. `camera` used to be read only inside the `if (!stateRef.current)`
+  // block in Stage 1b below, so a LATER change to the prop never reached the
+  // live camera. The previs viewport sets it from the interpolated SHOT camera
+  // on every frame, so every frame after the first rendered from the seed
+  // position — which is how "720 frames rendered successfully" and "the previs
+  // shows one frozen vantage point" were both true at the same time. The depth
+  // pass poses the shot camera itself, so colour and depth disagreed: precisely
+  // the place that must not deceive.
+  //
+  // This effect re-applies the prop whenever it changes, and writes fov too so a
+  // lens change is not dropped the way position was.
+  // Stage 0: the CAMERA PROP IS NOT A ONE-TIME SEED.
+  //
+  // It was. `camera` used to be read only inside the `if (!stateRef.current)`
+  // block in Stage 1b below, so a LATER change to the prop never reached the
+  // live camera. The previs viewport sets it from the interpolated SHOT camera
+  // on every frame, so every frame after the first rendered from the seed
+  // position — which is how "720 frames rendered successfully" and "the previs
+  // shows one frozen vantage point" were both true at the same time. The depth
+  // pass poses the shot camera itself, so colour and depth disagreed: precisely
+  // the place that must not deceive.
+  //
+  // In addition to writing the live camera, this publishes a probe that reads
+  // THE LIVE CAMERA BACK. It has to be the live camera: an earlier version
+  // published the prop value instead, and the shot-camera spec passed with the
+  // write removed — the probe was reporting what the caller asked for, not what
+  // the renderer was doing, which is the exact failure the spec existed to
+  // catch. Anything asserting "the camera follows the shot" must read the camera.
+  useEffect(() => {
+    const live = stateRef.current;
+    if (!live) return;
+    if (camera?.fov !== undefined) {
+      live.camera.fov = camera.fov;
+      live.camera.updateProjectionMatrix();
+    }
+    if (camera?.position) {
+      live.camera.position.set(camera.position[0], camera.position[1], camera.position[2]);
+      // lookAt is deliberately NOT re-applied: an orbit drag owns the
+      // orientation and re-aiming at the origin would fight it. A caller that
+      // needs a specific aim drives it through the scene content.
+    }
+    window.__previsLiveCameraPosition = () => [
+      live.camera.position.x,
+      live.camera.position.y,
+      live.camera.position.z,
+    ];
+    return () => {
+      delete window.__previsLiveCameraPosition;
+    };
+  }, [camera?.position?.[0], camera?.position?.[1], camera?.position?.[2], camera?.fov]);
 
   // Stage 1: the renderer, camera, frame loop, pointer plumbing and the
   // scene's own React root. Mounted once per real mount.

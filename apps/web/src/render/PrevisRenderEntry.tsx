@@ -42,6 +42,17 @@ interface RenderCommand {
   /** Read the canvas as base64 PNG. Requires `captureFrames` on. */
   capture: () => Promise<string>;
   /**
+   * Where the VIEWPORT camera actually is, right now.
+   *
+   * Exists because "the frames differ" is not evidence that the camera moves:
+   * characters walking also change the pixels. Only the camera's own position
+   * proves the shot camera is being followed, and that is the assertion that
+   * caught this renderer's worst bug (the camera prop was a one-time seed, so
+   * every frame after the first rendered from the same vantage point while the
+   * playhead advanced normally).
+   */
+  cameraPosition: () => [number, number, number] | null;
+  /**
    * DEPTH control pass (plan §4.5): the shot keyframe frames the pass samples,
    * i.e. the `depth_<N>.png` files a render job must produce.
    */
@@ -59,6 +70,8 @@ declare global {
     __previsRender?: RenderCommand;
     __previsSeek?: (frame: number) => void;
     __previsCurrentFrame?: number;
+    /** The preview's live viewport camera, published by the preview itself. */
+    __previsCameraPosition?: () => [number, number, number] | null;
   }
 }
 
@@ -144,6 +157,14 @@ function boot() {
       frameRate: scene.scene.frame_rate,
     }),
     seek: seekFrame,
+    cameraPosition: () => {
+      // The canvas element is the only handle the page has on the renderer; the
+      // live camera is reachable through the three.js object the preview owns.
+      // Reading the DOM's own copy is not an option — there isn't one — so the
+      // preview publishes it. See `SceneScript3DPreview`'s cameraPose probe.
+      const probe = window.__previsCameraPosition;
+      return probe ? probe() : null;
+    },
     capture: async () => {
       const canvas = document.querySelector("canvas");
       if (!(canvas instanceof HTMLCanvasElement)) throw new Error("no canvas");

@@ -16,10 +16,16 @@ export default defineConfig({
     video: "off",
     ...devices["Desktop Chrome"],
   },
-  webServer: process.env.PLAYWRIGHT_BASE_URL ? undefined : {
-    command: "npm run dev -- --port 5197",
-    url: "http://127.0.0.1:5197/tests/browser/agent-canvas-editing-mock.html",
-    reuseExistingServer: false,
-    timeout: 120_000,
-  },
+  // A worktree cannot bind 5197 while the main checkout holds it, so the port is
+  // overridable. When PLAYWRIGHT_BASE_URL is set the server is assumed already
+  // running (started by the operator), which is how a worktree runs these specs.
+  webServer: process.env.PLAYWRIGHT_BASE_URL
+    ? undefined
+    : {
+        command: "npm run dev -- --port " + (process.env.PLAYWRIGHT_PORT ?? 5197),
+        url: "http://127.0.0.1:" + (process.env.PLAYWRIGHT_PORT ?? 5197)
+          + "/tests/browser/agent-canvas-editing-mock.html",
+        reuseExistingServer: false,
+        timeout: 120_000,
+      },
 });

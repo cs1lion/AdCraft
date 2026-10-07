@@ -888,6 +888,13 @@ function CameraPlacementLayer({ onCommit, onCancel }: CameraPlacementProps) {
 // Main Preview Component
 // ---------------------------------------------------------------------------
 
+declare global {
+  interface Window {
+    /** The pose the viewport camera is being told to take (see shotPose). */
+    __previsCameraPosition?: () => [number, number, number] | null;
+  }
+}
+
 export interface SceneScript3DPreviewProps {
   sceneScript: SceneScriptRoot;
   height?: number;
@@ -1029,6 +1036,18 @@ export function SceneScript3DPreview({
     const posed = shotCameraPoseAtFrame(sceneScript.cameras, shot, currentFrame);
     return posed ?? { position: [8, -12, 6], lookAt: [0, 0, 0], cameraId: "" };
   }, [sceneScript, currentFrame]);
+
+  // Publish the pose the viewport camera is being TOLD to take, for the render
+  // harness. This is the prop value, not the live GL camera: it is what the
+  // caller asked for, so a mismatch between it and the live camera is exactly
+  // the bug this probe exists to expose (the camera prop used to be a one-time
+  // seed, so the live camera kept the first frame's position forever).
+  useEffect(() => {
+    window.__previsCameraPosition = () => [...shotPose.position] as [number, number, number];
+    return () => {
+      delete window.__previsCameraPosition;
+    };
+  }, [shotPose]);
 
   // Kinds this build has no geometry for. Normally empty; a non-empty list means
   // the script came from a backend newer than this bundle, and the magenta boxes
