@@ -32,8 +32,19 @@
         "updated_at"
       ],
       "enums": {
-        "status": ["queued", "working", "waiting_user", "ready", "failed", "superseded", "not_applicable"],
-        "character_phase": ["main", "turnaround"]
+        "status": [
+          "queued",
+          "working",
+          "waiting_user",
+          "ready",
+          "failed",
+          "superseded",
+          "not_applicable"
+        ],
+        "character_phase": [
+          "main",
+          "turnaround"
+        ]
       }
     },
     "ChatTurnAcceptedV2": {
@@ -50,7 +61,9 @@
         "presentation_stream_id"
       ],
       "enums": {
-        "status": ["queued"]
+        "status": [
+          "queued"
+        ]
       }
     },
     "StoryboardNarrativeSegmentV2": {
@@ -66,7 +79,10 @@
         "terminal_policy"
       ],
       "enums": {
-        "terminal_policy": ["continue", "close"]
+        "terminal_policy": [
+          "continue",
+          "close"
+        ]
       }
     },
     "ChatTurnV2": {
@@ -92,7 +108,13 @@
         "updated_at"
       ],
       "enums": {
-        "status": ["queued", "running", "completed", "failed", "superseded"],
+        "status": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "superseded"
+        ],
         "turn_kind": [
           "message",
           "proposal_action",
@@ -127,6 +149,39 @@
           "provider_clamp"
         ]
       }
+    },
+    "SceneOperationsRequest": {
+      "properties": [
+        "operations",
+        "scene_script",
+        "use_mcp"
+      ]
+    },
+    "SceneOperationsResponse": {
+      "properties": [
+        "applied",
+        "edit_report",
+        "error",
+        "mcp_results",
+        "scene_script",
+        "success",
+        "warnings"
+      ]
+    },
+    "SceneCountControlV1": {
+      "properties": [
+        "control",
+        "created_revision_no",
+        "source_bundle_id",
+        "source_kind",
+        "source_node_id",
+        "source_option_id",
+        "source_proposal_id",
+        "source_question_id",
+        "source_text",
+        "source_turn_id",
+        "value"
+      ]
     }
   }
 }

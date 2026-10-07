@@ -22,6 +22,7 @@ from app.services.scene3d.held_items import held_keyframe_positions
 # frames ``extract_keyframes`` copies and ``control_passes`` aligns to, or a
 # keyframe deliverable would silently miss frames the full pass produces.
 from app.services.scene3d.keyframes import _shot_keyframe_frames
+from app.services.scene3d.rotation_pivot import needs_pivot_empty, rotation_pivot_for
 
 
 def _esc(s: str) -> str:
@@ -507,8 +508,43 @@ def degraded_asset_ids(scene_script: SceneScriptRoot) -> tuple[str, ...]:
     return tuple(degraded)
 
 
-def _build_asset(obj_id: str, obj_type: str, position: list[float],
-                 rotation_y: float, scale: float = 1.0,
+def _pivot_parent_code(obj_id: str, obj_type: str, position: list[float], scale: float) -> str:
+    """Emit an empty at the asset's pivot and re-parent the wrapper under it.
+
+    Rotation is applied to this empty instead of to the wrapper, which is what makes
+    a keyframed pitch or roll turn the object on itself instead of sweeping it around
+    its own base. A crate turning 360 deg drifted 123 px of silhouette travel before
+    this; it drifts 8 px after, and that residual is just the cube's silhouette
+    growing as |cos| + |sin|.
+
+    The pivot empty sits at ``position + offset`` and the wrapper is re-expressed
+    relative to it, so the asset's world position is unchanged -- only the point it
+    turns about moves.
+
+    Returns an empty string for kinds that turn about their base, so their generated
+    script is byte-identical to before.
+    """
+    if not needs_pivot_empty(obj_type):
+        return ""
+    px, py, pz = rotation_pivot_for(obj_type)
+    offset = [px * scale, py * scale, pz * scale]
+    pivot_at = [position[i] + offset[i] for i in range(3)]
+    return f"""
+# Rotation pivot for {_esc(obj_id)} ({obj_type}): turn about this point, not the
+# object's base. See rotation_pivot.py for why this is per-kind rather than a rule.
+bpy.ops.object.empty_add(type="PLAIN_AXES", location={_vec(pivot_at)})
+pivot_{_esc(obj_id)} = bpy.context.object
+pivot_{_esc(obj_id)}.name = "{_esc(obj_id)}_pivot"
+wrapper = bpy.data.objects["{_esc(obj_id)}"]
+wrapper.parent = pivot_{_esc(obj_id)}
+# Blender resolves a child's location against its parent, so the wrapper is now
+# relative to the pivot: minus the offset puts it back where it was authored.
+wrapper.location = {_vec([-o for o in offset])}
+"""
+
+
+def _build_asset(obj_id: str, obj_type: str, position: list[float], rotation_y: float,
+                 scale: float = 1.0,
                  color: str = "#8B4513", height: float = 1.7) -> str:
     """Build an asset at the given position with a wrapper empty."""
     builder = _ASSET_BUILDERS.get(obj_type)
@@ -661,14 +697,19 @@ def scene_script_to_blender(
             # A structure that moves: same contract as props.
             if env.keyframes:
                 lines.append(f"# Environment motion keyframes: {env.id}")
+                lines.append(_pivot_parent_code(env.id, env.type, env.position, env.scale))
                 lines.append(f'env_obj = bpy.data.objects["{_esc(env.id)}"]')
+                # Rotation lands on the pivot empty when the kind declares one, so
+                # the turn is about the object's own extent rather than its base.
+                env_rot_target = (f"pivot_{_esc(env.id)}"
+                                  if needs_pivot_empty(env.type) else "env_obj")
                 for kf in env.keyframes:
                     rx, ry, rz = kf.rotation
                     lines.append(f"# frame {kf.frame}")
                     lines.append(f"env_obj.location = {_vec(kf.position)}")
-                    lines.append(f"env_obj.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
+                    lines.append(f"{env_rot_target}.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
                     lines.append(f"env_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
-                    lines.append(f"env_obj.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
+                    lines.append(f"{env_rot_target}.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
                     if kf.scale is not None and abs(kf.scale - env.scale) > 1e-9:
                         lines.append(f"env_obj.scale = ({kf.scale!r}, {kf.scale!r}, {kf.scale!r})")
                         lines.append(f"env_obj.keyframe_insert(data_path='scale', frame={kf.frame + 1})")
@@ -705,14 +746,19 @@ def scene_script_to_blender(
                 # writers on one object is the ambiguity that validation
                 # prevents.
                 lines.append(f"# Prop motion keyframes: {prop.id}")
+                lines.append(_pivot_parent_code(prop.id, prop.type, prop.position, prop.scale))
                 lines.append(f'prop_obj = bpy.data.objects["{_esc(prop.id)}"]')
+                # Rotation lands on the pivot empty when the kind declares one, so
+                # the turn is about the object's own extent rather than its base.
+                prop_rot_target = (f"pivot_{_esc(prop.id)}"
+                                   if needs_pivot_empty(prop.type) else "prop_obj")
                 for kf in prop.keyframes:
                     rx, ry, rz = kf.rotation
                     lines.append(f"# frame {kf.frame}")
                     lines.append(f"prop_obj.location = {_vec(kf.position)}")
-                    lines.append(f"prop_obj.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
+                    lines.append(f"{prop_rot_target}.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
                     lines.append(f"prop_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
-                    lines.append(f"prop_obj.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
+                    lines.append(f"{prop_rot_target}.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
                     if kf.scale is not None and abs(kf.scale - prop.scale) > 1e-9:
                         lines.append(f"prop_obj.scale = ({kf.scale!r}, {kf.scale!r}, {kf.scale!r})")
                         lines.append(f"prop_obj.keyframe_insert(data_path='scale', frame={kf.frame + 1})")
