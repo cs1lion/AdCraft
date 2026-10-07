@@ -92,6 +92,7 @@ import {
   characterStateAtFrame,
   sceneObjectPositionAtFrame,
   type SceneObjectRef,
+  propStateAtFrame,
 } from "./sceneScriptEditModel";
 
 // ---------------------------------------------------------------------------
@@ -443,6 +444,7 @@ function PropMesh({
   prop,
   kind,
   handlers,
+  frame,
   heldPosition,
   /** V3 ④ LOD: the object's declared coarseness tier. ``rough`` collapses the geometry to a single primitive box. */
   lodTier = "standard",
@@ -452,6 +454,8 @@ function PropMesh({
   lodTier?: import("./sceneFidelity.ts").LodTier;
   kind: "prop" | "environment";
   handlers: EditHandlers;
+  /** The playhead, for keyframed motion. */
+  frame: number;
   /**
    * Held-item follow (V0.2 §5): the holder's hand position at the current
    * frame. Wins over the authored position (which is only the rest position
@@ -464,6 +468,33 @@ function PropMesh({
   const scenePosition = handlers.overridePosition ?? heldPosition ?? prop.position;
   const pos = sceneToThreePosition(scenePosition);
 
+  // KEYFRAMED MOTION. null for a prop that never moves, in which case every
+  // value below is the authored rest pose and this branch is inert.
+  //
+  // The non-yaw half of the rotation has to be applied about the OBJECT's own
+  // pivot, so when a prop is keyframed the geometry is built at local origin
+  // and a wrapping group carries both the pivot and that rotation. Building it
+  // at the interpolated position instead would spin it about the world origin.
+  const keyframed = useMemo(
+    () => propStateAtFrame({ ...prop, rotation_y: prop.rotation_y ?? 0 }, frame),
+    [prop, frame],
+  );
+  const liveScale = keyframed?.scale ?? scale;
+  const liveYaw = keyframed ? (keyframed.rotation[1] * Math.PI) / 180 : rotationY;
+  const buildPos: SceneVec3 = keyframed ? [0, 0, 0] : pos;
+  const pivot = keyframed
+    ? sceneToThreePosition(
+        handlers.overridePosition ?? heldPosition ?? keyframed.position,
+      )
+    : pos;
+  const extraRotation: [number, number, number] = keyframed
+    ? [
+        (keyframed.rotation[0] * Math.PI) / 180,
+        0,
+        (keyframed.rotation[2] * Math.PI) / 180,
+      ]
+    : [0, 0, 0];
+
   const ref = useMemo<SceneObjectRef>(() => ({ kind, id: prop.id }), [kind, prop.id]);
 
   const geometry = useMemo(() => {
@@ -471,12 +502,12 @@ function PropMesh({
     if (lodTier === "rough") {
       return (
         <Mesh
-          position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
-          rotation={[0, rotationY, 0]}
+          position={[buildPos[0], buildPos[1] + 0.25 * liveScale, buildPos[2]]}
+          rotation={[0, liveYaw, 0]}
           castShadow
           data-testid={`lod-rough-${kind}-${prop.id}`}
         >
-          <BoxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
+          <BoxGeometry args={[0.5 * liveScale, 0.5 * liveScale, 0.5 * liveScale]} />
           <MeshStandardMaterial
             color={PLACEHOLDER_ASSET_COLOR}
             emissive={PLACEHOLDER_ASSET_COLOR}
@@ -487,7 +518,7 @@ function PropMesh({
     }
     const build = assetGeometryFor(prop.type);
     if (build) {
-      return build({ scale, rotationY, pos });
+      return build({ scale: liveScale, rotationY: liveYaw, pos: buildPos });
     }
     // No geometry for this kind. Deliberately not grey: the converter's own
     // placeholder colour is magenta because nothing real is that colour, and a
@@ -495,11 +526,11 @@ function PropMesh({
     // (ADR 0005 §4: queryable degradation, never silent).
     return (
       <Mesh
-        position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
-        rotation={[0, rotationY, 0]}
+        position={[buildPos[0], buildPos[1] + 0.25 * liveScale, buildPos[2]]}
+        rotation={[0, liveYaw, 0]}
         castShadow
       >
-        <BoxGeometry args={[0.5 * scale, 0.5 * scale, 0.5 * scale]} />
+        <BoxGeometry args={[0.5 * liveScale, 0.5 * liveScale, 0.5 * liveScale]} />
         <MeshStandardMaterial
           color={PLACEHOLDER_ASSET_COLOR}
           emissive={PLACEHOLDER_ASSET_COLOR}
@@ -507,27 +538,36 @@ function PropMesh({
         />
       </Mesh>
     );
-  }, [prop.type, lodTier, pos, rotationY, scale]);
+  }, [prop.type, lodTier, buildPos, liveYaw, liveScale]);
 
   const { handlePointerDown, handlePointerMove } = useEditHandlers(handlers, ref, scenePosition);
 
-  return (
+  const body = (
     // r3f pointer events bubble up the object graph, so one handler on the
     // group covers every mesh the geometry builder produced.
     <Group onPointerDown={handlePointerDown}>
       {geometry}
       {handlers.editMode && (
         <Mesh
-          position={[pos[0], pos[1] + 0.25 * scale, pos[2]]}
+          position={[buildPos[0], buildPos[1] + 0.25 * liveScale, buildPos[2]]}
           onPointerMove={handlePointerMove}
           onPointerUp={handlers.onDragEnd}
         >
           <BoxGeometry
-            args={[Math.max(0.6, scale), Math.max(0.6, scale), Math.max(0.6, scale)]}
+            args={[Math.max(0.6, liveScale), Math.max(0.6, liveScale), Math.max(0.6, liveScale)]}
           />
           <MeshBasicMaterial transparent opacity={0} depthWrite={false} />
         </Mesh>
       )}
+    </Group>
+  );
+
+  // A keyframed prop's non-yaw rotation turns about its own pivot, so the body
+  // (built at local origin) is placed and rotated by this group instead.
+  if (!keyframed) return body;
+  return (
+    <Group position={[pivot[0], pivot[1], pivot[2]]} rotation={extraRotation}>
+      {body}
     </Group>
   );
 }
@@ -1326,6 +1366,7 @@ export function SceneScript3DPreview({
                     prop={object}
                     lodTier={objectLodTier(object)}
                     kind="environment"
+                    frame={currentFrame}
                     handlers={handlersFor(
                       { kind: "environment", id: object.id },
                       selectedObject?.kind === "environment" && selectedObject.id === object.id,
@@ -1343,6 +1384,7 @@ export function SceneScript3DPreview({
                     prop={object}
                     lodTier={objectLodTier(object)}
                     kind="prop"
+                    frame={currentFrame}
                     heldPosition={heldItemPositionAtFrame(sceneScript, object, currentFrame)}
                     handlers={handlersFor(
                       { kind: "prop", id: object.id },

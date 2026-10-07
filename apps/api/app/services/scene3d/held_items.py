@@ -67,9 +67,16 @@ def hand_offset(rotation_y: float, side: str | None, height: float) -> list[floa
 
 
 def _pose_at(character: SceneCharacter, frame: int) -> tuple[list[float], float]:
-    """Nearest-keyframe pose semantics, matching the frontend's
-    ``characterStateAtFrame`` (step, not interpolate — SceneScript keyframes
-    are poses, and the preview treats them as such)."""
+    """Interpolated pose between keyframes, matching the frontend's
+    ``characterStateAtFrame``.
+
+    The previous docstring claimed "step, not interpolate". That was wrong and
+    the code always interpolated — and the next reader would have trusted it,
+    because a comment that contradicts the code it annotates is a bug report
+    nobody filed. Interpolation is the correct behaviour (it is what the frontend
+    does, and "held item follows the hand" only reads as continuous if the hand
+    is continuous), so the docstring was the thing that had to change.
+    """
 
     keyframes = sorted(character.keyframes, key=lambda keyframe: keyframe.frame)
     if not keyframes:
