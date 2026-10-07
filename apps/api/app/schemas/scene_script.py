@@ -12,7 +12,7 @@ See: docs/adr/0005-3d-low-fidelity-previs.md
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,10 +22,23 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 ShotType = Literal["wide", "medium", "closeup", "over_shoulder", "pov"]
 CharacterAction = Literal["stand", "talk", "walk", "sit", "gesture"]
+# Non-human actors. A door that swings open, a wheel that turns and a vehicle
+# that crosses the frame are all "characters" in the only sense that matters to
+# a previs: the scene acts through them. They are authored in `characters[]`
+# rather than `props[]` because a prop is furniture (it has a position and
+# nothing else happens) and these have a motion, which is what
+# `keyframes[].action` drives. The human type stays first and stays the default.
+NonHumanActorAction = Literal["door_swing_open", "spin", "drive", "flyover"]
 SpeechMode = Literal["bound", "free"]
 EnvironmentKind = Literal["indoor", "outdoor", "mixed"]
 LightingPreset = Literal["warm", "cool", "neutral", "dramatic", "soft", "hard"]
-CharacterType = Literal["lowpoly_human"]
+# Open on purpose. The renderers build every prop/environment kind from one
+# table already, so the set of buildable actors is exactly the union of those
+# two enums — enumerating it here would go stale the moment a kind is added,
+# and an unbuildable type already fails loudly as a magenta box reported by
+# `unimplementedKinds`. The closed `Literal["lowpoly_human"]` this replaces is
+# why "put the door in characters and open it" was not expressible at all.
+CharacterType = Literal["lowpoly_human", "door", "crate", "box", "pillar"]
 
 PropType = Literal[
     "round_table",
@@ -181,7 +194,13 @@ class CharacterKeyframe(BaseModel):
     frame: int = Field(ge=0, description="Frame number (0-based)")
     position: list[float] = Field(description="[x, y, z] position in meters")
     rotation_y: float = Field(description="Y-axis rotation in degrees (0=facing +Y)")
-    action: CharacterAction = Field(default="stand", description="Character action at this keyframe")
+    # Human actions first, then the non-human ones. A keyframe on a character
+    # whose `type` is not lowpoly_human must use a non-human action: a door
+    # with action "walk" is authoring noise, and the renderers would each have
+    # to decide what it means. `_validate_actor_actions` rejects it.
+    action: CharacterAction | NonHumanActorAction = Field(
+        default="stand", description="Character action at this keyframe"
+    )
 
     @field_validator("position")
     @classmethod
@@ -505,6 +524,38 @@ class SceneScriptRoot(BaseModel):
                     f"prop '{prop.id}' is held by character '{prop.held_by}' which does "
                     f"not exist; available: {sorted(self.character_ids)}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_actor_actions(self) -> SceneScriptRoot:
+        """A character's actions must match the body it declared.
+
+        Fail closed, and for a specific reason: a door authored with
+        ``action: "walk"`` has no legs, and every consumer would have to invent
+        its own meaning for it — the renderer, the pose library, the summary.
+        One validator naming it is the difference between a loud error and two
+        renderers quietly disagreeing about what a door walking looks like.
+
+        The rule is simple: a lowpoly_human may use either family (a human
+        figure sliding along a path is a legitimate move), and anything else may
+        only use the non-human family.
+        """
+        human_actions = set(get_args(CharacterAction))
+        nonhuman_actions = set(get_args(NonHumanActorAction))
+        for character in self.characters:
+            allowed = (
+                human_actions | nonhuman_actions
+                if character.type == "lowpoly_human"
+                else nonhuman_actions
+            )
+            for keyframe in character.keyframes:
+                if keyframe.action not in allowed:
+                    raise ValueError(
+                        f"character '{character.id}' has type "
+                        f"'{character.type}' but keyframe {keyframe.frame} declares "
+                        f"action '{keyframe.action}', which that body cannot perform; "
+                        f"allowed: {sorted(allowed)}"
+                    )
         return self
 
     @model_validator(mode="after")

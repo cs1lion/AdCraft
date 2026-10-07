@@ -53,6 +53,7 @@ import {
   travelledMetres,
   type SegmentPose,
 } from "./characterPose";
+import { cyclePhaseForFrame, objectMotionAt } from "./objectMotion";
 import { cameraLabel, cameraLabelsById, shotForFrame } from "./shotLabels";
 import { shotCameraPoseAtFrame } from "./sceneDepthPass";
 import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
@@ -78,6 +79,7 @@ import {
   DEFAULT_CHARACTER_COLOR,
   type CharacterSegment,
 } from "./lowPolyHumanRig";
+import { ActorMesh } from "./LowPolyActorMesh";
 import { objectLodTier } from "./sceneFidelity";
 import { DepthPassRecorder, type ControlDepthPassOptions } from "./sceneDepthPassRecorder";
 import {
@@ -216,12 +218,51 @@ function LowPolyHuman({
   const scenePosition = handlers.overridePosition ?? interpolated.position;
   const threePosition = sceneToThreePosition(scenePosition);
   const { handlePointerDown, handlePointerMove } = useEditHandlers(handlers, ref, scenePosition);
-// Lip-sync visibility: the talk keyframes the dialogue pipeline wrote are
+
+  // Lip-sync visibility: the talk keyframes the dialogue pipeline wrote are
   // the same state the Blender render animates — the viewport must show the
   // mouth open at exactly those frames, or "who speaks now" is invisible.
   const action = characterActionAtFrame(character, frame);
   const isSpeaking = action === "talk";
   const isGesturing = action === "gesture";
+
+  // NON-HUMAN ACTOR BRANCH.
+  //
+  // A door, a wheel and a dropship are authored in `characters[]` because the
+  // scene acts through them, and their motion is a delta on the object's own
+  // rest pose — not a limb angle. Routing them through the human rig would
+  // leave the rig drawing a person where a door belongs, so they render from
+  // the same geometry table the props use (which already knows every buildable
+  // kind) with `objectMotionAt` applied on top.
+  //
+  // Deliberately NOT a special case inside the rig: the rig's vocabulary is
+  // hips and shoulders, and a hinge is neither.
+  if (character.type !== "lowpoly_human") {
+    const motion = objectMotionAt(action, cyclePhaseForFrame(action, frame, frameRate));
+    return (
+      <Group position={threePosition} rotation={[0, interpolated.rotationY, 0]}>
+        <Group
+          position={[
+            motion.translation?.[0] ?? 0,
+            motion.translation?.[2] ?? 0,
+            -(motion.translation?.[1] ?? 0),
+          ]}
+          rotation={[
+            motion.rotation?.[0] ?? 0,
+            -(motion.rotation?.[1] ?? 0),
+            -(motion.rotation?.[2] ?? 0),
+          ]}
+        >
+          <ActorMesh
+            kind={character.type}
+            color={character.appearance.color ?? DEFAULT_CHARACTER_COLOR}
+            handlers={handlers}
+            ref={ref}
+          />
+        </Group>
+      </Group>
+    );
+  }
   const mouthOpen = isSpeaking ? headRadius * 0.5 : headRadius * 0.08;
 
   // The POSE: what the limbs are doing at this frame. Before this existed the

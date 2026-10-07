@@ -84,7 +84,11 @@ The object must follow this shape:
     {{"id": string, "type": "lowpoly_human", \
 "appearance": {{"color": "#RRGGBB", "height": number, "scale": number}}, \
 "keyframes": [{{"frame": int, "position": [x, y, z], "rotation_y": number, \
-"action": "stand" | "walk" | "sit" | "talk" | "gesture"}}]}}
+"action": "stand" | "walk" | "sit" | "talk" | "gesture"}}]}},
+    {{"id": string, "type": "door" | "crate" | "box" | "pillar", \
+"appearance": {{"color": "#RRGGBB"}}, \
+"keyframes": [{{"frame": int, "position": [x, y, z], "rotation_y": number, \
+"action": "door_swing_open" | "spin" | "drive" | "flyover"}}]}}
   ],
   "props": [{{"id": string, "type": {_PROP_TYPES}, "position": [x, y, z], \
 "scale": number, "rotation_y": number}}],
