@@ -72,7 +72,7 @@ import type {
   CameraKeyframe,
 } from "../../../types/scene-script";
 import { PLACEHOLDER_ASSET_COLOR } from "../../../types/scene-script.generated";
-import { assetGeometryFor, unimplementedKinds } from "./sceneScriptGeometry";
+import { assetGeometryFor, rotationPivotFor, unimplementedKinds } from "./sceneScriptGeometry";
 import {
   CHARACTER_SKIN_COLOR,
   characterRig,
@@ -481,11 +481,34 @@ function PropMesh({
   );
   const liveScale = keyframed?.scale ?? scale;
   const liveYaw = keyframed ? (keyframed.rotation[1] * Math.PI) / 180 : rotationY;
-  const buildPos: SceneVec3 = keyframed ? [0, 0, 0] : pos;
+
+  // The wrapping group turns about the KIND's pivot, which is generally not the
+  // authored position -- see KIND_ROTATION_PIVOT. The pivot is authored in Scene
+  // coords (Z-up) and has to be swapped into three.js's Y-up on the way into the
+  // scene graph, in both directions: the group sits one pivot above the object,
+  // the geometry is built one pivot back down, so the object still lands where it
+  // was authored but now turns on itself instead of orbiting its base.
+  const declaredPivot = rotationPivotFor(prop.type);
+  const pivotThree: SceneVec3 = keyframed
+    ? [
+        declaredPivot[0] * liveScale,
+        declaredPivot[2] * liveScale,
+        declaredPivot[1] * liveScale,
+      ]
+    : [0, 0, 0];
+  // The drag ghost still wins over the interpolated position: the author is right.
+  const liveScenePosition = keyframed
+    ? (handlers.overridePosition ?? heldPosition ?? keyframed.position)
+    : scenePosition;
   const pivot = keyframed
-    ? sceneToThreePosition(
-        handlers.overridePosition ?? heldPosition ?? keyframed.position,
-      )
+    ? sceneToThreePosition([
+        liveScenePosition[0] + pivotThree[0],
+        liveScenePosition[1] + pivotThree[2],
+        liveScenePosition[2] + pivotThree[1],
+      ])
+    : pos;
+  const buildPos: SceneVec3 = keyframed
+    ? [-pivotThree[0], -pivotThree[1], -pivotThree[2]]
     : pos;
   const extraRotation: [number, number, number] = keyframed
     ? [

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import manifest from "./agent-canvas-contract-manifest.json" with { type: "json" };
-import { agentCanvasContractMismatches } from "./check-agent-canvas-backend-contract.mjs";
+import {
+  agentCanvasContractMismatches,
+  untrackedBackendSchemas,
+} from "./check-agent-canvas-backend-contract.mjs";
 
 function openApi() {
   const schemas = Object.fromEntries(Object.entries(manifest.schemas).map(([name, contract]) => [
@@ -9,7 +12,10 @@ function openApi() {
     {
       properties: Object.fromEntries(contract.properties.map((property) => [
         property,
-        contract.enums[property]
+        // `?? {}` because a schema added to the manifest with properties only --
+        // the three Scene* ones -- has no `enums` key at all, and every pre-existing
+        // entry happened to have one.
+        contract.enums?.[property]
           ? { anyOf: [{ type: "string", enum: [...contract.enums[property]] }, { type: "null" }] }
           : { type: "string" },
       ])),
@@ -117,5 +123,56 @@ describe("Agent Canvas backend contract parity", () => {
     expect(agentCanvasContractMismatches(backendSchema, {
       schemas: { CanvasParameterProvenanceV2: expected },
     })).toEqual([]);
+  });
+});
+
+// The gate iterates the manifest, so a schema it does not list is invisible to it.
+// SceneScript shipped with a green gate for exactly this reason: `SceneProp` and
+// friends were never tracked, so adding `keyframes` could not turn it red. These
+// tests pin the two ways that hole reopens -- an untyped backend schema, and a
+// schema nobody added to the manifest.
+describe("Agent Canvas contract gate coverage", () => {
+  it("fails on a schema the backend publishes with no properties", () => {
+    // A bare `dict[str, Any]` is OpenAPI's `{type: object}` with no `properties`,
+    // so the property diff would compare two empty lists and pass. SceneScript is
+    // typed this way across 23 scene_3d endpoints.
+    const backend = {
+      components: { schemas: { SceneScriptRoot: { type: "object" } } },
+    };
+
+    const [mismatch] = agentCanvasContractMismatches(backend, {
+      schemas: { SceneScriptRoot: { properties: ["scene", "props"] } },
+    });
+    // Also reports the empty-vs-expected property diff, which is the false green in
+    // its most literal form: the gate noticed nothing was comparable and still
+    // produced two complaints instead of a clean pass.
+    expect(mismatch).toContain("SceneScriptRoot exposes no properties");
+    expect(mismatch).toContain("Type it in the backend");
+  });
+
+  it("reports Scene* schemas the manifest does not track", () => {
+    const backend = {
+      components: {
+        schemas: {
+          ChatTurnV2: { properties: {} },
+          SceneOperationsRequest: { properties: { scene_script: {} } },
+          SomethingUnrelated: { properties: {} },
+        },
+      },
+    };
+
+    // Only Scene* is reported: the backend has 533 schemas and most are unrelated
+    // to the canvas, so flagging all of them would be noise nobody acts on.
+    expect(untrackedBackendSchemas(backend, { schemas: { ChatTurnV2: { properties: [] } } }))
+      .toEqual(["SceneOperationsRequest"]);
+  });
+
+  it("tracks the Scene* schemas the canvas endpoints exchange", () => {
+    // Named here because the gap doc requires the manifest to cover the SceneScript
+    // boundary, and this is what makes "covered" checkable rather than aspirational.
+    for (const schemaName of ["SceneOperationsRequest", "SceneOperationsResponse"]) {
+      expect(manifest.schemas[schemaName]).toBeDefined();
+      expect(manifest.schemas[schemaName].properties).toContain("scene_script");
+    }
   });
 });

@@ -1,0 +1,15 @@
+{
+  "scene": {"name": "pivot", "environment": "indoor", "lighting": "neutral", "duration": 2, "frame_rate": 30},
+  "characters": [],
+  "props": [
+    {"id": "box", "type": "crate", "position": [0, 0, 0], "scale": 2.0,
+     "keyframes": [
+       {"frame": 0, "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": 2.0},
+       {"frame": 29, "position": [0, 0, 0], "rotation": [360, 0, 0], "scale": 2.0}]}
+  ],
+  "environment": [],
+  "cameras": [{"id": "cam", "shot_type": "wide", "keyframes": [
+      {"frame": 0, "position": [0, -9, 0.9], "look_at": [0, 0, 0.9]}]}],
+  "shots": [{"id": "s", "camera": "cam", "start_frame": 0, "end_frame": 30, "description": "p"}],
+  "speech_bindings": []
+}

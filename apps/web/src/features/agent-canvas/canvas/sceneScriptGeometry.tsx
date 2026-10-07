@@ -37,6 +37,7 @@ import {
   MeshStandardMaterial,
 } from "./LeanSceneCanvas";
 import {
+  KIND_ROTATION_PIVOT,
   PLACEHOLDER_ASSET_COLOR,
   SCENE_SCRIPT_ASSET_COLORS,
   SCENE_SCRIPT_PART_COLOR_OVERRIDES,
@@ -436,6 +437,20 @@ export const SCENE_SCRIPT_GEOMETRY: Record<SceneScriptKind, AssetGeometry> = {
   fence,
   ground,
 };
+
+/** A kind's rotation pivot, or the origin when it declares none.
+ *
+ * Re-exported from the generated contract so ``PropMesh`` reads the same table
+ * the Blender converter does. Coords are SceneScript's Z-up; the geometry builders
+ * below work in three.js's Y-up, so a vertical offset gets swapped on the way into
+ * the scene graph. Yaw is not in the table -- ``rotation[1]`` is applied to the
+ * inner mesh, which already spins about the object's own vertical axis.
+ */
+export function rotationPivotFor(kind: string): readonly [number, number, number] {
+  return Object.prototype.hasOwnProperty.call(KIND_ROTATION_PIVOT, kind)
+    ? KIND_ROTATION_PIVOT[kind as SceneScriptKind]!
+    : [0, 0, 0];
+}
 
 /** Geometry for a kind, or ``undefined`` if the preview has none for it. */
 export function assetGeometryFor(kind: string): AssetGeometry | undefined {

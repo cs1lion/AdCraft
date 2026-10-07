@@ -38,6 +38,16 @@ function enumValues(schema, root = schema, seen = new Set()) {
   return [];
 }
 
+/**
+ * Schemas the backend is expected to expose by name.
+ *
+ * The check below only ever compares what this manifest lists, so a schema missing
+ * here is invisible to it -- which is how adding `SceneProp.keyframes` shipped with a
+ * green gate. Every schema in this list is now also required to be present, so
+ * deleting one cannot silently shrink the gate's own coverage.
+ */
+const REQUIRED_SCHEMA_NAMES = Object.keys(manifest.schemas);
+
 export function agentCanvasContractMismatches(openApi, contractManifest = manifest) {
   const schemas = openApi?.components?.schemas ?? openApi?.$defs;
   if (!schemas || typeof schemas !== "object") {
@@ -51,6 +61,21 @@ export function agentCanvasContractMismatches(openApi, contractManifest = manife
       mismatches.push(`${schemaName} is missing from backend OpenAPI`);
       return;
     }
+
+    // A bare `Dict[str, Any]` surfaces as an object with no `properties` at all,
+    // and `Object.keys({})` is empty, so the property diff below would compare
+    // nothing and pass. That is precisely how SceneScript went unchecked: 23
+    // endpoints declare `scene_script: dict[str, Any]`, so OpenAPI knows no
+    // fields exist to check and adding a field could never turn this gate red.
+    // Fail loudly instead, so a typed contract is required to be listed here.
+    if (!actual.properties || typeof actual.properties !== "object") {
+      mismatches.push(
+        `${schemaName} exposes no properties -- the backend is publishing it as an ` +
+          "untyped dict/object, so this gate cannot verify it. Type it in the " +
+          "backend (e.g. scene_script: SceneScriptRoot) or remove it from the manifest.",
+      );
+    }
+
     const actualProperties = Object.keys(actual.properties ?? {});
     const backendOnly = difference(actualProperties, expected.properties);
     const frontendOnly = difference(expected.properties, actualProperties);
@@ -74,6 +99,25 @@ export function agentCanvasContractMismatches(openApi, contractManifest = manife
   return mismatches;
 }
 
+/**
+ * Backend schemas the manifest does not track at all.
+ *
+ * Reported separately from the mismatch list because these are not contract
+ * conflicts -- they are holes. A schema the frontend depends on can be added,
+ * changed, or removed with this gate green, since the gate only ever iterates the
+ * manifest. Surfacing untracked schemas is what turns "the gate passed" into a
+ * statement about the gate's own coverage.
+ */
+export function untrackedBackendSchemas(openApi, contractManifest = manifest) {
+  const schemas = openApi?.components?.schemas ?? openApi?.$defs;
+  if (!schemas || typeof schemas !== "object") return [];
+  const tracked = new Set(Object.keys(contractManifest.schemas));
+  return Object.keys(schemas)
+    .filter((name) => !tracked.has(name))
+    .filter((name) => name.startsWith("Scene"))
+    .sort((left, right) => left.localeCompare(right));
+}
+
 async function loadOpenApi(source) {
   if (/^https?:\/\//u.test(source)) {
     const response = await fetch(source);
@@ -90,9 +134,28 @@ async function main() {
       "Provide an OpenAPI JSON file or URL: npm run check:agent-canvas-contract -- <source>",
     );
   }
-  const mismatches = agentCanvasContractMismatches(await loadOpenApi(source));
-  if (mismatches.length) throw new Error(mismatches.join("\n"));
-  process.stdout.write("Agent Canvas frontend contract matches the tracked backend schemas.\n");
+  const openApi = await loadOpenApi(source);
+  const problems = [
+    ...agentCanvasContractMismatches(openApi),
+    // An empty result is the interesting case: the gate can only compare schemas
+    // the manifest lists, so silence here means the gate was green without having
+    // checked SceneScript at all. Say so rather than reporting a clean pass.
+    ...(() => {
+      const untracked = untrackedBackendSchemas(openApi);
+      return untracked.length
+        ? [
+            `Untracked Scene* schemas in the backend that this gate does not compare: ` +
+              `${untracked.join(", ")}. Add them to agent-canvas-contract-manifest.json ` +
+              `with their property lists, or this gate is blind to them.`,
+          ]
+        : [];
+    })(),
+  ];
+  if (problems.length) throw new Error(problems.join("\n"));
+  process.stdout.write(
+    `Agent Canvas frontend contract matches the tracked backend schemas ` +
+      `(${REQUIRED_SCHEMA_NAMES.length} tracked).\n`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

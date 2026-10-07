@@ -66,6 +66,40 @@ Record<string, string>
 };
 
 /**
+ * Where a pitch/roll keyframe turns each kind, in Scene coords (Z-up),
+ * scaled by `scale`. Generated from scene3d/rotation_pivot.py.
+ *
+ * NOT the authored `position`: that is where the object sits on the floor,
+ * which for most kinds is its base. Turning about the base sweeps the whole
+ * object around its own footprint instead of turning it on itself -- a crate
+ * rotating 360 deg drifted 123 px of silhouette travel, against 8 px here.
+ *
+ * It is per-kind rather than a computed centroid because the right answer
+ * differs per object: a tree sways about its root, a door about its hinge,
+ * a rotor about its hub. Kinds are absent when the base IS the pivot.
+ */
+export const KIND_ROTATION_PIVOT: Readonly<
+Partial<Record<PropTypeName | EnvironmentTypeName, readonly [number, number, number]>>
+> = {
+  "book": [0.0, 0.0, 0.04] as const,
+  "box": [0.0, 0.0, 0.4] as const,
+  "crate": [0.0, 0.0, 0.45] as const,
+  "cup": [0.0, 0.0, 0.07] as const,
+  "door": [-0.5, 0.0, 0.0] as const,
+  "flat_roof": [0.0, 0.0, 5.2] as const,
+  "gable_roof": [0.0, 0.0, 5.5] as const,
+  "lantern": [0.0, 0.0, 3.0] as const,
+  "pillar": [0.0, 0.0, 2.1] as const,
+  "platform": [0.0, 0.0, 0.4] as const,
+  "rock": [0.0, 0.0, 0.6] as const,
+  "scroll": [0.0, 0.0, 1.0] as const,
+  "vase": [0.0, 0.0, 0.3] as const,
+  "wall": [0.0, 0.0, 2.5] as const,
+  "weapon": [0.0, 0.0, 0.32] as const,
+  "window": [0.0, 0.0, 1.8] as const,
+};
+
+/**
  * The colour a kind with no geometry renders in, chosen so it can never be
  * mistaken for a real surface. Must equal the converter's
  * ``_DEGRADED_ASSET_COLOR`` (#FF2BD1).

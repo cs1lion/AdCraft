@@ -37,6 +37,7 @@ from app.services.scene3d.director_motion import (
     CAMERA_MOTION_PRESET_IDS,
     CHARACTER_MOTION_PRESET_IDS,
 )
+from app.services.scene3d.rotation_pivot import KIND_ROTATION_PIVOT
 
 # Resolved from this file rather than the process CWD so the CLI can be run from
 # anywhere in the monorepo and still write to the same checked-in path.
@@ -100,6 +101,30 @@ def render_typescript() -> str:
     )
     for suffix in sorted(_PART_COLOR_OVERRIDES):
         lines.append(f"  {_quoted(suffix)}: {_quoted(_PART_COLOR_OVERRIDES[suffix])},")
+    lines.extend(
+        [
+            "};",
+            "",
+            "/**",
+            " * Where a pitch/roll keyframe turns each kind, in Scene coords (Z-up),",
+            " * scaled by `scale`. Generated from scene3d/rotation_pivot.py.",
+            " *",
+            " * NOT the authored `position`: that is where the object sits on the floor,",
+            " * which for most kinds is its base. Turning about the base sweeps the whole",
+            " * object around its own footprint instead of turning it on itself -- a crate",
+            " * rotating 360 deg drifted 123 px of silhouette travel, against 8 px here.",
+            " *",
+            " * It is per-kind rather than a computed centroid because the right answer",
+            " * differs per object: a tree sways about its root, a door about its hinge,",
+            " * a rotor about its hub. Kinds are absent when the base IS the pivot.",
+            " */",
+            "export const KIND_ROTATION_PIVOT: Readonly<",
+            "Partial<Record<PropTypeName | EnvironmentTypeName, readonly [number, number, number]>>",
+            "> = {",
+        ],
+    )
+    for kind, (px, py, pz) in sorted(KIND_ROTATION_PIVOT.items()):
+        lines.append(f"  {_quoted(kind)}: [{px}, {py}, {pz}] as const,")
     lines.extend(
         [
             "};",
