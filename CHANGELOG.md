@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 视口相机：补上"轴"与"朝向"两层，并让交付帧不再带编辑辅助物
+
+合并 `fix/preview-shot-camera`（相机 + `--root` + `include_control_passes`）时的复核结论。前两个提交修好了根因（`camera` prop 只在挂载时被读一次），但漏了两层，且它们自己的规格抓不到——因为那条规格的断言全是**相对**的（"动过"/"不是种子值"/"超过三个不同位置"/"切镜时距离 > 0.5"），一台被镜像摆放且没有朝向的相机四条全过。
+
+- **漏掉的第 1 层：轴**。SceneScript 是 Z-up（`[right, forward, up]`），three.js 是 Y-up。pose 原样传给相机，于是 jinghai 第一镜的正确位置 `(20, 6, -18)`（高 6 米、退后 18 米）变成 `(20, -18, 6)`——**地下 18 米**。四镜全错。
+- **漏掉的第 2 层：朝向**。画布相机只在构造时 `lookAt(0,0,0)`，而 pose 自带 `look_at`。只挪位置不转向，拍到的是"恰好挡在原点方向的任何东西"。
+- **三份 dist 渲同一份 jinghai 脚本同一帧的实测**：
+
+  | | 第 0 帧 | 第 240 帧 | 第 0→60 帧差异 | distinct_colors |
+  |---|---|---|---|---|
+  | 修复前（已发布） | 空绿地 + 浮动角标 | 空绿地 | 1973 px | 383 |
+  | 只修根因 | **空绿地——与修复前一模一样** | 一堵墙怼在脸上 | 3694 px | 383 |
+  | 本次合并 | 完整广角场景 | 气闸场景 | 109239 px | 908 |
+
+  根因那一版之所以看起来"切镜有变化"（503435 px 全帧变化），是因为相机虽然动了，却贴在占满画面的墙上；镜内位移几乎不改变画面。而它自己的规格正是在这种情况下全绿的。
+- **改动**：
+  - 新增 `ShotCameraRig`（画布内 `useFrame` 组件）作为相机的**唯一**写入者：经 `sceneToThreePosition` 换轴、按 `look_at` 转向、每帧生效。`camera` prop 退回"仅挂载种子"，并把这一契约写进该 prop 的文档——它此前的沉默正是缺陷本身。
+  - `enabled={!editMode}`：编辑态由 `OrbitControls` 掌握相机，条件与它自己的 `enabled` 一致，因此任何时刻只有一个写入者（这批缺陷里最坏的形态就是两个机制各自写相机而互不知情）。
+  - `LeanSceneCanvas` 的 Stage 0 effect 从"把 prop 写进活相机"改为"发布一个读**活相机**的探针"（`__previsLiveCamera`，同时给出朝向）。原先那个 effect 未按 editMode 区分，在编辑态每次拖动播放头都会把作者刚飞到的视角拽回分镜位姿；它整段注释还被重复粘贴了两遍。
+  - `PrevisRenderEntry.camera()` 改为读活相机探针，删掉读 prop 的那个（报"意图"而非"事实"的探针正是它第一版全绿的原因）。
+- **交付帧不再带编辑辅助物**：修好相机后暴露出一个此前被"相机什么都没拍到"掩盖的问题——`CameraGizmo` 的镜头锥体画在自己相机前方 0.3 m 处，于是**当前分镜的 gizmo 正好位于渲染镜头前 0.3 m**，每个交付帧中央都有一个黑色大锥。新增 `showGizmos`（默认 true，编辑与播放都保留），渲染入口传 false。不做成"非编辑态就隐藏"，因为播放态作者确实需要那些标签，而交付帧绝对不能有——知道自己是哪一种的那个调用方自己说。
+- **顺手修一个同型的洞**：驱动假定输出目录已存在（API 侧会 `os.makedirs`），所以只有手动跑驱动才会发现——而手动跑驱动正是调试渲染的人的第一件事，它死在裸 ENOENT 栈上而不是 coded failure。现在驱动自己建目录。
+- **测试**：`threejs-shot-camera.spec.ts` 重写为 9 条，**全部断言绝对值**（字面量由 `jinghai-scene.json` 手算，含轴转换），朝向单独断言；删掉 `test.skip(boundary >= info.frames)` 这个条件跳过（换一份单镜夹具就会让这条断言静默消失，而"跳过的断言比错的断言更危险"正是本仓库自己的教训）。沿用它的优点：打在真实 `render.html` 上、读活相机而非 prop、`PLAYWRIGHT_PORT` 让 worktree 能跑。
+  - 变异复验（三次，逐层）：去掉轴转换 → 7 failed / 2 passed；去掉 `lookAt` → 4 failed / 5 passed；整个 `ShotCameraRig` 移除 → 8 failed / 1 passed；还原 → 9 passed。
+  - `render-frames-paths.test.mjs` 13 条（沿用另一分支的测试面，含源码级"不得出现绝对路径字面量"守卫）。
+- **验证**：`tsc` exit 0；`eslint` 0 errors（42 warnings 全是既有的）；canvas + timeline + 脚本 109 文件全过；`npm run build` + `perf:bundle` 通过；后端 `ruff` 全净、scene3d 相关 27 passed；浏览器规格 20/21 通过（唯一失败的 `scene-script-character-rig` 像素用例在未改代码的基线上同样失败）。真机：三份 dist 的像素对比见上表；深度通道经 API 通路产出 20 张 `depth_*.png`（12-15KB，非黑）。
+- **环境注记**：`@dagrejs/dagre` 是 `package.json` 里声明了的依赖却没装，导致 `tsc` 在**主检出上**也报 `TS2307`（与本改动无关，阻塞了整条验证阶梯）。已用 `npm install --no-save @dagrejs/dagre@3.1.1` 补装，未改动 `package.json` 与 lock。
+
 ### Changed — 预演默认渲染全帧动画：scene-3d 节点的预演终于会动（keyframes-only 改为显式 opt-in）
 
 - **动机**：用户反馈"部分分镜的预演没动起来，像空白场景静止几秒"。根因是 `scene3d_render_keyframes_only` 默认 `True`：节点跑一次只出每镜 5 张关键帧静帧，没有连续动作、没有运镜、没有切点。而这份 MP4 正是导演台发布成预演片段、作者据以判断节奏的东西。

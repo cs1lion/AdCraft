@@ -46,14 +46,14 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import {
-  dirname,
   extname,
   join,
   normalize,
   resolve,
 } from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+
+import { describeMissingFrontend, resolveWebRoot } from "./render-frames-paths.mjs";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -77,10 +77,11 @@ function arg(name, fallback) {
 // The frontend root this driver renders. Resolved from the DRIVER'S OWN
 // LOCATION, never a hardcoded path: a literal here means an operator on another
 // machine renders a different checkout's frontend and never knows. The API
-// passes `--root` explicitly; this is the fallback for a manual run.
-const HERE = fileURLToPath(import.meta.url);
-const DRIVER_DIR = dirname(HERE); // .../apps/web/scripts
-const WEB_ROOT = arg("root") ? resolve(arg("root")) : dirname(DRIVER_DIR);
+// passes `--root` explicitly; this is the fallback for a manual run. The rule
+// and its tests live in `render-frames-paths.mjs` — and that test asserts this
+// file contains no absolute path literal, so do not paste one back in, not even
+// into a comment.
+const WEB_ROOT = resolveWebRoot({ explicit: arg("root"), driverUrl: import.meta.url });
 const DIST = join(WEB_ROOT, "dist");
 const SCRIPT = resolve(arg("script"));
 const OUT = resolve(arg("out"));
@@ -100,8 +101,16 @@ function fail(code, message) {
   process.exit(2);
 }
 
-if (!existsSync(DIST)) fail("render_dist_missing", `no dist at ${DIST} — run npm run build`);
+const missingFrontend = describeMissingFrontend(WEB_ROOT);
+if (missingFrontend) fail("render_dist_missing", missingFrontend);
 if (!existsSync(SCRIPT)) fail("render_script_missing", `no scene script at ${SCRIPT}`);
+// The output directory is created here rather than assumed. The API side
+// `os.makedirs`'d it, so the only way to notice that the driver relied on the
+// caller is to run the driver — which is the manual path a developer debugging a
+// render takes, and it died on a raw ENOENT stack trace instead of a coded
+// failure. Nothing reads the frames before this point, so creating it early
+// costs nothing and makes the driver self-sufficient.
+mkdirSync(OUT, { recursive: true });
 
 const scene = JSON.parse(await readFile(SCRIPT, "utf8"));
 

@@ -42,16 +42,17 @@ interface RenderCommand {
   /** Read the canvas as base64 PNG. Requires `captureFrames` on. */
   capture: () => Promise<string>;
   /**
-   * Where the VIEWPORT camera actually is, right now.
+   * Where the render camera actually is, right now.
    *
-   * Exists because "the frames differ" is not evidence that the camera moves:
-   * characters walking also change the pixels. Only the camera's own position
-   * proves the shot camera is being followed, and that is the assertion that
-   * caught this renderer's worst bug (the camera prop was a one-time seed, so
-   * every frame after the first rendered from the same vantage point while the
-   * playhead advanced normally).
+   * "The frames differ" is not evidence that the camera moves — a walking
+   * character changes pixels too. Only the camera itself settles it, and it must
+   * be the LIVE camera published by the canvas, never the pose the preview
+   * intended: reporting the intention passes even when the renderer ignored it,
+   * which is exactly how a camera frozen on its seed position shipped with a
+   * passing check. Position AND facing, because a camera can sit at the right
+   * coordinates and still frame the wrong thing.
    */
-  cameraPosition: () => [number, number, number] | null;
+  camera: () => { position: [number, number, number]; forward: [number, number, number] } | null;
   /**
    * DEPTH control pass (plan §4.5): the shot keyframe frames the pass samples,
    * i.e. the `depth_<N>.png` files a render job must produce.
@@ -70,8 +71,6 @@ declare global {
     __previsRender?: RenderCommand;
     __previsSeek?: (frame: number) => void;
     __previsCurrentFrame?: number;
-    /** The preview's live viewport camera, published by the preview itself. */
-    __previsCameraPosition?: () => [number, number, number] | null;
   }
 }
 
@@ -145,6 +144,11 @@ function boot() {
           height={540}
           editMode={false}
           captureFrames
+          // No gizmos in delivered frames: a camera's lens cone sits 0.3 m in
+          // front of that camera, so the ACTIVE shot's gizmo would fill the
+          // middle of every frame with a black cone now that the camera really
+          // follows the shot camera.
+          showGizmos={false}
           controlDepthPass={{ onFrame: (delivery) => void depthDeliveries.set(delivery.frame, delivery) }}
         />
       </SceneScriptPlaybackProvider>
@@ -157,14 +161,7 @@ function boot() {
       frameRate: scene.scene.frame_rate,
     }),
     seek: seekFrame,
-    cameraPosition: () => {
-      // The canvas element is the only handle the page has on the renderer; the
-      // live camera is reachable through the three.js object the preview owns.
-      // Reading the DOM's own copy is not an option — there isn't one — so the
-      // preview publishes it. See `SceneScript3DPreview`'s cameraPose probe.
-      const probe = window.__previsCameraPosition;
-      return probe ? probe() : null;
-    },
+    camera: () => window.__previsLiveCamera?.() ?? null,
     capture: async () => {
       const canvas = document.querySelector("canvas");
       if (!(canvas instanceof HTMLCanvasElement)) throw new Error("no canvas");

@@ -43,6 +43,7 @@ import {
   OrbitControls,
   RingGeometry,
   SphereGeometry,
+  useFrame,
   useThree,
 } from "./LeanSceneCanvas";
 import { cameraLabel, cameraLabelsById, shotForFrame } from "./shotLabels";
@@ -576,6 +577,68 @@ function TrajectoryLine({
 }
 
 // ---------------------------------------------------------------------------
+// Shot camera rig (lives inside the Canvas: needs useThree + useFrame)
+// ---------------------------------------------------------------------------
+
+/**
+ * Puts the render camera where the SCRIPT says the camera is.
+ *
+ * WHY A COMPONENT, NOT THE `<Canvas camera={{...}}>` PROP
+ * `LeanSceneCanvas` reads that prop once, in a mount-only effect, to construct
+ * the `PerspectiveCamera` — see the `camera` prop's own docstring. A prop that
+ * changes with the playhead therefore changes nothing: a headless render captured
+ * all 720 frames of a 4-shot previs from one fixed vantage, so every cut and
+ * camera move — the entire reason a previs exists — was absent from the output.
+ * Two earlier attempts to fix that through the prop failed for the same reason.
+ *
+ * So the pose is applied here, to the camera object, on every frame, from the
+ * same `shotCameraPoseAtFrame` the depth pass uses: preview, control pass and
+ * captured frames cannot disagree about where the camera is.
+ *
+ * Three things this has to get right, each of which was wrong before:
+ *   - AXES. SceneScript is Z-up ([right, forward, up]); three.js is Y-up
+ *     ([right, up, back]). The pose goes through `sceneToThreePosition` like
+ *     every other position in this file. Passing the raw keyframe put shot 1 of
+ *     the jinghai scene 18 m UNDERGROUND instead of 6 m up — a render that
+ *     produced an empty green screen, identical to having no fix at all.
+ *   - AIM. The pose carries a `look_at`, and the canvas camera is only ever
+ *     constructed looking at the world origin. Moving it without aiming frames
+ *     whatever happens to be in front of a camera pointed at (0,0,0) — which is
+ *     how a "fixed" render ends up as a wall in the face.
+ *   - WHO OWNS THE CAMERA. `OrbitControls` also writes it, every frame, when
+ *     enabled. The rig therefore runs only when the author is not flying the
+ *     view (`enabled={!editMode}`), which is the same condition that gates
+ *     OrbitControls — so there is never more than one writer.
+ */
+function ShotCameraRig({
+  pose,
+  enabled,
+}: {
+  /** SceneScript-space pose, or null when the script names no usable camera. */
+  pose: { position: SceneVec3; lookAt: SceneVec3 } | null;
+  enabled: boolean;
+}) {
+  const { camera } = useThree();
+  // Through a ref, so the render loop always reads the current pose without
+  // re-subscribing (or rebuilding the callback) on every seek.
+  const poseRef = useRef(pose);
+  poseRef.current = pose;
+  const target = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame(() => {
+    const current = poseRef.current;
+    if (!enabled || !current) return;
+    const position = sceneToThreePosition(current.position);
+    const lookAt = sceneToThreePosition(current.lookAt);
+    camera.position.set(position[0], position[1], position[2]);
+    camera.lookAt(target.set(lookAt[0], lookAt[1], lookAt[2]));
+    camera.updateMatrixWorld();
+  });
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Ground-plane drag layer (lives inside the Canvas: needs useThree)
 // ---------------------------------------------------------------------------
 
@@ -888,13 +951,6 @@ function CameraPlacementLayer({ onCommit, onCancel }: CameraPlacementProps) {
 // Main Preview Component
 // ---------------------------------------------------------------------------
 
-declare global {
-  interface Window {
-    /** The pose the viewport camera is being told to take (see shotPose). */
-    __previsCameraPosition?: () => [number, number, number] | null;
-  }
-}
-
 export interface SceneScript3DPreviewProps {
   sceneScript: SceneScriptRoot;
   height?: number;
@@ -906,6 +962,23 @@ export interface SceneScript3DPreviewProps {
    * off by default because it costs a buffer copy per frame.
    */
   captureFrames?: boolean;
+  /**
+   * Draw the AUTHORING aids: per-camera gizmos (body, lens cone, frustum lines)
+   * and their `<Html>` labels. Default true — they are how an author reads the
+   * shot list, in editing and in playback alike.
+   *
+   * The headless render passes false, and it must. The lens cone sits 0.3 m in
+   * front of its own camera, so once the render camera actually follows the shot
+   * camera (it did not, until `ShotCameraRig`), the gizmo for the ACTIVE shot sits
+   * 0.3 m from the lens and fills the middle of every delivered frame with a black
+   * cone. Verified on jinghai frame 0: gating the gizmos turns a frame dominated by
+   * that cone into a legible wide shot of the base.
+   *
+   * A separate prop rather than a rule like "hide whenever not editing": the
+   * editor's playback view genuinely wants the labels, and the render genuinely
+   * must not have them, so the caller that knows which one it is says so.
+   */
+  showGizmos?: boolean;
   selectedObject?: SceneObjectRef | null;
   onSelect?: (ref: SceneObjectRef | null) => void;
   /** Live drag updates: local preview state only. */
@@ -980,6 +1053,7 @@ export function SceneScript3DPreview({
   onGestureCommit,
   onGestureCancel,
   captureFrames = false,
+  showGizmos = true,
   children,
   controlDepthPass,
 }: SceneScript3DPreviewProps) {
@@ -1026,28 +1100,15 @@ export function SceneScript3DPreview({
     [currentFrame, sceneScript],
   );
 
-  // Where the viewport camera is, at this frame. The script's own camera
-  // keyframes, interpolated — the same function the depth pass uses, so the
-  // preview, the control pass and the captured frames cannot disagree about it.
-  // Falls back to the old orbit rig only when the script has no shot camera at
-  // all (a fresh, empty scene), so an unwritable viewport is never an option.
+  // Where the camera is at this frame: the script's own camera keyframes,
+  // interpolated by the same pure function the depth pass uses. Null when the
+  // script names no usable camera for this frame — an empty scene, or a dangling
+  // shot→camera reference. Null is a real state the rig handles by leaving the
+  // camera alone, rather than a pose invented here.
   const shotPose = useMemo(() => {
     const shot = shotForFrame(sceneScript, currentFrame);
-    const posed = shotCameraPoseAtFrame(sceneScript.cameras, shot, currentFrame);
-    return posed ?? { position: [8, -12, 6], lookAt: [0, 0, 0], cameraId: "" };
+    return shotCameraPoseAtFrame(sceneScript.cameras, shot, currentFrame);
   }, [sceneScript, currentFrame]);
-
-  // Publish the pose the viewport camera is being TOLD to take, for the render
-  // harness. This is the prop value, not the live GL camera: it is what the
-  // caller asked for, so a mismatch between it and the live camera is exactly
-  // the bug this probe exists to expose (the camera prop used to be a one-time
-  // seed, so the live camera kept the first frame's position forever).
-  useEffect(() => {
-    window.__previsCameraPosition = () => [...shotPose.position] as [number, number, number];
-    return () => {
-      delete window.__previsCameraPosition;
-    };
-  }, [shotPose]);
 
   // Kinds this build has no geometry for. Normally empty; a non-empty list means
   // the script came from a backend newer than this bundle, and the magenta boxes
@@ -1097,18 +1158,11 @@ export function SceneScript3DPreview({
       <Canvas
         shadows
         captureFrames={captureFrames}
-        // The viewport camera FOLLOWS THE SHOT CAMERA, not a fixed orbit.
-        //
-        // It used to be a hardcoded [8, -12, 6] orbit rig, which meant the
-        // headless render captured all 720 frames from one vantage point: shot
-        // cuts and camera moves — the entire point of a previs — never reached
-        // the output. `shotCameraPoseAtFrame` interpolates the script's own
-        // camera keyframes, so the preview, the depth pass and the captured
-        // frames all agree on where the camera is.
-        camera={{
-          position: shotPose.position as [number, number, number],
-          fov: 50,
-        }}
+        // Seed only — see `LeanCanvasProps.camera`. Following the playhead is
+        // `ShotCameraRig`'s job, because a prop read once at mount cannot do it;
+        // two attempts to do it through this prop are what left a 720-frame
+        // render looking at nothing.
+        camera={{ position: [8, -12, 6], fov: 50 }}
         style={{ width: "100%", height: "100%" }}
         onPointerMissed={() => {
           if (!editMode) return;
@@ -1208,7 +1262,7 @@ export function SceneScript3DPreview({
                 ))}
 
                 {/* Cameras */}
-                {sceneScript.cameras.map((object, index) => (
+                {showGizmos && sceneScript.cameras.map((object, index) => (
                   <CameraGizmo
                     key={object.id}
                     camera={object}
@@ -1313,6 +1367,13 @@ export function SceneScript3DPreview({
 
         {/* DEPTH control pass: opt-in, and only ever a second render of the
             frame the author is already looking at. */}
+        {/* The shot camera owns the render camera whenever the author is not
+            flying it. It is mounted BEFORE `DepthPassRecorder` so its per-frame
+            write lands before the recorder reads the same camera for the depth
+            pass — colour and control frames then come from one viewpoint, which
+is the entire point of a control pass. */}
+        <ShotCameraRig pose={shotPose} enabled={!editMode} />
+
         {controlDepthPass && (
           <DepthPassRecorder
             sceneScript={sceneScript}
