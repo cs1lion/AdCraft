@@ -184,6 +184,20 @@ class TestContract:
             f"--root {root} does not contain the driver {threejs_renderer.RENDER_DRIVER}"
         )
 
+    def test_control_passes_flag_reaches_the_driver(self, calls):
+        # `include_control_passes` was accepted and then dropped, so the API
+        # path produced no `control_depth/` at all while a hand-run CLI did.
+        commands, _ = calls
+        threejs_renderer.render_scene_script_threejs(
+            _script(), "out", timeout_seconds=60, include_control_passes=True
+        )
+        assert "--control-depth" in commands[0], "the depth pass was requested but not run"
+
+    def test_control_passes_off_by_default(self, calls):
+        commands, _ = calls
+        threejs_renderer.render_scene_script_threejs(_script(), "out", timeout_seconds=60)
+        assert "--control-depth" not in commands[0]
+
     def test_scene_script_travels_as_a_temp_file_not_a_command_line(self, calls):
         # A real scene is tens of kilobytes; Windows caps the command line well
         # below that, and a truncated script would render a different scene.

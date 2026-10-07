@@ -143,6 +143,12 @@ def render_scene_script_threejs(
             "--root",
             str(WEB_ROOT),
         ]
+        # Depth control pass: same `control_depth/depth_<N>.png` layout the
+        # Blender path writes and `collect_control_passes` collects. The flag
+        # was accepted here and then dropped, so the API path produced no depth
+        # files at all while a hand-run CLI did — the parameter was a lie.
+        if include_control_passes:
+            command.append("--control-depth")
         if keyframes_only:
             frames = _keyframe_frames(scene_script)
             if not frames:

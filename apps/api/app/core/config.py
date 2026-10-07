@@ -272,6 +272,13 @@ class Settings:
     #                instead of two (see docs/plans/threejs-renderer-replacement.md)
     # Default stays "blender" so nothing changes until it is opted into.
     scene3d_renderer_backend: Literal["blender", "threejs"] = "blender"
+    # Emit the geometric control passes (depth; normal/flow degrade to
+    # unavailable on Blender 5.x and stay absent in three.js) next to the
+    # colour frames, in the layout `control_passes.collect_control_passes`
+    # collects. Off by default because every renderer supported it from day
+    # one and the caller never asked for it, so turning it on would change
+    # what lands in `control_depth/` for every existing workflow.
+    scene3d_render_control_passes: bool = False
     # Timeout budget derived from the frame count instead of a flat guess:
     #   timeout = startup + per_frame * frames_rendered
     # The flat ``scene3d_render_timeout_seconds`` above stays as the ceiling, so
@@ -678,6 +685,10 @@ class Settings:
             scene3d_renderer_backend=_read_backend(
                 "SCENE3D_RENDERER_BACKEND",
                 cls.scene3d_renderer_backend,
+            ),
+            scene3d_render_control_passes=_read_bool(
+                "SCENE3D_RENDER_CONTROL_PASSES",
+                cls.scene3d_render_control_passes,
             ),
             scene3d_render_startup_seconds=max(
                 0,

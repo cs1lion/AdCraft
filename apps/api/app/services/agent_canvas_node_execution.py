@@ -2119,6 +2119,14 @@ class Scene3DNodeExecutor:
         self._keyframes_only = bool(
             getattr(settings, "scene3d_render_keyframes_only", False)
         )
+        # Geometric control passes. `include_control_passes` has existed on the
+        # renderers since the beginning but the caller never passed it, so the
+        # `control_depth/` directory was never produced by ANY backend — the
+        # feature was reachable only by calling the renderer by hand. Default
+        # off; SCENE3D_RENDER_CONTROL_PASSES=true turns it on.
+        self._control_passes = bool(
+            getattr(settings, "scene3d_render_control_passes", False)
+        )
         # The MP4 is the *optional* half of the deliverable.  What a downstream
         # video node or a reviewer actually needs is the camera trajectory and
         # the keyframe schedule, which the node now always publishes as
@@ -2457,6 +2465,7 @@ class Scene3DNodeExecutor:
                     frames_dir,
                     timeout_seconds=self._render_timeout_for(scene_script),
                     keyframes_only=self._keyframes_only,
+                    include_control_passes=self._control_passes,
                 )
             if not getattr(result, "success", False) or getattr(result, "frame_count", 0) == 0:
                 raise _error(
