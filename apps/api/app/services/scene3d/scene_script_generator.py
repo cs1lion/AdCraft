@@ -22,7 +22,10 @@ from typing import Any, Protocol
 import httpx
 
 from app.core.config import Settings
-from app.schemas.scene_script import SceneScriptRoot
+from typing import get_args
+
+from app.schemas.scene_script import EnvironmentType, PropType, SceneScriptRoot
+from app.services.scene3d import asset_dimensions
 from app.services.scene3d.parser import parse_llm_output
 from app.services.scene3d.shot_templates import generate_establishing_shot
 
@@ -33,48 +36,83 @@ DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_TOKENS = 2000
 
 
-_SCENE_SCRIPT_SYSTEM_PROMPT = """\
+#: The kinds, spelled from the schema rather than remembered. This prompt used to
+#: list seven of thirteen prop kinds and five of thirteen environment kinds by
+#: hand, so more than half the vocabulary did not exist as far as the model was
+#: concerned — and only a prompt edit could ever change that.
+_PROP_TYPES = " | ".join(f'"{value}"' for value in get_args(PropType))
+_ENVIRONMENT_TYPES = " | ".join(f'"{value}"' for value in get_args(EnvironmentType))
+
+
+def _vocabulary() -> str:
+    """The sizes the model needs, with the two traps spelled out.
+
+    `scale` used to be unexplained. The model wrote `scale: 4.5` for a `pillar`
+    without knowing that is a 19 m column beside a 1.75 m person, and `scale: 5`
+    for a `platform` without knowing that is a 25 m slab whose top sits a metre
+    up — so every character, authored at z = 0, ended up underneath it. Nothing
+    caught it: the renderer produced an empty frame, so there was nothing to look
+    at and no way to tell a plausible prompt from a correct one.
+    """
+    sizes = "\n".join(asset_dimensions.prompt_lines())
+    return f"""\
+Sizes, in metres. Every `scale` above 1 multiplies these, and a human is \
+{asset_dimensions.REFERENCE_PERSON_HEIGHT:g} m tall — size the scene against \
+that, not against the number.
+{sizes}
+Two traps the sizes above imply:
+- A `platform` is a raised DECK, not a room. Anything meant to stand beside it
+  must sit outside its footprint, or it will be standing underneath the deck.
+- Anything whose base is non-zero (`lantern`, `flat_roof`, `rect_table`) is held
+  off the ground or stands on legs; `position` places its lowest point, not its
+  centre.
+"""
+
+
+_SCENE_SCRIPT_SYSTEM_PROMPT = f"""\
 You are a professional 3D previsualization artist. Convert the user's scene \
 description into ONE SceneScript JSON object for a low-poly 3D previs \
 renderer.
 
 Output ONLY the JSON object inside a single ```json code block, no other text. \
 The object must follow this shape:
-{
-  "scene": {"name": string, "environment": "indoor" | "outdoor" | "mixed", \
+{{
+  "scene": {{"name": string, "environment": "indoor" | "outdoor" | "mixed", \
 "lighting": "warm" | "cool" | "neutral" | "dramatic" | "soft" | "hard", \
-"duration": number, "frame_rate": number},
+"duration": number, "frame_rate": number}},
   "characters": [
-    {"id": string, "type": "lowpoly_human", \
-"appearance": {"color": "#RRGGBB", "height": number, "scale": number}, \
-"keyframes": [{"frame": int, "position": [x, y, z], "rotation_y": number, \
-"action": "stand" | "walk" | "sit" | "talk" | "gesture"}]}
+    {{"id": string, "type": "lowpoly_human", \
+"appearance": {{"color": "#RRGGBB", "height": number, "scale": number}}, \
+"keyframes": [{{"frame": int, "position": [x, y, z], "rotation_y": number, \
+"action": "stand" | "walk" | "sit" | "talk" | "gesture"}}]}}
   ],
-  "props": [{"id": string, "type": "box" | "chair" | "round_table" | \
-"rect_table" | "book" | "cup", "position": [x, y, z], "scale": number, \
-"rotation_y": number}],
-  "environment": [{"id": string, "type": "wall" | "floor" | "pillar" | \
-"door" | "window", "position": [x, y, z], "scale": number, \
-"rotation_y": number}],
+  "props": [{{"id": string, "type": {_PROP_TYPES}, "position": [x, y, z], \
+"scale": number, "rotation_y": number}}],
+  "environment": [{{"id": string, "type": {_ENVIRONMENT_TYPES}, \
+"position": [x, y, z], "scale": number, "rotation_y": number}}],
   "cameras": [
-    {"id": string, "shot_type": "wide" | "medium" | "closeup" | \
-"over_shoulder" | "pov", "keyframes": [{"frame": int, \
-"position": [x, y, z], "look_at": [x, y, z]}]}
+    {{"id": string, "shot_type": "wide" | "medium" | "closeup" | \
+"over_shoulder" | "pov", "keyframes": [{{"frame": int, \
+"position": [x, y, z], "look_at": [x, y, z]}}]}}
   ],
-  "shots": [{"id": string, "camera": string, "start_frame": int, \
-"end_frame": int, "description": string}],
+  "shots": [{{"id": string, "camera": string, "start_frame": int, \
+"end_frame": int, "description": string}}],
   "speech_bindings": []
-}
+}}
 
 Hard rules:
 - At least one camera and one shot. The shot's "camera" must equal a camera id.
 - Every character and camera must have a keyframe at frame 0; add more \
 keyframes for any described movement.
 - Shot end_frame must equal round(scene.duration * scene.frame_rate) - 1.
-- Positions are in meters. Characters stand on the ground (y = 0); typical \
-camera height is y = 1.5, 2 to 15 meters from the subject.
+- Positions are in meters. Z is UP: [x, y, z] is [right, forward, up]. \
+Characters stand on the ground (z = 0); typical camera height is z = 1.6, \
+2 to 20 meters from the subject.
+- Place the camera so nothing stands between it and its subject, and so the \
+subject is not a speck in the frame.
 - Use 24 or 30 fps and keep duration between 2 and 10 seconds.
-"""
+
+{_vocabulary()}"""
 
 
 class SceneScriptGenerationError(RuntimeError):
