@@ -106,6 +106,15 @@ export interface CharacterSegment {
 export interface CharacterRig {
   /** Standing height in metres: feet at 0, crown just above ``height*scale``. */
   height: number;
+  /**
+   * Hip-to-foot distance in metres -- the leg's own length.
+   *
+   * Exposed because the walk's leg amplitude is derived from it: a stride is only
+   * plantable by a leg that is long enough to reach it, so the pose library needs
+   * this number rather than an assumed one. A 1.1 m figure skating is the visible
+   * symptom of getting this wrong.
+   */
+  legLength: number;
   /** Hip-to-shoulder line: where the legs end, the torso ends and the arms hang from. */
   torsoTop: number;
   /** Head sphere centre height. */
@@ -196,7 +205,7 @@ export function characterRig(appearance: CharacterAppearanceLike): CharacterRig 
     },
   ];
 
-  return { height: h, torsoTop, headY, headRadius, segments };
+  return { height: h, legLength: legHeight, torsoTop, headY, headRadius, segments };
 }
 
 /**

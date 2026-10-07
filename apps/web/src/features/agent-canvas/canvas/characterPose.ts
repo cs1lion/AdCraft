@@ -82,12 +82,14 @@ export const ACTION_CYCLE_SECONDS: Record<CharacterAction, number> = {
 
 /** Amplitudes, in radians, per action. Kept beside the curves so both are one read. */
 const POSE = {
-  /** Half a stride: legs 32 degrees out, arms counter-swinging. */
   walk: {
-    leg: 0.56,
-    arm: 0.42,
-    /** One step of vertical travel per full cycle — the body's own rise and fall. */
-    bob: 0.018,
+    /**
+     * Arms counter-swing the legs. Expressed as a fraction of the leg amplitude so
+     * the opposition is exact by construction rather than by two sines happening to
+     * be out of phase: the arm swings with the same rhythm as the SAME-SIDE leg,
+     * in the opposite direction.
+     */
+    armOverLeg: 0.75,
     /** A little counter-rotation, which is most of what makes a walk read as one. */
     torso: 0.06,
   },
@@ -101,18 +103,103 @@ const POSE = {
   talk: { arm: 0.35, torso: 0.04 },
 } as const;
 
-/** Metres per stride cycle. A 1 s cycle at this length is a normal adult walk. */
+/** Metres per stride cycle for the reference figure. A normal adult walk. */
 export const WALK_STRIDE_METRES = 1.4;
+
+/** The leg of the figure {@link WALK_STRIDE_METRES} was measured on: height 1.85. */
+const REFERENCE_LEG_LENGTH_METRES = 0.925;
+
+/** How much of the cycle a leg spends with its foot on the ground. */
+const STANCE_FRACTION = 0.5;
+
+/**
+ * Steepest leg swing allowed, radians (~36 degrees).
+ *
+ * A leg that would need more than this covers a shorter stride instead. Previs
+ * figures are sometimes very short, and a 90-degree hip reads as a breakdancer
+ * rather than a walk.
+ */
+const WALK_MAX_LEG_RADIANS = 0.62;
+
+/** Leg length assumed when a caller does not know the rig. Height 1.7, so 0.5 x 1.7. */
+const DEFAULT_LEG_LENGTH_METRES = 0.85;
+
+/**
+ * The stride a leg of this length covers, in metres.
+ *
+ * Proportional to the leg, because a stride is a reach: scaling it keeps
+ * ``stride / (4L)`` -- and therefore the leg angle -- the same for every figure, so
+ * a child takes shorter steps rather than swinging harder. Since the phase comes
+ * from distance travelled, this is also what decides how many steps per metre a
+ * figure takes, so it must be the SAME number the amplitude is derived from.
+ *
+ * Derived separately in two places it was the source of a measured defect: the
+ * phase advanced as if the stride were 1.4 m while the geometry only supported less,
+ * and a 1.1 m figure skated at 19% of its own travel.
+ */
+export function walkStrideMetres(legLengthMetres = DEFAULT_LEG_LENGTH_METRES): number {
+  const length = legLengthMetres > 0 ? legLengthMetres : DEFAULT_LEG_LENGTH_METRES;
+  const proportional = (WALK_STRIDE_METRES * length) / REFERENCE_LEG_LENGTH_METRES;
+  // The longest stride this leg could plant without exceeding the angle limit.
+  const reachable = 4 * length * Math.sin(WALK_MAX_LEG_RADIANS);
+  return Math.min(proportional, reachable);
+}
+
+/**
+ * The leg angle a no-slide walk needs, for a given leg length.
+ *
+ * A planted foot does not move, so over one stance the hip must advance exactly as
+ * far as ``L*sin(theta)`` retreats: ``2*L*sin(A) = stride/2``, hence
+ * ``sin(A) = stride / (4L)``.
+ *
+ * This is not a stylistic constant. With the previous fixed 0.56 rad the stance
+ * foot slid 134 mm per frame while the body moved 40 mm -- the figure skated 332%
+ * faster than it walked, which is what "moonwalk" means. Deriving the angle from
+ * the stride and the leg is what pins the foot down.
+ */
+export function walkLegAmplitude(legLengthMetres = DEFAULT_LEG_LENGTH_METRES): number {
+  const length = legLengthMetres > 0 ? legLengthMetres : DEFAULT_LEG_LENGTH_METRES;
+  return Math.asin(Math.min(1, walkStrideMetres(legLengthMetres) / (4 * length)));
+}
+
+/**
+ * Leg angle as a fraction of the amplitude, over one cycle.
+ *
+ * The sign is the whole of the no-slide property, so it is worth stating. A
+ * planted foot means ``hip - L*sin(theta)`` is constant, so ``L*sin(theta)`` must
+ * RISE as the hip advances: the leg starts at ``-A`` with the foot AHEAD of the
+ * hip at heel strike, and ends at ``+A`` with the foot behind it at toe off. Get
+ * this backwards and the stance foot skates forward at 212% of the body's own
+ * travel -- the same defect, only with the sign flipped.
+ *
+ * Stance is LINEAR and swing a raised cosine, and the split matters as much as the
+ * sign: a sine is steepest exactly where the foot meets the ground, so it slides
+ * hardest at the contact it is supposed to be planting. A linear stance sweeps
+ * ``-A`` to ``+A`` at the rate that keeps the foot still; the swing then eases the
+ * leg forward, fastest through vertical where it has to clear.
+ */
+function walkLegShape(q: number): number {
+  const t = ((q % 1) + 1) % 1;
+  if (t < STANCE_FRACTION) return -1 + (2 * t) / STANCE_FRACTION;
+  const swing = (t - STANCE_FRACTION) / (1 - STANCE_FRACTION);
+  return 1 - 2 * (0.5 - 0.5 * Math.cos(Math.PI * swing));
+}
 
 /**
  * The pose for `action` at `cyclePhase` (0..1, one full cycle).
  *
  * `cyclePhase` is supplied rather than computed here so this stays pure and
  * testable; `cyclePhaseFor` is the part that knows about frames.
+ *
+ * `legLengthMetres` is the rig's own leg length, and `walk` needs it: the leg
+ * amplitude is derived from the stride and the leg so the stance foot stays put
+ * (see `walkLegAmplitude`). Omitting it falls back to an average adult leg, which
+ * is right for a test and wrong for a 1.1 m child.
  */
 export function segmentPoseAt(
   action: string | null | undefined,
   cyclePhase: number,
+  options: { legLengthMetres?: number } = {},
 ): SegmentPose {
   const phase = ((cyclePhase % 1) + 1) % 1;
   // theta runs 0..2π across the cycle, so the figures start at a double contact
@@ -123,18 +210,27 @@ export function segmentPoseAt(
 
   switch (action) {
     case "walk": {
-      const { leg, arm, bob, torso } = POSE.walk;
+      const { armOverLeg, torso } = POSE.walk;
+      const amplitude = walkLegAmplitude(options.legLengthMetres);
+      const left = walkLegShape(phase);
+      const right = walkLegShape(phase + STANCE_FRACTION);
+      const legL = amplitude * left;
+      const legR = amplitude * right;
+      // Whichever leg is on the ground drives the hip. A rigid leg's reach is
+      // shortest when it points straight down, so holding the hip still would lift
+      // the planted foot by L*(1-cos A) -- 69 mm on a 1.85 m figure. Letting the hip
+      // follow puts the foot back on the floor and, as a side effect, produces the
+      // real thing: the body dips at each double contact and rises at each
+      // mid-stance, so the bob runs at twice the leg rate.
+      const stance = phase < STANCE_FRACTION ? left : right;
       return {
-        // Legs half a cycle apart; the knees never bend at this fidelity.
-        legL: leg * sine,
-        legR: -leg * sine,
-        // Arms counter-swing the legs. Without this the figure reads as a
-        // scissoring puppet, which is the whole difference between "walking"
-        // and "sliding".
-        armL: -arm * sine,
-        armR: arm * sine,
-        // Highest at mid-stance, lowest at the double contact.
-        bob: -bob * (0.5 - 0.5 * cosine),
+        legL,
+        legR,
+        // Same rhythm, opposite direction, scaled off the leg's own shape.
+        armL: -amplitude * armOverLeg * left,
+        armR: -amplitude * armOverLeg * right,
+        // Fraction of body height; the leg is half of it, hence the 0.5.
+        bob: -0.5 * (1 - Math.cos(amplitude * stance)),
         torso: torso * sine,
         head: -torso * sine * 0.5,
       };
@@ -177,10 +273,18 @@ export function segmentPoseAt(
  * ground, and a character that runs takes more steps per second than one that
  * walks. Distance gives both for free, and it cannot desynchronise from the
  * motion the way a wall clock does.
+ *
+ * `legLengthMetres` must be the same rig the pose is built with, because the stride
+ * is proportional to the leg: it decides both how many steps per metre a figure
+ * takes and the angle that plants the foot, and the two only agree when they come
+ * from one number.
  */
-export function cyclePhaseForDistance(distanceMetres: number): number {
+export function cyclePhaseForDistance(
+  distanceMetres: number,
+  legLengthMetres = DEFAULT_LEG_LENGTH_METRES,
+): number {
   if (!(distanceMetres > 0) || !Number.isFinite(distanceMetres)) return 0;
-  return distanceMetres / WALK_STRIDE_METRES;
+  return distanceMetres / walkStrideMetres(legLengthMetres);
 }
 
 /**

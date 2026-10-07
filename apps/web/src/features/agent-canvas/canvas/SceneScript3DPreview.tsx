@@ -275,6 +275,10 @@ function LowPolyHuman({
   // clock: a character whose keyframes hold it still keeps both feet down, and
   // one that runs takes more steps per second. A clock would also desynchronise
   // from the motion, and the feet would skate.
+  //
+  // The rig's own leg length comes along because the walk amplitude is derived
+  // from it: a stride is only plantable by a leg long enough to reach it, so a
+  // fixed angle makes short figures skate.
   const pose = useMemo(() => {
     const keyframes = character.keyframes;
     const distance = travelledMetres(
@@ -282,8 +286,10 @@ function LowPolyHuman({
       keyframes.map((keyframe) => keyframe.frame),
       frame,
     );
-    return segmentPoseAt(action, cyclePhaseForDistance(distance));
-  }, [character, frame, action]);
+    return segmentPoseAt(action, cyclePhaseForDistance(distance, rig.legLength), {
+      legLengthMetres: rig.legLength,
+    });
+  }, [character, frame, action, rig.legLength]);
 
   // The bob is a TRANSLATION of the whole figure, and it is deliberately not
   // multiplied by a limb length: that is how a walk ends up bouncing someone off

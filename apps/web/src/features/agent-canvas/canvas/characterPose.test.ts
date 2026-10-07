@@ -7,6 +7,7 @@ import {
   cyclePhaseForDistance,
   segmentPoseAt,
   travelledMetres,
+  walkStrideMetres,
 } from "./characterPose";
 import { characterRig, DEFAULT_CHARACTER_HEIGHT } from "./lowPolyHumanRig";
 
@@ -54,9 +55,17 @@ describe("every declared action has a pose", () => {
 
 describe("walk", () => {
   it("swings the legs in opposite directions", () => {
-    const quarter = segmentPoseAt("walk", 0.25);
-    expect(quarter.legL).toBeGreaterThan(0.2);
-    expect(quarter.legR).toBeLessThan(-0.2);
+    // Sampled off the quarter cycle rather than ON it. A rigid leg passing through
+    // vertical puts both legs at zero angle at phase 0.25 -- one at mid-stance, the
+    // other at mid-swing -- so that instant says nothing about opposition. A real
+    // knee would bend the swing leg clear of the floor there; this rig has none, so
+    // the honest sample is where the legs are actually apart.
+    for (const phase of [0.125, 0.375]) {
+      const pose = segmentPoseAt("walk", phase);
+      expect(Math.sign(pose.legL ?? 0)).toBe(-Math.sign(pose.legR ?? 0));
+      // And they must be meaningfully apart, not merely oppositely signed at zero.
+      expect(Math.abs(pose.legL ?? 0)).toBeGreaterThan(0.1);
+    }
   });
 
   it("counter-swings the arms against the legs", () => {
@@ -92,16 +101,39 @@ describe("walk", () => {
     expect(acrossWrap).toBeLessThanOrEqual(interior * 1.05);
   });
 
-  it("bobs by centimetres, not by metres", () => {
-    // A bob is a translation. Scaling it by a limb length instead is how a walk
-    // ends up bouncing the figure off the ground.
+  it("bobs by centimetres, and by no more than the foot needs", () => {
+    // The bob is not decoration: it is the hip compensation that holds the planted
+    // foot on the floor. A rigid leg's reach is shortest when it points straight
+    // down, so without it the stance foot lifts by L*(1-cos A) at heel strike.
+    //
+    // Its size is therefore pinned from below by that requirement rather than by a
+    // taste judgement, and bounded above by plausibility. The old 5 cm ceiling was a
+    // guess that happened to exclude the 6.9 cm the compensation actually needs on a
+    // 1.85 m figure -- which is why it has to be derived, not guessed.
     const rig = characterRig({ height: DEFAULT_CHARACTER_HEIGHT, scale: 1 });
-    const extremes = [0, 0.25, 0.5, 0.75].map(
-      (phase) => Math.abs(bobOffset(segmentPoseAt("walk", phase), rig)),
+    const extremes = [0, 0.125, 0.25, 0.375, 0.5, 0.75].map(
+      (phase) => Math.abs(bobOffset(segmentPoseAt("walk", phase, { legLengthMetres: rig.legLength }), rig)),
     );
     const largest = Math.max(...extremes);
     expect(largest).toBeGreaterThan(0);
-    expect(largest).toBeLessThan(0.05);
+    // Human hip travel over a stride is a few centimetres; a decimetre would be a
+    // limp. See walkGait.test.ts for the measurement that this clears.
+    expect(largest).toBeLessThan(0.1);
+  });
+
+  it("bobs at twice the leg rate, lowest at each double contact", () => {
+    // One dip per cycle reads as limping. A walker passes through two double
+    // supports per stride -- one at each end of each stance -- so the body dips
+    // twice and rises at each mid-stance. Both facts fall out of the same
+    // expression, so they are asserted together.
+    const poseAt = (phase: number) => segmentPoseAt("walk", phase).bob ?? 0;
+    const minimum = Math.min(...[0, 0.5].map(poseAt));
+    const maximum = Math.max(...[0.25, 0.75].map(poseAt));
+    expect(minimum).toBeLessThan(-0.01);
+    expect(maximum).toBeGreaterThan(minimum);
+    // And the peak must be strictly between the double supports, not at one.
+    expect(poseAt(0.25)).toBeGreaterThan(poseAt(0));
+    expect(poseAt(0.75)).toBeGreaterThan(poseAt(0.5));
   });
 });
 
@@ -145,13 +177,25 @@ describe("cycle phase comes from distance, not from the clock", () => {
   });
 
   it("takes one full stride per cycle length", () => {
-    expect(cyclePhaseForDistance(1.4)).toBeCloseTo(1, 9);
+    // The reference leg is passed explicitly because the stride is proportional to
+    // the leg: on the figure `WALK_STRIDE_METRES` was measured on, one stride is
+    // exactly one cycle, which is the property the tests below rely on.
+    expect(cyclePhaseForDistance(1.4, 0.925)).toBeCloseTo(1, 9);
   });
 
   it("travels the same distance per cycle whatever the speed", () => {
     // A fast character takes more steps per second, which is what distance-based
     // phase gives for free and what a wall clock cannot.
-    expect(cyclePhaseForDistance(2.8)).toBeCloseTo(2, 9);
+    expect(cyclePhaseForDistance(2.8, 0.925)).toBeCloseTo(2, 9);
+  });
+
+  it("shortens the stride for a shorter leg, so it takes more steps per metre", () => {
+    // One number decides both the phase and the leg angle, so a child covers less
+    // ground per step instead of swinging its legs impossibly far.
+    const adult = cyclePhaseForDistance(1.4, 0.925);
+    const child = cyclePhaseForDistance(1.4, 0.5);
+    expect(child).toBeGreaterThan(adult);
+    expect(child).toBeCloseTo(1.4 / walkStrideMetres(0.5), 9);
   });
 });
 

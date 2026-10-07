@@ -1,0 +1,447 @@
+{
+  "scene": {
+    "name": "静海攻防·广寒站保卫战",
+    "environment": "outdoor",
+    "lighting": "dramatic",
+    "duration": 24.0,
+    "frame_rate": 30
+  },
+  "characters": [
+    {
+      "id": "hanxiao",
+      "type": "lowpoly_human",
+      "appearance": {
+        "color": "#4A5568",
+        "height": 1.85,
+        "scale": 1.0
+      },
+      "keyframes": [
+        {
+          "frame": 0,
+          "position": [
+            0,
+            2,
+            0
+          ],
+          "rotation_y": 0,
+          "action": "walk"
+        },
+        {
+          "frame": 200,
+          "position": [
+            0,
+            4.5,
+            0
+          ],
+          "rotation_y": 0,
+          "action": "walk"
+        },
+        {
+          "frame": 240,
+          "position": [
+            0,
+            5,
+            0
+          ],
+          "rotation_y": 200,
+          "action": "stand"
+        },
+        {
+          "frame": 300,
+          "position": [
+            0,
+            5,
+            0
+          ],
+          "rotation_y": 200,
+          "action": "gesture"
+        },
+        {
+          "frame": 420,
+          "position": [
+            0,
+            5,
+            0
+          ],
+          "rotation_y": 210,
+          "action": "stand"
+        },
+        {
+          "frame": 480,
+          "position": [
+            0,
+            5,
+            0
+          ],
+          "rotation_y": 220,
+          "action": "gesture"
+        },
+        {
+          "frame": 719,
+          "position": [
+            0,
+            5,
+            0
+          ],
+          "rotation_y": 220,
+          "action": "stand"
+        }
+      ]
+    },
+    {
+      "id": "yong1",
+      "type": "lowpoly_human",
+      "appearance": {
+        "color": "#6B46C1",
+        "height": 1.2,
+        "scale": 0.8
+      },
+      "keyframes": [
+        {
+          "frame": 0,
+          "position": [
+            16,
+            -14,
+            0
+          ],
+          "rotation_y": 40,
+          "action": "walk"
+        },
+        {
+          "frame": 239,
+          "position": [
+            10,
+            -8,
+            0
+          ],
+          "rotation_y": 40,
+          "action": "walk"
+        },
+        {
+          "frame": 420,
+          "position": [
+            6,
+            -2,
+            0
+          ],
+          "rotation_y": 45,
+          "action": "walk"
+        },
+        {
+          "frame": 599,
+          "position": [
+            3,
+            2,
+            0
+          ],
+          "rotation_y": 45,
+          "action": "gesture"
+        },
+        {
+          "frame": 719,
+          "position": [
+            3,
+            2,
+            0
+          ],
+          "rotation_y": 45,
+          "action": "stand"
+        }
+      ]
+    },
+    {
+      "id": "yong2",
+      "type": "lowpoly_human",
+      "appearance": {
+        "color": "#7C5CD6",
+        "height": 1.1,
+        "scale": 0.75
+      },
+      "keyframes": [
+        {
+          "frame": 0,
+          "position": [
+            18,
+            -16,
+            0
+          ],
+          "rotation_y": 35,
+          "action": "walk"
+        },
+        {
+          "frame": 239,
+          "position": [
+            12,
+            -9,
+            0
+          ],
+          "rotation_y": 40,
+          "action": "walk"
+        },
+        {
+          "frame": 419,
+          "position": [
+            8,
+            -4,
+            0
+          ],
+          "rotation_y": 45,
+          "action": "walk"
+        },
+        {
+          "frame": 599,
+          "position": [
+            4,
+            0,
+            0
+          ],
+          "rotation_y": 45,
+          "action": "gesture"
+        },
+        {
+          "frame": 719,
+          "position": [
+            4,
+            0,
+            0
+          ],
+          "rotation_y": 45,
+          "action": "stand"
+        }
+      ]
+    }
+  ],
+  "props": [
+    {
+      "id": "dropship_queqiao",
+      "type": "box",
+      "position": [
+        5,
+        -3,
+        6
+      ],
+      "scale": 4.0,
+      "rotation_y": 240
+    },
+    {
+      "id": "crate_a",
+      "type": "crate",
+      "position": [
+        2,
+        4,
+        0
+      ],
+      "scale": 1.0,
+      "rotation_y": 15
+    },
+    {
+      "id": "crate_b",
+      "type": "crate",
+      "position": [
+        2.6,
+        5,
+        0
+      ],
+      "scale": 0.9,
+      "rotation_y": 40
+    },
+    {
+      "id": "rifle_mount",
+      "type": "weapon",
+      "position": [
+        -1,
+        6,
+        0
+      ],
+      "scale": 1.2,
+      "rotation_y": 250
+    }
+  ],
+  "environment": [
+    {
+      "id": "moon_ground",
+      "type": "ground",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "scale": 2.0,
+      "rotation_y": 0
+    },
+    {
+      "id": "habitat_dome_a",
+      "type": "wall",
+      "position": [
+        -8,
+        0,
+        0
+      ],
+      "scale": 1.5,
+      "rotation_y": 90
+    },
+    {
+      "id": "habitat_dome_b",
+      "type": "wall",
+      "position": [
+        -12,
+        5,
+        0
+      ],
+      "scale": 1.2,
+      "rotation_y": 45
+    },
+    {
+      "id": "airlock_gate",
+      "type": "door",
+      "position": [
+        0,
+        6,
+        0
+      ],
+      "scale": 1.6,
+      "rotation_y": 0
+    },
+    {
+      "id": "helium_tower_a",
+      "type": "pillar",
+      "position": [
+        9,
+        -7,
+        0
+      ],
+      "scale": 1.2,
+      "rotation_y": 0
+    },
+    {
+      "id": "helium_tower_b",
+      "type": "pillar",
+      "position": [
+        13,
+        -3,
+        0
+      ],
+      "scale": 1.0,
+      "rotation_y": 0
+    },
+    {
+      "id": "antenna_array",
+      "type": "pillar",
+      "position": [
+        -6,
+        9,
+        0
+      ],
+      "scale": 0.8,
+      "rotation_y": 0
+    },
+    {
+      "id": "crater_rock_a",
+      "type": "rock",
+      "position": [
+        -6,
+        -8,
+        0
+      ],
+      "scale": 1.2,
+      "rotation_y": 20
+    },
+    {
+      "id": "crater_rock_b",
+      "type": "rock",
+      "position": [
+        11,
+        8,
+        0
+      ],
+      "scale": 0.9,
+      "rotation_y": 80
+    },
+    {
+      "id": "crater_rock_c",
+      "type": "rock",
+      "position": [
+        -13,
+        -11,
+        0
+      ],
+      "scale": 1.4,
+      "rotation_y": 140
+    },
+    {
+      "id": "landing_pad",
+      "type": "platform",
+      "position": [
+        5,
+        -3,
+        0
+      ],
+      "scale": 1.6,
+      "rotation_y": 0
+    },
+    {
+      "id": "perimeter_fence",
+      "type": "fence",
+      "position": [
+        -15,
+        0,
+        0
+      ],
+      "scale": 2.5,
+      "rotation_y": 90
+    },
+    {
+      "id": "alert_lamp_a",
+      "type": "pillar",
+      "position": [
+        1.5,
+        7,
+        0
+      ],
+      "scale": 0.5,
+      "rotation_y": 0
+    },
+    {
+      "id": "alert_lamp_b",
+      "type": "pillar",
+      "position": [
+        -4,
+        7,
+        0
+      ],
+      "scale": 0.5,
+      "rotation_y": 0
+    }
+  ],
+  "cameras": [
+    {
+      "id": "cam_gait",
+      "shot_type": "medium",
+      "keyframes": [
+        {
+          "frame": 0,
+          "position": [
+            5.2,
+            3.25,
+            1.1
+          ],
+          "look_at": [
+            0,
+            3.25,
+            0.95
+          ]
+        }
+      ]
+    }
+  ],
+  "shots": [
+    {
+      "id": "shot_gait",
+      "camera": "cam_gait",
+      "start_frame": 0,
+      "end_frame": 240,
+      "description": "hanxiao walk, close"
+    }
+  ],
+  "speech_bindings": []
+}
