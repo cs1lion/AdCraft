@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import get_args
 
 from app.schemas.scene_script import EnvironmentType, PropType
+from app.services.scene3d import asset_dimensions
 from app.services.scene3d.blender_converter import (
     _ASSET_COLORS,
     _DEGRADED_ASSET_COLOR,
@@ -121,11 +122,65 @@ def render_typescript() -> str:
             "// backend has is a capability the user never sees.",
             f"export const DIRECTOR_CAMERA_MOTION_PRESET_IDS = [{', '.join(_quoted(preset) for preset in sorted(CAMERA_MOTION_PRESET_IDS))}] as const;",
             "",
-            f"export const DIRECTOR_CHARACTER_MOTION_PRESET_IDS = [{', '.join(_quoted(preset) for preset in sorted(CHARACTER_MOTION_PRESET_IDS))}] as const;",
+f"export const DIRECTOR_CHARACTER_MOTION_PRESET_IDS = [{', '.join(_quoted(preset) for preset in sorted(CHARACTER_MOTION_PRESET_IDS))}] as const;",
             "",
-        ],
+        ]
+    )
+    # Sizes, for the same reason the colours are here: the SceneScript generator
+    # writes `scale` blind unless something tells it what a scale of 1 measures,
+    # and a `pillar` at 4.5 is a 19 m column beside a 1.75 m person. The values
+    # are mirrored from `sceneScriptGeometry.tsx` and held to it by
+    # `sceneScriptGeometry.dimensions.test.ts`, which measures the real geometry
+    # rather than trusting this table.
+    lines.extend(
+        [
+            "/**",
+            " * What each kind measures in metres at `scale = 1`, SceneScript space (Z-up).",
+            " *",
+            " * Mirrored from `apps/web/.../sceneScriptGeometry.tsx` and checked against it",
+            " * by measuring the rendered bounding box. `base` is how far the geometry's",
+            " * underside floats above z = 0 — a non-zero `base` means anything authored",
+            " * on the ground is underneath the object, not beside it.",
+            " */",
+            "export interface AssetSceneDimensions {",
+            "  /** Extent along x (right), metres. */",
+            "  width: number;",
+            "  /** Extent along z (up), metres. */",
+            "  height: number;",
+            "  /** Extent along y (forward), metres. */",
+            "  depth: number;",
+            "  /** Height of the underside above the ground, metres. */",
+            "  base: number;",
+            "  shape: string;",
+            "  note: string;",
+            "}",
+            "",
+            "export const ASSET_SCENE_DIMENSIONS: Record<string, AssetSceneDimensions> = {",
+        ]
+    )
+    for kind in asset_dimensions.kinds():
+        dims = asset_dimensions.rendered(kind, 1.0)
+        assert dims is not None
+        lines.append(
+            f"  {kind}: {{ width: {_number(dims.width)}, height: {_number(dims.height)}, "
+            f"depth: {_number(dims.depth)}, base: {_number(dims.base)}, "
+            f"shape: {_quoted(dims.shape)}, note: {_quoted(dims.note)} }},"
+        )
+    lines.extend(
+        [
+            "};",
+            "",
+            "/** The size a SceneScript is implicitly written against, in metres. */",
+            f"export const REFERENCE_PERSON_HEIGHT = {_number(asset_dimensions.REFERENCE_PERSON_HEIGHT)};",
+            "",
+        ]
     )
     return "\n".join(lines)
+
+
+def _number(value: float) -> str:
+    """A JS number literal that keeps a trailing `.0` off the output."""
+    return str(int(value)) if float(value).is_integer() else str(value)
 
 
 def _quoted(value: str) -> str:

@@ -80,3 +80,56 @@ export const PLACEHOLDER_ASSET_COLOR = "#FF2BD1";
 export const DIRECTOR_CAMERA_MOTION_PRESET_IDS = ["crane_down", "crane_up", "orbit_left", "orbit_right", "pan_left", "pan_right", "pull_out", "push_in"] as const;
 
 export const DIRECTOR_CHARACTER_MOTION_PRESET_IDS = ["approach", "mark_talk", "turn_to", "walk_to"] as const;
+
+/**
+ * What each kind measures in metres at `scale = 1`, SceneScript space (Z-up).
+ *
+ * Mirrored from `apps/web/.../sceneScriptGeometry.tsx` and checked against it
+ * by measuring the rendered bounding box. `base` is how far the geometry's
+ * underside floats above z = 0 — a non-zero `base` means anything authored
+ * on the ground is underneath the object, not beside it.
+ */
+export interface AssetSceneDimensions {
+  /** Extent along x (right), metres. */
+  width: number;
+  /** Extent along z (up), metres. */
+  height: number;
+  /** Extent along y (forward), metres. */
+  depth: number;
+  /** Height of the underside above the ground, metres. */
+  base: number;
+  shape: string;
+  note: string;
+}
+
+export const ASSET_SCENE_DIMENSIONS: Record<string, AssetSceneDimensions> = {
+  book: { width: 0.34, height: 0.08, depth: 0.26, base: 0, shape: "box", note: "" },
+  box: { width: 0.8, height: 0.8, depth: 0.8, base: 0, shape: "box", note: "" },
+  chair: { width: 0.5, height: 0.7, depth: 0.515, base: 0.425, shape: "cylinder", note: "`base` is seat height" },
+  crate: { width: 0.9, height: 0.9, depth: 0.9, base: 0, shape: "box", note: "" },
+  cup: { width: 0.14, height: 0.14, depth: 0.14, base: 0, shape: "cylinder", note: "" },
+  door: { width: 1, height: 2.2, depth: 0.15, base: 0, shape: "box", note: "about a person tall" },
+  fence: { width: 0.12, height: 0.8, depth: 4.62, base: 0.4, shape: "posts", note: "four posts spread over `depth`" },
+  flat_roof: { width: 6.4, height: 0.25, depth: 5.2, base: 5.075, shape: "box", note: "sits on top of a 5 m wall" },
+  floor: { width: 15, height: 0.1, depth: 15, base: -0.1, shape: "box", note: "" },
+  gable_roof: { width: 8, height: 3, depth: 8, base: 4, shape: "cone", note: "" },
+  ground: { width: 15, height: 0.1, depth: 15, base: -0.1, shape: "box", note: "site plate; scale 2 gives a 30 m square" },
+  lantern: { width: 0.3, height: 0.4, depth: 0.3, base: 2.6, shape: "cylinder", note: "HANGS: `base` is its hook height" },
+  lowpoly_human: { width: 0.7, height: 1.8, depth: 0.7, base: 0, shape: "segments", note: "seven segments; `appearance.height` sets the real size" },
+  pillar: { width: 0.6, height: 4.2, depth: 0.6, base: 0, shape: "cylinder", note: "scale 1 is 4.2 m — already a tall column" },
+  platform: { width: 5, height: 0.4, depth: 5, base: 0.2, shape: "box", note: "FLOATS: the slab's underside is `base` above the ground" },
+  rect_table: { width: 1.5, height: 0.05, depth: 0.9, base: 0.725, shape: "box", note: "a tabletop on legs; `base` is leg height" },
+  rock: { width: 2.52, height: 1.44, depth: 1.98, base: -0.12, shape: "icosahedron", note: "sits slightly buried" },
+  round_table: { width: 1.2, height: 0.775, depth: 1.2, base: 0, shape: "cylinder", note: "" },
+  scroll: { width: 0.24, height: 0.9, depth: 0.24, base: 0.55, shape: "cylinder", note: "a rolled tube on a stand" },
+  stairs: { width: 2.4, height: 1, depth: 4.5, base: 0.1, shape: "steps", note: "four treads climbing along depth" },
+  stool: { width: 0.56, height: 0.53, depth: 0.56, base: 0, shape: "cylinder", note: "" },
+  tree: { width: 3.4, height: 5.1, depth: 3.4, base: 0, shape: "icosahedron", note: "" },
+  vase: { width: 0.28, height: 0.6, depth: 0.28, base: 0, shape: "cylinder", note: "" },
+  wall: { width: 6, height: 5, depth: 0.3, base: 0, shape: "box", note: "thin in depth: a WALL, not a block" },
+  weapon: { width: 0.06, height: 1.37, depth: 0.05, base: 0.18, shape: "group", note: "a blade; scale 1.2 is a rifle" },
+  window: { width: 1.4, height: 1.6, depth: 0.12, base: 1, shape: "box", note: "sill at `base` = 1 m" },
+};
+
+/** The size a SceneScript is implicitly written against, in metres. */
+export const REFERENCE_PERSON_HEIGHT = 1.75;
