@@ -35,6 +35,29 @@
  */
 
 import type { CharacterRig } from "./lowPolyHumanRig";
+import { POSE_CONSTANTS } from "../../../types/scene-script.generated";
+
+const {
+  walkStrideMetres: WALK_STRIDE_METRES,
+  referenceLegLengthMetres: REFERENCE_LEG_LENGTH_METRES,
+  stanceFraction: STANCE_FRACTION,
+  walkMaxLegRadians: WALK_MAX_LEG_RADIANS,
+  defaultLegLengthMetres: DEFAULT_LEG_LENGTH_METRES,
+  walkArmOverLeg: ARM_OVER_LEG,
+  walkTorsoRadians: WALK_TORSO,
+  gestureHeadTiltRadians: GESTURE_HEAD_TILT,
+  standLegSpreadRadians: STAND_LEG_SPREAD,
+  standArmRestRadians: STAND_ARM_REST,
+  gestureArmRaiseRadians: GESTURE_ARM_RAISE,
+  gestureArmOutRadians: GESTURE_ARM_OUT,
+  gestureTorsoRadians: GESTURE_TORSO,
+  gestureHeadRadians: GESTURE_HEAD,
+  sitThighLiftRadians: SIT_THIGH_LIFT,
+  sitTorsoRadians: SIT_TORSO,
+  sitHeadRadians: SIT_HEAD,
+  talkArmRadians: TALK_ARM,
+  talkTorsoRadians: TALK_TORSO,
+} = POSE_CONSTANTS;
 
 /** The actions the schema declares. Every one of these must have a pose. */
 export const CHARACTER_ACTIONS = ["stand", "talk", "walk", "sit", "gesture"] as const;
@@ -80,7 +103,7 @@ export const ACTION_CYCLE_SECONDS: Record<CharacterAction, number> = {
   walk: 1.0,
 };
 
-/** Amplitudes, in radians, per action. Kept beside the curves so both are one read. */
+/** Amplitudes, in radians, per action. The numbers come from POSE_CONSTANTS. */
 const POSE = {
   walk: {
     /**
@@ -89,40 +112,21 @@ const POSE = {
      * be out of phase: the arm swings with the same rhythm as the SAME-SIDE leg,
      * in the opposite direction.
      */
-    armOverLeg: 0.75,
+    armOverLeg: ARM_OVER_LEG,
     /** A little counter-rotation, which is most of what makes a walk read as one. */
-    torso: 0.06,
+    torso: WALK_TORSO,
   },
   /** Held: feet slightly apart, arms down and a little forward. */
-  stand: { legSpread: 0.05, armRest: 0.08 },
+  stand: { legSpread: STAND_LEG_SPREAD, armRest: STAND_ARM_REST },
   /** Held, plus the gesture: one arm up and out, torso leaning into it. */
-  gesture: { armRaise: 0.9, armOut: 0.35, torso: 0.12, head: -0.2 },
+  gesture: { armRaise: GESTURE_ARM_RAISE, armOut: GESTURE_ARM_OUT, torso: GESTURE_TORSO, head: GESTURE_HEAD },
   /** Held: knees bent and torso tipped forward, as if on something low. */
-  sit: { thighLift: 1.15, torso: 0.22, head: 0.05 },
+  sit: { thighLift: SIT_THIGH_LIFT, torso: SIT_TORSO, head: SIT_HEAD },
   /** Held: one hand forward at waist height, as if mid-explanation. */
-  talk: { arm: 0.35, torso: 0.04 },
+  talk: { arm: TALK_ARM, torso: TALK_TORSO },
 } as const;
 
-/** Metres per stride cycle for the reference figure. A normal adult walk. */
-export const WALK_STRIDE_METRES = 1.4;
-
-/** The leg of the figure {@link WALK_STRIDE_METRES} was measured on: height 1.85. */
-const REFERENCE_LEG_LENGTH_METRES = 0.925;
-
-/** How much of the cycle a leg spends with its foot on the ground. */
-const STANCE_FRACTION = 0.5;
-
-/**
- * Steepest leg swing allowed, radians (~36 degrees).
- *
- * A leg that would need more than this covers a shorter stride instead. Previs
- * figures are sometimes very short, and a 90-degree hip reads as a breakdancer
- * rather than a walk.
- */
-const WALK_MAX_LEG_RADIANS = 0.62;
-
-/** Leg length assumed when a caller does not know the rig. Height 1.7, so 0.5 x 1.7. */
-const DEFAULT_LEG_LENGTH_METRES = 0.85;
+export { WALK_STRIDE_METRES, GESTURE_HEAD_TILT };
 
 /**
  * The stride a leg of this length covers, in metres.
@@ -137,7 +141,7 @@ const DEFAULT_LEG_LENGTH_METRES = 0.85;
  * phase advanced as if the stride were 1.4 m while the geometry only supported less,
  * and a 1.1 m figure skated at 19% of its own travel.
  */
-export function walkStrideMetres(legLengthMetres = DEFAULT_LEG_LENGTH_METRES): number {
+export function walkStrideMetres(legLengthMetres: number = DEFAULT_LEG_LENGTH_METRES): number {
   const length = legLengthMetres > 0 ? legLengthMetres : DEFAULT_LEG_LENGTH_METRES;
   const proportional = (WALK_STRIDE_METRES * length) / REFERENCE_LEG_LENGTH_METRES;
   // The longest stride this leg could plant without exceeding the angle limit.
@@ -157,7 +161,7 @@ export function walkStrideMetres(legLengthMetres = DEFAULT_LEG_LENGTH_METRES): n
  * faster than it walked, which is what "moonwalk" means. Deriving the angle from
  * the stride and the leg is what pins the foot down.
  */
-export function walkLegAmplitude(legLengthMetres = DEFAULT_LEG_LENGTH_METRES): number {
+export function walkLegAmplitude(legLengthMetres: number = DEFAULT_LEG_LENGTH_METRES): number {
   const length = legLengthMetres > 0 ? legLengthMetres : DEFAULT_LEG_LENGTH_METRES;
   return Math.asin(Math.min(1, walkStrideMetres(legLengthMetres) / (4 * length)));
 }
@@ -241,7 +245,11 @@ export function segmentPoseAt(
         armR: armRaise,
         armL: -armOut,
         torso,
-        head,
+        // The tilt used to be added by the preview on top of this, which meant the
+        // pose was not the whole pose: the converter could not read it without
+        // knowing about a magic constant in a component. Folding it in renders the
+        // same figure and makes the pose self-contained.
+        head: head + GESTURE_HEAD_TILT,
       };
     }
     case "talk": {
@@ -281,7 +289,7 @@ export function segmentPoseAt(
  */
 export function cyclePhaseForDistance(
   distanceMetres: number,
-  legLengthMetres = DEFAULT_LEG_LENGTH_METRES,
+  legLengthMetres: number = DEFAULT_LEG_LENGTH_METRES,
 ): number {
   if (!(distanceMetres > 0) || !Number.isFinite(distanceMetres)) return 0;
   return distanceMetres / walkStrideMetres(legLengthMetres);

@@ -295,9 +295,9 @@ function LowPolyHuman({
   // multiplied by a limb length: that is how a walk ends up bouncing someone off
   // the ground.
   const bob = bobOffset(pose, rig);
-  // A gesture keyframe tilts the whole head group forward ~15 deg; the pose's
-  // own head pitch rides with it.
-  const headTilt = (isGesturing ? -0.26 : 0) + (pose.head ?? 0);
+  // The head's own pitch rides the pose. A gesture used to add its tilt here on top
+  // of the pose's, which meant the pose was not the whole pose -- see characterPose.
+  const headTilt = pose.head ?? 0;
   // The line whose time window covers "now" for THIS speaker.
   const activeLine = activeDialogueLineAtFrame(dialogueLines, character.id, frame, frameRate);
   return (

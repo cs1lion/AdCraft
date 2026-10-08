@@ -1,0 +1,276 @@
+"""The character pose library for the Blender converter, and the constants behind it.
+
+The preview already has a pose library (``characterPose.ts``) that turns an action
+into joint angles. Until now the converter had none at all: it read
+``kf.position`` and ``kf.rotation_y`` and ignored ``kf.action`` entirely, so under
+the DEFAULT ``SCENE3D_RENDERER_BACKEND=blender`` a ``walk`` rendered as a figure
+sliding along the ground with its limbs welded in place.
+
+The curves are implemented twice, once per language, for the same reason the
+geometry builders are: the two runtimes share nothing. What makes that safe is
+that the CONSTANTS live here and reach the frontend through
+``app.cli.generate_scene_script_preview_contract``, so neither side hand-maintains
+a number, and ``test_character_pose_matches_preview`` compares the two
+implementations' actual output phase by phase.
+
+The curve itself, and why it is shaped this way, is documented in
+``characterPose.ts``; the short version is that a sine slides the planted foot by
+332% of the body's own travel, so the stance leg is linear and only the swing is
+eased.
+"""
+
+from __future__ import annotations
+
+import math
+
+# ---------------------------------------------------------------------------
+# Constants. These reach the frontend through the contract generator.
+# ---------------------------------------------------------------------------
+
+#: Metres per stride cycle for the reference figure.
+WALK_STRIDE_METRES = 1.4
+
+#: The leg of the figure ``WALK_STRIDE_METRES`` was measured on: height 1.85.
+REFERENCE_LEG_LENGTH_METRES = 0.925
+
+#: How much of the cycle a leg spends with its foot on the ground.
+STANCE_FRACTION = 0.5
+
+#: Steepest leg swing allowed, radians (~36 degrees).
+WALK_MAX_LEG_RADIANS = 0.62
+
+#: Leg length assumed when no rig is available. Height 1.7, so 0.5 x 1.7.
+DEFAULT_LEG_LENGTH_METRES = 0.85
+
+#: Arms swing opposite the same-side leg, scaled by this fraction of it.
+WALK_ARM_OVER_LEG = 0.75
+
+#: A little counter-rotation, which is most of what makes a walk read as one.
+WALK_TORSO_RADIANS = 0.06
+
+#: A gesture keyframe tips the whole head group forward, on top of the pose's own.
+GESTURE_HEAD_TILT_RADIANS = -0.26
+
+#: Held poses. Radians unless noted.
+STAND_LEG_SPREAD_RADIANS = 0.05
+STAND_ARM_REST_RADIANS = 0.08
+GESTURE_ARM_RAISE_RADIANS = 0.9
+GESTURE_ARM_OUT_RADIANS = 0.35
+GESTURE_TORSO_RADIANS = 0.12
+GESTURE_HEAD_RADIANS = -0.2
+SIT_THIGH_LIFT_RADIANS = 1.15
+SIT_TORSO_RADIANS = 0.22
+SIT_HEAD_RADIANS = 0.05
+TALK_ARM_RADIANS = 0.35
+TALK_TORSO_RADIANS = 0.04
+
+#: The mouth opens for a talking character, as a fraction of the head radius.
+TALK_MOUTH_RATIO = 0.5
+MOUTH_CLOSED_RATIO = 0.08
+
+#: Limb names, in the order the rig declares them. The converter must keyframe the
+#: same five joints the preview rotates or the two renderers disagree.
+LIMB_FIELDS = ("leg_l", "leg_r", "arm_l", "arm_r")
+
+#: How far down the constant contract lives, so a caller can spot-check it.
+POSE_FIELDS = (
+    "leg_l",
+    "leg_r",
+    "arm_l",
+    "arm_r",
+    "torso",
+    "head",
+    "spine",
+    "bob",
+)
+
+
+# ---------------------------------------------------------------------------
+# The walk geometry
+# ---------------------------------------------------------------------------
+
+
+def walk_stride_metres(leg_length_metres: float = DEFAULT_LEG_LENGTH_METRES) -> float:
+    """The stride a leg of this length covers.
+
+    Proportional to the leg, because a stride is a reach: scaling it keeps
+    ``stride / (4L)`` -- and therefore the leg angle -- the same for every figure,
+    so a child takes shorter steps rather than swinging harder.
+
+    Derived separately in two places it was the source of a measured defect: the
+    phase advanced as if the stride were a constant while the geometry supported
+    less, and a 1.1 m figure skated at 19% of its own travel.
+    """
+    length = leg_length_metres if leg_length_metres > 0 else DEFAULT_LEG_LENGTH_METRES
+    proportional = WALK_STRIDE_METRES * length / REFERENCE_LEG_LENGTH_METRES
+    reachable = 4.0 * length * math.sin(WALK_MAX_LEG_RADIANS)
+    return min(proportional, reachable)
+
+
+def walk_leg_amplitude(leg_length_metres: float = DEFAULT_LEG_LENGTH_METRES) -> float:
+    """The leg angle a no-slide walk needs, for a given leg length.
+
+    A planted foot does not move, so over one stance the hip must advance exactly
+    as far as ``L*sin(theta)`` retreats: ``sin(A) = stride / (4L)``.
+    """
+    length = leg_length_metres if leg_length_metres > 0 else DEFAULT_LEG_LENGTH_METRES
+    return math.asin(min(1.0, walk_stride_metres(leg_length_metres) / (4.0 * length)))
+
+
+def walk_leg_shape(q: float) -> float:
+    """Leg angle as a fraction of the amplitude, over one cycle.
+
+    The sign is the whole of the no-slide property. A planted foot means
+    ``hip - L*sin(theta)`` is constant, so ``L*sin(theta)`` must RISE as the hip
+    advances: the leg starts at ``-A`` with the foot AHEAD of the hip at heel
+    strike, and ends at ``+A`` with the foot behind it at toe off.
+
+    Stance is linear and swing a raised cosine, and the split matters as much as
+    the sign: a sine is steepest exactly where the foot meets the ground, so it
+    slides hardest at the contact it is supposed to be planting.
+    """
+    t = q % 1.0
+    if t < STANCE_FRACTION:
+        return -1.0 + (2.0 * t) / STANCE_FRACTION
+    swing = (t - STANCE_FRACTION) / (1.0 - STANCE_FRACTION)
+    return 1.0 - 2.0 * (0.5 - 0.5 * math.cos(math.pi * swing))
+
+
+def segment_pose_at(
+    action: str | None,
+    cycle_phase: float,
+    leg_length_metres: float = DEFAULT_LEG_LENGTH_METRES,
+) -> dict[str, float]:
+    """The pose for ``action`` at ``cyclePhase``, as radians per joint.
+
+    Keys match ``POSE_FIELDS`` and use the converter's snake_case, so this can be
+    dropped into keyframe calls without a translation layer.
+    """
+    phase = cycle_phase % 1.0
+    theta = phase * math.pi * 2.0
+    sine = math.sin(theta)
+
+    if action == "walk":
+        amplitude = walk_leg_amplitude(leg_length_metres)
+        left = walk_leg_shape(phase)
+        right = walk_leg_shape(phase + STANCE_FRACTION)
+        # Whichever leg is on the ground drives the hip. A rigid leg's reach is
+        # shortest when it points straight down, so holding the hip still would lift
+        # the planted foot by L*(1-cos A). Letting the hip follow puts the foot back
+        # on the floor and, as a side effect, produces the real bob: two dips per
+        # stride, one at each double contact.
+        stance = left if phase < STANCE_FRACTION else right
+        return {
+            "leg_l": amplitude * left,
+            "leg_r": amplitude * right,
+            "arm_l": -amplitude * WALK_ARM_OVER_LEG * left,
+            "arm_r": -amplitude * WALK_ARM_OVER_LEG * right,
+            "bob": -0.5 * (1.0 - math.cos(amplitude * stance)),
+            "torso": WALK_TORSO_RADIANS * sine,
+            "head": -WALK_TORSO_RADIANS * sine * 0.5,
+            "spine": 0.0,
+        }
+    if action == "gesture":
+        return {
+            "arm_r": GESTURE_ARM_RAISE_RADIANS,
+            "arm_l": -GESTURE_ARM_OUT_RADIANS,
+            "torso": GESTURE_TORSO_RADIANS,
+            "head": GESTURE_HEAD_RADIANS + GESTURE_HEAD_TILT_RADIANS,
+            "spine": 0.0,
+        }
+    if action == "talk":
+        return {
+            "arm_r": TALK_ARM_RADIANS,
+            "arm_l": -TALK_ARM_RADIANS * 0.4,
+            "torso": TALK_TORSO_RADIANS,
+            "head": -TALK_TORSO_RADIANS,
+            "spine": 0.0,
+        }
+    if action == "sit":
+        return {
+            "leg_l": SIT_THIGH_LIFT_RADIANS,
+            "leg_r": SIT_THIGH_LIFT_RADIANS,
+            "torso": SIT_TORSO_RADIANS,
+            "head": SIT_HEAD_RADIANS,
+            "spine": 0.0,
+        }
+    return {
+        "leg_l": STAND_LEG_SPREAD_RADIANS,
+        "leg_r": -STAND_LEG_SPREAD_RADIANS,
+        "arm_l": STAND_ARM_REST_RADIANS,
+        "arm_r": -STAND_ARM_REST_RADIANS,
+        "spine": 0.0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Where the animation is, which the pose depends on
+# ---------------------------------------------------------------------------
+
+
+def action_at_frame(actions: list[str | None], frames: list[int], frame: int) -> str:
+    """The action in force at ``frame``: STEP, nearest keyframe at or before.
+
+    Matches ``characterActionAtFrame``: a keyframe's action governs frames AT AND
+    AFTER it, never before. Position and yaw interpolate while action steps, so a
+    gesture that starts at frame 300 does not fade in on the way there.
+
+    Sorted first, like ``travelled_metres``. The schema does not require keyframes
+    in order, and an unsorted list silently pinned the figure to whatever action
+    happened to be written first.
+    """
+    result = "stand"
+    for keyframe_frame, action in sorted(zip(frames, actions), key=lambda pair: pair[0]):
+        if keyframe_frame <= frame:
+            result = action or "stand"
+        else:
+            break
+    return result
+
+
+def travelled_metres(positions: list[list[float]], frames: list[int], frame: int) -> float:
+    """Path length up to ``frame``, on the same linear interpolation as the preview."""
+    if len(positions) < 2:
+        return 0.0
+    ordered = sorted(zip(frames, positions), key=lambda pair: pair[0])
+    if frame <= ordered[0][0]:
+        return 0.0
+    total = 0.0
+    previous = ordered[0]
+    for keyframe_frame, position in ordered[1:]:
+        if frame >= keyframe_frame:
+            segment = math.dist(position, previous[1])
+            total += segment
+            previous = (keyframe_frame, position)
+            continue
+        span = keyframe_frame - previous[0]
+        if span <= 0:
+            return total
+        ratio = (frame - previous[0]) / span
+        blended = [
+            previous[1][axis] + (position[axis] - previous[1][axis]) * ratio
+            for axis in range(3)
+        ]
+        return total + math.dist(blended, previous[1])
+    return total
+
+
+def pose_at_frame(
+    actions: list[str | None],
+    positions: list[list[float]],
+    frames: list[int],
+    frame: int,
+    leg_length_metres: float,
+) -> dict[str, float]:
+    """The pose for a character at an arbitrary frame.
+
+    Phase comes from distance travelled, never from the wall clock, so a character
+    whose keyframes hold it still never accumulates steps and a fast one takes more
+    per second.
+    """
+    distance = travelled_metres(positions, frames, frame)
+    if distance <= 0:
+        phase = 0.0
+    else:
+        phase = distance / walk_stride_metres(leg_length_metres)
+    return segment_pose_at(action_at_frame(actions, frames, frame), phase, leg_length_metres)

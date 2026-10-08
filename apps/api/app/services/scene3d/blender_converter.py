@@ -21,6 +21,7 @@ from app.services.scene3d.held_items import held_keyframe_positions
 # Imported rather than reimplemented: the draft pass must render exactly the
 # frames ``extract_keyframes`` copies and ``control_passes`` aligns to, or a
 # keyframe deliverable would silently miss frames the full pass produces.
+from app.services.scene3d import character_pose
 from app.services.scene3d.keyframes import _shot_keyframe_frames
 from app.services.scene3d.rotation_pivot import needs_pivot_empty, rotation_pivot_for
 
@@ -78,12 +79,24 @@ def _build_lowpoly_human(
     torso_d = 0.16 * h
 
     def _limb(part: str, cx: float, cz: float, w: float, d: float, box_h: float) -> str:
-        """One limb: a box of full height `box_h`, centred at (cx, 0, cz)."""
+        """One limb: a box of full height `box_h`, centred at (cx, 0, cz).
+
+        Blender puts a primitive's origin at its own centre, so rotating the box
+        directly would ORBIT the limb rather than swing it -- a foot 1 m below the hip
+        would trace a circle instead of staying put, which is the same defect the
+        prop rotation pivot fixed. So each limb hangs off an empty at its proximal
+        (top) end, and the pose library rotates that.
+        """
         return f"""
 bpy.ops.mesh.primitive_cube_add(size=1, location=({cx:.4f}, 0, {cz:.4f}))
 {part} = bpy.context.object
 {part}.name = "{_esc(obj_id)}_{part}"
-{part}.scale = ({w:.4f}, {d:.4f}, {box_h:.4f})"""
+{part}.scale = ({w:.4f}, {d:.4f}, {box_h:.4f})
+bpy.ops.object.empty_add(type='PLAIN_AXES', location=({cx:.4f}, 0, {cz + box_h / 2:.4f}))
+{part}_pivot = bpy.context.object
+{part}_pivot.name = "{_esc(obj_id)}_{part}_pivot"
+{part}.parent = {part}_pivot
+{part}.matrix_parent_inverse = {part}_pivot.matrix_world.inverted()"""
 
     return f"""
 # Character: {_esc(obj_id)}
@@ -106,6 +119,12 @@ neck.name = "{_esc(obj_id)}_Neck"
 bpy.ops.mesh.primitive_uv_sphere_add(radius={head_r:.4f}, location=(0, 0, {head_z:.4f}))
 head = bpy.context.object
 head.name = "{_esc(obj_id)}_Head"
+# The head pivots at the neck, so a gesture tips it forward instead of rolling it.
+bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0, 0, {torso_top + neck_h:.4f}))
+head_pivot = bpy.context.object
+head_pivot.name = "{_esc(obj_id)}_Head_pivot"
+head.parent = head_pivot
+head.matrix_parent_inverse = head_pivot.matrix_world.inverted()
 mat_head = bpy.data.materials.new(name="{_esc(obj_id)}_HeadMat")
 mat_head.use_nodes = True
 mat_head.node_tree.nodes["Principled BSDF"].inputs[0].default_value = (0.9, 0.8, 0.7, 1.0)
@@ -593,6 +612,13 @@ _part_materials = {{}}
 # deselects the body cube), which otherwise left the first part unparented at
 # the world origin (characters rendered as floating heads).
 for _part in [o for o in bpy.data.objects if o not in _parts_before and o is not wrapper]:
+    # A limb already hangs off its own proximal pivot so the pose library can swing
+    # it. Re-parenting it to the wrapper here would flatten that chain and the limb
+    # would orbit its own centre again, so only unparented parts are adopted --
+    # the pivots themselves are new and get adopted, which is what carries the whole
+    # rig along with the character.
+    if _part.parent is not None:
+        continue
     _part.parent = wrapper
     if _part.type != 'MESH' or _part.data.materials:
         continue
@@ -617,6 +643,123 @@ bpy.ops.object.select_all(action="DESELECT")
 # ---------------------------------------------------------------------------
 # Main converter
 # ---------------------------------------------------------------------------
+
+
+def _last_frame(script: SceneScriptRoot) -> int:
+    """The highest frame the script animates, so a walk cycle can be filled in.
+
+    Shots, not ``scene.duration``: the preview derives its frame count the same way
+    (``PrevisRenderEntry``), and a pose emitted past the last shot would be keyed on
+    frames nobody renders.
+    """
+    candidates = [shot.end_frame for shot in script.shots]
+    if candidates:
+        return max(candidates)
+    if script.characters:
+        return max(kf.frame for char in script.characters for kf in char.keyframes)
+    return 0
+
+
+#: Blender limb names, mapped to the pose library's fields. The preview's POSE_FIELD
+#: is the other half of this map; a joint rotated on one side only is a disagreement
+#: nobody would notice in a still frame.
+_LIMB_POSE_FIELDS = (
+    ("LegL", "leg_l"),
+    ("LegR", "leg_r"),
+    ("ArmL", "arm_l"),
+    ("ArmR", "arm_r"),
+)
+
+#: The pose fields that hold for the whole shot rather than cycling.
+_HELD_ACTIONS = frozenset({"stand", "talk", "sit", "gesture"})
+
+
+def _character_pose_code(char, total_frames: int) -> list[str]:
+    """Keyframe the character's joints from the pose library.
+
+    Without this the converter read ``position`` and ``rotation_y`` and ignored
+    ``action`` entirely, so under the DEFAULT blender backend a ``walk`` rendered as a
+    figure sliding along the ground with its limbs welded in place -- the "moonwalk"
+    the preview no longer has. Silently: nothing in the script said so.
+
+    A walk is a continuous cycle keyed EVERY FRAME, since its phase comes from
+    distance travelled and no closed-form keyframe can express it. A held action is
+    keyed once per action change instead, which keeps a 720-frame scene from growing
+    its script by ten thousand lines.
+
+    The pivots themselves are created by the limb builders, which know where each
+    limb's proximal end is; this only drives them.
+    """
+    if total_frames <= 0:
+        return []
+
+    leg_length = 0.5 * char.appearance.height * char.appearance.scale
+    actions = [kf.action for kf in char.keyframes]
+    positions = [list(kf.position) for kf in char.keyframes]
+    frames = [kf.frame for kf in char.keyframes]
+
+    lines = [
+        "# === POSE: " + _esc(char.id) + " ===",
+        "# Actions: " + ", ".join(sorted({str(a) for a in actions})) +
+        f"; leg {leg_length:.3f} m. Phase comes from distance travelled, so a",
+        "# stationary character keeps both feet down.",
+        "# The vertical bob rides an empty above the wrapper rather than the",
+        "# wrapper's own location, which carries the authored position.",
+        "bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0, 0, 0))",
+        f"bob_{_esc(char.id)} = bpy.context.object",
+        f"bob_{_esc(char.id)}.name = {char.id + '_bob'!r}",
+        f"bpy.data.objects[{char.id!r}].parent = bob_{_esc(char.id)}",
+        "",
+    ]
+    for limb, _ in _LIMB_POSE_FIELDS:
+        lines.append(f"_p_{_esc(char.id)}{limb} = bpy.data.objects[{char.id + '_' + limb + '_pivot'!r}]")
+    lines.append(f"_p_{_esc(char.id)}Head = bpy.data.objects[{char.id + '_Head_pivot'!r}]")
+    lines.append("")
+
+    emitted: set[str] = set()
+    for frame in range(total_frames + 1):
+        pose = character_pose.pose_at_frame(actions, positions, frames, frame, leg_length)
+        action = character_pose.action_at_frame(actions, frames, frame)
+        bob = pose.get("bob", 0.0) * char.appearance.height * char.appearance.scale
+        blender_frame = frame + 1
+        lines.append(f"# frame {frame}")
+        lines.append(
+            f"bob_{_esc(char.id)}.location = (0, 0, {bob:.6f})"
+        )
+        lines.append(
+            f"bob_{_esc(char.id)}.keyframe_insert(data_path='location', frame={blender_frame})"
+        )
+        for limb, field in _LIMB_POSE_FIELDS:
+            angle = pose.get(field, 0.0)
+            if action in _HELD_ACTIONS:
+                # A held pose is constant, so one key per action change is enough --
+                # provided the action has not already been written for this frame.
+                key = (action, field)
+                if key in emitted:
+                    continue
+                emitted.add(key)
+                if abs(angle) < 1e-9:
+                    continue
+            lines.append(f"_p_{_esc(char.id)}{limb}.rotation_euler.x = {angle:.6f}")
+            lines.append(
+                f"_p_{_esc(char.id)}{limb}.keyframe_insert("
+                f"data_path='rotation_euler', index=0, frame={blender_frame})"
+            )
+        head = pose.get("head", 0.0)
+        if action in _HELD_ACTIONS:
+            key = (action, "head")
+            if key in emitted:
+                head = 0.0
+            else:
+                emitted.add(key)
+        if abs(head) > 1e-9:
+            lines.append(f"_p_{_esc(char.id)}Head.rotation_euler.x = {head:.6f}")
+            lines.append(
+                f"_p_{_esc(char.id)}Head.keyframe_insert("
+                f"data_path='rotation_euler', index=0, frame={blender_frame})"
+            )
+    lines.append("")
+    return lines
 
 
 def scene_script_to_blender(
@@ -781,6 +924,9 @@ def scene_script_to_blender(
             # Character keyframes
             lines.append(f"# Character keyframes: {char.id}")
             lines.append(f'char_obj = bpy.data.objects["{_esc(char.id)}"]')
+            lines.extend(
+                _character_pose_code(char, total_frames=_last_frame(s))
+            )
             for kf in char.keyframes:
                 lines.append(f"# frame {kf.frame}")
                 lines.append(f"char_obj.location = {_vec(kf.position)}")

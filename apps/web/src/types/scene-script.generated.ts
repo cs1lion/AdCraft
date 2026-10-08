@@ -100,6 +100,41 @@ Partial<Record<PropTypeName | EnvironmentTypeName, readonly [number, number, num
 };
 
 /**
+ * Pose constants, from scene3d/character_pose.py -- the same numbers the
+ * Blender converter uses. The walk curve is implemented once per language
+ * (the runtimes share nothing), so these are the part that must not drift;
+ * `test_character_pose_matches_preview` compares the two implementations'
+ * actual output phase by phase, which catches the formulas too.
+ *
+ * Stride is proportional to the leg, so `stride / (4L)` -- and therefore the
+ * leg angle -- is the same for every figure: a child takes shorter steps
+ * rather than swinging harder.
+ */
+export const POSE_CONSTANTS = {
+  walkStrideMetres: 1.4,
+  referenceLegLengthMetres: 0.925,
+  stanceFraction: 0.5,
+  walkMaxLegRadians: 0.62,
+  defaultLegLengthMetres: 0.85,
+  walkArmOverLeg: 0.75,
+  walkTorsoRadians: 0.06,
+  gestureHeadTiltRadians: -0.26,
+  standLegSpreadRadians: 0.05,
+  standArmRestRadians: 0.08,
+  gestureArmRaiseRadians: 0.9,
+  gestureArmOutRadians: 0.35,
+  gestureTorsoRadians: 0.12,
+  gestureHeadRadians: -0.2,
+  sitThighLiftRadians: 1.15,
+  sitTorsoRadians: 0.22,
+  sitHeadRadians: 0.05,
+  talkArmRadians: 0.35,
+  talkTorsoRadians: 0.04,
+  talkMouthRatio: 0.5,
+  mouthClosedRatio: 0.08,
+} as const;
+
+/**
  * The colour a kind with no geometry renders in, chosen so it can never be
  * mistaken for a real surface. Must equal the converter's
  * ``_DEGRADED_ASSET_COLOR`` (#FF2BD1).

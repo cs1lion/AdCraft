@@ -57,24 +57,94 @@ class TestFullAnimationReachesBlender:
     def test_every_motion_keyframe_becomes_a_blender_keyframe(self) -> None:
         """The animation pass can only interpolate what was written.
 
-        A keyframe the converter drops is a still frame in the final clip, so
-        count them: two characters plus two cameras.
+        A keyframe the converter drops is a still frame in the final clip.
+
+        Asserted per authored keyframe rather than as a global count: the pose pass
+        legitimately adds its own location keys (the vertical bob rides an empty per
+        frame) and rotation keys (the limb pivots), so a total stopped being the
+        measure of whether anything was dropped. What must hold is that EVERY
+        authored keyframe is present, at its own frame, on the wrapper -- and that a
+        dropped one now fails this instead of hiding inside a changed total.
         """
 
         script = _generate(keyframes_only=False)
         scene = _scene()
 
-        expected_character = sum(len(c.keyframes) for c in scene.characters)
-        # Each camera keyframe writes the camera's location AND its focus
-        # target's location.
-        expected_camera = sum(len(c.keyframes) * 2 for c in scene.cameras)
+        for character in scene.characters:
+            for keyframe in character.keyframes:
+                blender_frame = keyframe.frame + 1
+                assert (
+                    f"char_obj.keyframe_insert(data_path='location', frame={blender_frame})"
+                    in script
+                ), f"{character.id} frame {keyframe.frame} lost its location key"
+                assert (
+                    f"char_obj.keyframe_insert(data_path='rotation_euler', frame={blender_frame})"
+                    in script
+                ), f"{character.id} frame {keyframe.frame} lost its yaw key"
 
-        assert script.count("keyframe_insert(data_path='location'") == (
-            expected_character + expected_camera
-        )
-        assert script.count("keyframe_insert(data_path='rotation_euler'") == (
-            expected_character
-        )
+        # Each camera keyframe writes the camera's location AND its focus target's.
+        for camera in scene.cameras:
+            for keyframe in camera.keyframes:
+                blender_frame = keyframe.frame + 1
+                assert (
+                    f"cam.keyframe_insert(data_path='location', frame={blender_frame})"
+                    in script
+                )
+                assert (
+                    f"target.keyframe_insert(data_path='location', frame={blender_frame})"
+                    in script
+                )
+
+    def test_a_walking_character_animates_its_limbs(self) -> None:
+        """`action` must reach Blender, not just the preview.
+
+        The converter read `position` and `rotation_y` and ignored `action`, so under
+        the DEFAULT backend a `walk` rendered as a figure sliding with its limbs welded
+        in place -- and nothing said so. Two properties pin it:
+
+        - each limb pivots at its PROXIMAL end, because a Blender primitive's origin
+          is its centre and rotating there orbits the limb instead of swinging it;
+        - the pivots carry rotation keys, and a walk is keyed every frame because its
+          phase comes from distance travelled.
+        """
+
+        script = _generate(keyframes_only=False)
+        scene = _scene()
+        walkers = [c for c in scene.characters if any(k.action == "walk" for k in c.keyframes)]
+        assert walkers, "the fixture has no walking character, so this proves nothing"
+
+        for character in walkers:
+            for limb in ("LegL", "LegR", "ArmL", "ArmR"):
+                assert f'"{character.id}_{limb}_pivot"' in script, (
+                    f"{limb} has no pivot, so it would orbit its own centre"
+                )
+                assert f"_p_{character.id}{limb}.rotation_euler.x" in script
+                assert f"_p_{character.id}{limb}.keyframe_insert(" in script
+            assert f'"{character.id}_Head_pivot"' in script
+            # The bob rides its own empty so the wrapper's location keeps carrying the
+            # authored position rather than position+bob.
+            assert f'bob_{character.id}.keyframe_insert(' in script
+
+    def test_a_character_that_only_stands_gets_a_constant_pose(self) -> None:
+        """A held action is keyed once, not every frame.
+
+        Otherwise a 720-frame scene's script grows by thousands of lines that all say
+        the same thing, and the whole animation pass becomes unreviewable.
+        """
+
+        script = _generate(keyframes_only=False)
+        scene = _scene()
+        standers = [
+            c for c in scene.characters
+            if all(k.action in {"stand", "talk", "sit", "gesture"} for k in c.keyframes)
+        ]
+        for character in standers:
+            # The bob is keyed every frame regardless -- it is cheap, and keeping it
+            # uniform means the frame loop has no branch.
+            assert script.count(f"bob_{character.id}.keyframe_insert(") >= len(
+                [k for k in character.keyframes]
+            )
+            assert script.count(f"_p_{character.id}LegL.keyframe_insert(") == 1
 
     def test_each_shot_gets_a_timeline_marker_bound_to_its_camera(self) -> None:
         """Markers are what makes the render cut between cameras."""
