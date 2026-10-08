@@ -21,6 +21,8 @@ eased.
 
 from __future__ import annotations
 
+from app.services.scene3d import held_item_grip
+
 import math
 
 # ---------------------------------------------------------------------------
@@ -140,12 +142,39 @@ def segment_pose_at(
     action: str | None,
     cycle_phase: float,
     leg_length_metres: float = DEFAULT_LEG_LENGTH_METRES,
+    holding: str | None = None,
 ) -> dict[str, float]:
     """The pose for ``action`` at ``cyclePhase``, as radians per joint.
 
     Keys match ``POSE_FIELDS`` and use the converter's snake_case, so this can be
     dropped into keyframe calls without a translation layer.
+
+    ``holding`` is ``"left"`` or ``"right"`` when the character is carrying
+    something. It is a SCENE property derived from a prop's ``held_by``, not an
+    action, so there is no second thing for a script author to keep in step with
+    ``held_by`` -- two writers for one fact is the ambiguity
+    ``_validate_held_and_keyframed`` exists to reject.
+
+    The grip overrides the arms only. A character walking with a rifle still walks,
+    and its legs and bob must not stop because it is armed.
     """
+    pose = _pose_for_action(action, cycle_phase, leg_length_metres)
+    if not holding:
+        return pose
+    pitch = held_item_grip.hold_arm_pitch()
+    return {
+        **pose,
+        "arm_l": pitch if holding == "left" else pose["arm_l"],
+        "arm_r": pitch if holding == "right" else pose["arm_r"],
+    }
+
+
+def _pose_for_action(
+    action: str | None,
+    cycle_phase: float,
+    leg_length_metres: float,
+) -> dict[str, float]:
+    """The pose an action asks for, before any held-item override."""
     phase = cycle_phase % 1.0
     theta = phase * math.pi * 2.0
     sine = math.sin(theta)
@@ -261,6 +290,7 @@ def pose_at_frame(
     frames: list[int],
     frame: int,
     leg_length_metres: float,
+    holding: str | None = None,
 ) -> dict[str, float]:
     """The pose for a character at an arbitrary frame.
 
@@ -273,4 +303,22 @@ def pose_at_frame(
         phase = 0.0
     else:
         phase = distance / walk_stride_metres(leg_length_metres)
-    return segment_pose_at(action_at_frame(actions, frames, frame), phase, leg_length_metres)
+    return segment_pose_at(
+        action_at_frame(actions, frames, frame), phase, leg_length_metres, holding
+    )
+
+
+def held_sides_by_character(script) -> dict[str, str]:
+    """Which hand each character is carrying something in, from ``held_by``.
+
+    ONE reader of ``held_by``, so the arms that reach and the item that is held are
+    resolved together -- the same single-source rule the backend's
+    ``_validate_held_and_keyframed`` enforces on precedence. When both hands carry
+    something the right wins, because that is what the hand offset defaults to and
+    picking the other would put the two on opposite sides.
+    """
+    sides: dict[str, str] = {}
+    for prop in script.props:
+        if prop.held_by:
+            sides[prop.held_by] = prop.held_side or "right"
+    return sides

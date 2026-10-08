@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 持枪的最后一侧：Blender 现在也会伸手去握
+
+上一条修的是**偏移**（道具该在哪），这一条修的是**手臂**（手该在哪）。两者都由同一套 rig 推导，但转换器此前完全不知道"握着东西"这件事——所以默认后端下角色空着手、武器浮在旁边，而预览已经会伸手了。
+
+- `character_pose.segment_pose_at` 收 `holding`，**只覆盖手臂**：拿着步枪的角色照样走路，腿和 bob 不停。
+- `held_sides_by_character` 是 `held_by` 的**唯一读者**，所以"伸手的那条手臂"和"被握着的那件道具"由同一处解析，不会各说各话。双手都拿东西时右手优先——因为手偏移默认就是右手，选另一只会让两者落在身体两侧。
+- Blender 里发出的旋转角是 **77.5°**，从 rig 推导而非写死：
+  `_p_<id>ArmR.rotation_euler.x = 1.352398`
+- 自由的那条手臂保留**自己 action** 的值（`stand` 的 0.08 rad），不是被钉在握持角上。
+- 真机验证：Blender 5.2.1 渲 `grip_scene.json`，刀刃根部落在手部、手臂前伸，与 three.js 预览一致。
+
 ### Fixed — 持枪：手终于有可以握的姿态（§2.2）
 
 差距清单 §2.2："手没有可以握的姿态"。这一条被 §2.4 阻塞（没有手臂关节就谈不上握住），现在解除。

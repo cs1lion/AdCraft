@@ -21,7 +21,7 @@ from app.services.scene3d.held_items import held_keyframe_positions
 # Imported rather than reimplemented: the draft pass must render exactly the
 # frames ``extract_keyframes`` copies and ``control_passes`` aligns to, or a
 # keyframe deliverable would silently miss frames the full pass produces.
-from app.services.scene3d import character_pose, object_motion
+from app.services.scene3d import character_pose, held_item_grip, object_motion
 from app.services.scene3d import rotation_pivot
 from app.services.scene3d.keyframes import _shot_keyframe_frames
 from app.services.scene3d.rotation_pivot import needs_pivot_empty, rotation_pivot_for
@@ -675,7 +675,7 @@ _LIMB_POSE_FIELDS = (
 _HELD_ACTIONS = frozenset({"stand", "talk", "sit", "gesture"})
 
 
-def _character_pose_code(char, total_frames: int) -> list[str]:
+def _character_pose_code(char, script, total_frames: int) -> list[str]:
     """Keyframe the character's joints from the pose library.
 
     Without this the converter read ``position`` and ``rotation_y`` and ignored
@@ -698,6 +698,10 @@ def _character_pose_code(char, total_frames: int) -> list[str]:
     actions = [kf.action for kf in char.keyframes]
     positions = [list(kf.position) for kf in char.keyframes]
     frames = [kf.frame for kf in char.keyframes]
+    # Which hand is carrying something, from the scene's own `held_by` links. Same
+    # reader the preview uses, so the arm that reaches and the item that is held
+    # cannot disagree about which side that is.
+    held_side = character_pose.held_sides_by_character(script).get(char.id)
 
     lines = [
         "# === POSE: " + _esc(char.id) + " ===",
@@ -706,12 +710,21 @@ def _character_pose_code(char, total_frames: int) -> list[str]:
         "# stationary character keeps both feet down.",
         "# The vertical bob rides an empty above the wrapper rather than the",
         "# wrapper's own location, which carries the authored position.",
+    ]
+    if held_side:
+        lines.append(
+            f"# Carrying something in the {held_side} hand: that arm pitches "
+            f"{held_item_grip.hold_arm_pitch_degrees():.1f} deg "
+            "forward so the hand reaches the grip the item is placed at. Without "
+            "this the item floats beside an empty hand."
+        )
+    lines.extend([
         "bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0, 0, 0))",
         f"bob_{_esc(char.id)} = bpy.context.object",
         f"bob_{_esc(char.id)}.name = {char.id + '_bob'!r}",
         f"bpy.data.objects[{char.id!r}].parent = bob_{_esc(char.id)}",
         "",
-    ]
+    ])
     for limb, _ in _LIMB_POSE_FIELDS:
         lines.append(f"_p_{_esc(char.id)}{limb} = bpy.data.objects[{char.id + '_' + limb + '_pivot'!r}]")
     lines.append(f"_p_{_esc(char.id)}Head = bpy.data.objects[{char.id + '_Head_pivot'!r}]")
@@ -719,7 +732,9 @@ def _character_pose_code(char, total_frames: int) -> list[str]:
 
     emitted: set[str] = set()
     for frame in range(total_frames + 1):
-        pose = character_pose.pose_at_frame(actions, positions, frames, frame, leg_length)
+        pose = character_pose.pose_at_frame(
+            actions, positions, frames, frame, leg_length, holding=held_side
+        )
         action = character_pose.action_at_frame(actions, frames, frame)
         bob = pose.get("bob", 0.0) * char.appearance.height * char.appearance.scale
         blender_frame = frame + 1
@@ -1007,7 +1022,7 @@ def scene_script_to_blender(
             lines.append(f'char_obj = bpy.data.objects["{_esc(char.id)}"]')
             if is_human:
                 lines.extend(
-                    _character_pose_code(char, total_frames=_last_frame(s))
+                    _character_pose_code(char, s, total_frames=_last_frame(s))
                 )
             else:
                 # A non-human actor needs the same pivot empty a prop gets, so its

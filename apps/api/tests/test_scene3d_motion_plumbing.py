@@ -9,9 +9,11 @@ or it does not.
 """
 
 import json
+
+import pytest
 from pathlib import Path
 
-from app.schemas.scene_script import SceneScriptRoot
+from app.schemas.scene_script import SceneProp, SceneScriptRoot
 from app.services.scene3d.blender_converter import scene_script_to_blender
 
 SCENE_FIXTURE = (
@@ -189,6 +191,53 @@ class TestFullAnimationReachesBlender:
                 f"a {kind} actor generated the same script as a person"
             )
         assert SceneScriptRoot is not None
+
+    def test_a_character_carrying_something_reaches_for_it(self) -> None:
+        """The arm must pitch to the grip, or the item floats beside an empty hand.
+
+        §2.2. The offset placing the item was derived from the rig, but the rig's own
+        arm hangs down -- so without this the two are correct about different things
+        and the weapon floats 26-43 cm above the fingers.
+        """
+        from app.schemas.scene_script import SceneCharacter
+        from app.services.scene3d.blender_converter import scene_script_to_blender
+
+        def character(name: str) -> SceneCharacter:
+            return SceneCharacter.model_validate({
+                "id": name,
+                "type": "lowpoly_human",
+                "appearance": {"color": "#8B4513", "height": 1.85, "scale": 1.0},
+                "keyframes": [{"frame": 0, "position": [0, 0, 0], "rotation_y": 0,
+                               "action": "stand"}],
+            })
+
+        base = _scene()
+        armed = base.model_copy(update={
+            "characters": [character("carrier")],
+            "props": [SceneProp.model_validate({
+                "id": "sword", "type": "weapon", "position": [9, 9, 0],
+                "scale": 1.2, "held_by": "carrier",
+            })],
+        })
+        empty_handed = base.model_copy(update={"characters": [character("carrier")]})
+        with_item = scene_script_to_blender(armed, output_dir="unused")
+        without = scene_script_to_blender(empty_handed, output_dir="unused")
+
+        assert "Carrying something in the right hand" in with_item
+        assert "Carrying something" not in without
+        # The arm actually rotates, and by the angle the rig needs rather than a
+        # guessed one.
+        from app.services.scene3d.held_item_grip import hold_arm_pitch
+
+        assert f"_p_carrierArmR.rotation_euler.x = {hold_arm_pitch():.6f}" in with_item
+        # And the arm that is NOT carrying keeps its own ACTION's value -- a
+        # character standing with a rifle still has its free arm on the stand pose,
+        # not pinned to the grip angle.
+        from app.services.scene3d import character_pose
+
+        stand = character_pose.segment_pose_at("stand", 0.0, 0.925)
+        assert f"_p_carrierArmL.rotation_euler.x = {stand['arm_l']:.6f}" in with_item
+        assert stand["arm_l"] != pytest.approx(hold_arm_pitch())
 
     def test_each_shot_gets_a_timeline_marker_bound_to_its_camera(self) -> None:
         """Markers are what makes the render cut between cameras."""
