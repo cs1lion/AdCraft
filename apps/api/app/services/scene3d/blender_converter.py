@@ -239,6 +239,22 @@ rock.scale = ({1.4 * scale:.4f}, {1.1 * scale:.4f}, {0.8 * scale:.4f})
 """
 
 
+def _build_crater(obj_id: str, scale: float) -> str:
+    # Both parts sit ON the ground rather than being cut into it. A crater dug
+    # below grade is invisible: the site plate is a solid box, so anything under
+    # its top face is occluded and the result reads as a bare ring. The dish has
+    # to be at grade to be seen at all.
+    return f"""
+bpy.ops.mesh.primitive_torus_add(major_radius={2.0 * scale:.4f}, minor_radius={0.4 * scale:.4f},
+                                major_segments=16, minor_segments=6, location=(0, 0, {0.4 * scale:.4f}))
+crater_rim = bpy.context.object
+crater_rim.name = "{_esc(obj_id)}_rim"
+bpy.ops.mesh.primitive_cylinder_add(radius={1.7 * scale:.4f}, depth={0.12 * scale:.4f}, location=(0, 0, {0.06 * scale:.4f}))
+crater_floor = bpy.context.object
+crater_floor.name = "{_esc(obj_id)}"
+"""
+
+
 def _build_fence(obj_id: str, scale: float) -> str:
     posts = 4
     lines = [
@@ -410,6 +426,8 @@ _ASSET_BUILDERS: dict[str, Any] = {
     "platform": _build_platform,
     "tree": _build_tree,
     "rock": _build_rock,
+
+    "crater": _build_crater,
     "fence": _build_fence,
     "lantern": _build_lantern,
     "chair": _build_chair,
@@ -462,6 +480,7 @@ _ASSET_COLORS: dict[str, str] = {
     "platform": "#8A7554",
     "tree": "#6B4A2A",
     "rock": "#82807A",
+    "crater": "#6B5F52",
     "fence": "#7E6242",
     "lantern": "#E8B84B",
     "chair": "#7A5230",

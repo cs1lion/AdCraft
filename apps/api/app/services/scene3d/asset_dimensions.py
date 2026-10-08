@@ -68,6 +68,8 @@ ASSET_DIMENSIONS: dict[str, AssetDimensions] = {
     "gable_roof": AssetDimensions(8.0, 3.0, 8.0, 4.0, "cone"),
     "tree": AssetDimensions(3.4, 5.1, 3.4, 0.0, "icosahedron"),
     "rock": AssetDimensions(2.52, 1.44, 1.98, -0.12, "icosahedron", "sits slightly buried"),
+    "crater": AssetDimensions(4.8, 0.8, 4.8, 0.0, "dish",
+                              "a shallow dish ringed by a raised rim, sitting ON the ground"),
     "fence": AssetDimensions(0.12, 0.8, 4.62, 0.4, "posts", "four posts spread over `depth`"),
     # --- props -------------------------------------------------------------
     "round_table": AssetDimensions(1.2, 0.775, 1.2, 0.0, "cylinder"),

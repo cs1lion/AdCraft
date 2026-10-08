@@ -35,6 +35,7 @@ import {
   IcosahedronGeometry,
   Mesh,
   MeshStandardMaterial,
+  TorusGeometry,
 } from "./LeanSceneCanvas";
 import {
   KIND_ROTATION_PIVOT,
@@ -385,6 +386,40 @@ const rock: AssetGeometry = ({ scale, rotationY, pos }) => (
   </Mesh>
 );
 
+/**
+ * A crater is a rim plus a dish, and it is the one kind that has to be a
+ * *composition* rather than a primitive: nothing convex is a depression.
+ *
+ * The torus is what makes it measurable. A `RingGeometry` rim cannot be, because
+ * the measurement walk only ever reads a ring's inner radius and drops the outer
+ * one, and a `ConeGeometry` measures the whole cone instead of the dish cut out
+ * of it — so either would have made the dimension table describe a different
+ * shape from the one on screen. The cylinder floor measures exactly, so it is
+ * what carries the dish.
+ *
+ * Both parts sit ON the ground rather than being cut into it. Blender showed the
+ * way: the site plate is a solid box, so a dish below its top face is occluded
+ * and the crater renders as a bare ring with the green plate showing through the
+ * middle. A real render was the only thing that caught it — the dimension table
+ * happily accepted "base: -0.5, dug IN" for geometry nobody could see.
+ */
+const crater: AssetGeometry = ({ scale, rotationY, pos }) => (
+  <Group position={pos} rotation={[0, rotationY, 0]}>
+    <Mesh
+      position={[0, 0.4 * scale, 0]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      castShadow
+    >
+      <TorusGeometry args={[2.0 * scale, 0.4 * scale, 8, 16]} />
+      <MeshStandardMaterial color={colourFor("crater")} />
+    </Mesh>
+    <Mesh position={[0, 0.06 * scale, 0]}>
+      <CylinderGeometry args={[1.7 * scale, 1.7 * scale, 0.12 * scale, 16]} />
+      <MeshStandardMaterial color={colourFor("crater")} />
+    </Mesh>
+  </Group>
+);
+
 const fence: AssetGeometry = ({ scale, rotationY, pos }) => (
   <Group position={pos} rotation={[0, rotationY, 0]}>
     {[0, 1, 2, 3].map((i) => (
@@ -434,6 +469,7 @@ export const SCENE_SCRIPT_GEOMETRY: Record<SceneScriptKind, AssetGeometry> = {
   platform,
   tree,
   rock,
+  crater,
   fence,
   ground,
 };

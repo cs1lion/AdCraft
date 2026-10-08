@@ -12,7 +12,7 @@
 // Kinds the backend schema declares, so the preview can assert it covers all of them.
 export const PROP_TYPES = ["round_table", "rect_table", "chair", "stool", "lantern", "box", "crate", "vase", "weapon", "scroll", "book", "cup"] as const;
 
-export const ENVIRONMENT_TYPES = ["wall", "pillar", "floor", "gable_roof", "flat_roof", "door", "window", "stairs", "platform", "tree", "rock", "fence", "ground"] as const;
+export const ENVIRONMENT_TYPES = ["wall", "pillar", "floor", "gable_roof", "flat_roof", "door", "window", "stairs", "platform", "tree", "rock", "crater", "fence", "ground"] as const;
 
 export type PropTypeName = (typeof PROP_TYPES)[number];
 export type EnvironmentTypeName = (typeof ENVIRONMENT_TYPES)[number];
@@ -27,6 +27,7 @@ export const SCENE_SCRIPT_ASSET_COLORS: Readonly<Record<string, string>> = {
   box: "#B08D57",
   chair: "#7A5230",
   crate: "#8C6239",
+  crater: "#6B5F52",
   cup: "#D9D8D0",
   door: "#5C3A21",
   fence: "#7E6242",
@@ -233,6 +234,7 @@ export const ASSET_SCENE_DIMENSIONS: Record<string, AssetSceneDimensions> = {
   box: { width: 0.8, height: 0.8, depth: 0.8, base: 0, shape: "box", note: "" },
   chair: { width: 0.5, height: 0.7, depth: 0.515, base: 0.425, shape: "cylinder", note: "`base` is seat height" },
   crate: { width: 0.9, height: 0.9, depth: 0.9, base: 0, shape: "box", note: "" },
+  crater: { width: 4.8, height: 0.8, depth: 4.8, base: 0, shape: "dish", note: "a shallow dish ringed by a raised rim, sitting ON the ground" },
   cup: { width: 0.14, height: 0.14, depth: 0.14, base: 0, shape: "cylinder", note: "" },
   door: { width: 1, height: 2.2, depth: 0.15, base: 0, shape: "box", note: "about a person tall" },
   fence: { width: 0.12, height: 0.8, depth: 4.62, base: 0.4, shape: "posts", note: "four posts spread over `depth`" },

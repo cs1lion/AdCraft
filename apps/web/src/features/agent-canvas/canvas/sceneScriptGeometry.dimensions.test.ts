@@ -32,6 +32,7 @@ import {
   IcosahedronGeometry,
   PlaneGeometry,
   RingGeometry,
+  TorusGeometry,
   SphereGeometry,
 } from "./LeanSceneCanvas";
 import { SCENE_SCRIPT_GEOMETRY, type AssetGeometry } from "./sceneScriptGeometry";
@@ -61,6 +62,7 @@ const PRIMITIVES = new Map<unknown, string>([
   [IcosahedronGeometry, "radius"],
   [SphereGeometry, "radius"],
   [RingGeometry, "ring"],
+  [TorusGeometry, "torus"],
 ]);
 
 const round = (value: number) => Math.round(value * 1000) / 1000;
@@ -133,12 +135,24 @@ function measure(geometry: AssetGeometry): Dimension {
           : primitive === "ring" ? [a * 2, a * 2, 0]
             : primitive === "radius" ? [a * 2, a * 2, a * 2]
               : primitive === "cone" ? [a * 2, b, a * 2]
-                // CylinderGeometry(radiusTop, radiusBottom, HEIGHT, segments) —
-                // the height is the THIRD argument, while ConeGeometry's is the
-                // second. Reading the wrong one turns a 4.2 m pillar into a 0.3 m
-                // disc, which is how this table first reported the pillar's
-                // height as 0.3 and its base as -1.95.
-                : [a * 2, c, a * 2];
+                // TorusGeometry(RADIUS, TUBE) is read here as the GROUND-LYING
+                // one: `radius + tube` across and `tube` tall. It is the only
+                // honest way to measure a crater rim — RingGeometry's outer
+                // radius is unreadable to this walk, and a cone measures the
+                // whole cone rather than the dish cut out of it.
+                //
+                // This walk cannot see rotation at all, so the convention is
+                // only true for a builder that lays the mesh flat. three.js
+                // hands you a torus standing upright like a wheel, and a wheel
+                // measures TALLER than it is wide. A standing torus added later
+                // will read short.
+                : primitive === "torus" ? [(a + b) * 2, b * 2, (a + b) * 2]
+                  // CylinderGeometry(radiusTop, radiusBottom, HEIGHT, segments) —
+                  // the height is the THIRD argument, while ConeGeometry's is the
+                  // second. Reading the wrong one turns a 4.2 m pillar into a 0.3 m
+                  // disc, which is how this table first reported the pillar's
+                  // height as 0.3 and its base as -1.95.
+                  : [a * 2, c, a * 2];
       add(size, nextOffset, effective);
     }
     childrenOf(node).forEach((child) => visit(child, nextOffset, effective));

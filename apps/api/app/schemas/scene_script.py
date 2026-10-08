@@ -73,6 +73,7 @@ EnvironmentType = Literal[
     "platform",
     "tree",
     "rock",
+    "crater",
     "fence",
     "ground",
 ]

@@ -44,6 +44,10 @@ SOLIDS: dict[str, tuple[float, float, float, float]] = {
     "flat_roof":  (3.20, 0.125, 2.60, 5.20),
     "gable_roof": (2.83, 1.50, 2.83, 5.50),
     "rock":       (0.63, 0.40, 0.50, 0.60),
+    # Half-extents read off the built dish: 4.8 m across, 0.8 m tall at the rim,
+    # sitting on the ground. A crater is wide and low, so treating it as a 1 m
+    # cube (the unknown fallback) would both miss it and overstate its height.
+    "crater":     (2.40, 0.40, 2.40, 0.00),
     "tree":       (0.60, 2.00, 0.60, 2.00),
     "box":        (0.40, 0.40, 0.40, 0.40),
     "crate":      (0.45, 0.45, 0.45, 0.45),

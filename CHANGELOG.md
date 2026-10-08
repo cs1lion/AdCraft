@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed — 环形坑：让画面有"场景"的第一个形状（§2.3）
+
+`EnvironmentType` 里没有 crater，而一个 rock 不是坑——所以 10-04 那种环形坑一直画不出来。
+
+- **`crater` 是组合几何，不是凹图元。** 下沉地面圆盘 + 抬起边缘环，两者都是凸的。两个渲染器都是这个组合。
+- **边缘用 `TorusGeometry`，而它能进尺寸测量表**：`radius + tube` 跨、`tube` 高，没有任何余量可猜。`RingGeometry` 量不到（外半径被丢），`ConeGeometry` 量成整个锥。这不是为放宽断言而加的图元，是唯一让表还能说实话的路。
+- 真机抓到的：坑底原本放在地面以下（表里写 `base: -0.5`"挖进去"）。表、几何、测试**全绿**——但 Blender 渲出来是**空环**，中间透出绿色地面板。场地板是实心盒子，低于它顶面的东西都被挡住。**尺寸表能接受一个谁也看不见的几何。**
+- 决定记录在 `docs/plans/previs-asset-and-motion-gap.md` §2.3：先长枚举，参数化几何推迟——理由是尺寸表能否继续说实话，不是偏好。
+- 顺带否决 `rail` / `track`：导轨需要的"多长、朝哪"已经是 `scale` + `rotation_y` 在做的事。
+
 ## [Unreleased]
 
 ### Fixed — 持枪的最后一侧：Blender 现在也会伸手去握

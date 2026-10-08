@@ -479,6 +479,7 @@ const SphereGeometryNode = defineGeometry((args) => new THREE.SphereGeometry(...
 const CylinderGeometryNode = defineGeometry((args) => new THREE.CylinderGeometry(...args));
 const ConeGeometryNode = defineGeometry((args) => new THREE.ConeGeometry(...args));
 const IcosahedronGeometryNode = defineGeometry((args) => new THREE.IcosahedronGeometry(...args));
+const TorusGeometryNode = defineGeometry((args) => new THREE.TorusGeometry(...args));
 const RingGeometryNode = defineGeometry((args) => new THREE.RingGeometry(...args));
 const PlaneGeometryNode = defineGeometry((args) => new THREE.PlaneGeometry(...args));
 
@@ -1393,6 +1394,7 @@ export const SphereGeometry = SphereGeometryNode;
 export const CylinderGeometry = CylinderGeometryNode;
 export const ConeGeometry = ConeGeometryNode;
 export const IcosahedronGeometry = IcosahedronGeometryNode;
+export const TorusGeometry = TorusGeometryNode;
 export const RingGeometry = RingGeometryNode;
 export const PlaneGeometry = PlaneGeometryNode;
 export const BufferGeometry = BufferGeometryNode;
