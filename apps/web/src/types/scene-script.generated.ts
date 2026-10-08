@@ -135,6 +135,22 @@ export const POSE_CONSTANTS = {
 } as const;
 
 /**
+ * Non-human motion constants, from scene3d/object_motion.py. A door, a wheel
+ * and a dropship have no body, so their motion is a delta on the rest pose
+ * rather than a set of joint angles -- see objectMotion.ts.
+ *
+ * These are wall-clock cycles, not distance-driven: a door opens once across
+ * its shot and a wheel turns whether or not it is moving.
+ */
+export const OBJECT_MOTION_CONSTANTS = {
+  driveStrideMetres: 12.0,
+  flyoverStrideMetres: 60.0,
+  doorSwingSeconds: 3.0,
+  continuousCycleSeconds: 2.0,
+  doorSwingOpenRadians: 1.75,
+} as const;
+
+/**
  * The colour a kind with no geometry renders in, chosen so it can never be
  * mistaken for a real surface. Must equal the converter's
  * ``_DEGRADED_ASSET_COLOR`` (#FF2BD1).

@@ -1,0 +1,264 @@
+{
+  "note": "Sampled from the PREVIEW's objectMotion.ts so the converter's Python module can be compared against it phase by phase. Regenerate with REGENERATE_SCENE_POSE_PARITY=1 npx vitest run <this file>.",
+  "cases": [
+    {
+      "action": "door_swing_open",
+      "samples": [
+        {
+          "phase": 0,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.1,
+          "rotation": [
+            0,
+            0.04900000000000001,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.25,
+          "rotation": [
+            0,
+            0.2734375,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.5,
+          "rotation": [
+            0,
+            0.875,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.75,
+          "rotation": [
+            0,
+            1.4765625,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 1,
+          "rotation": [
+            0,
+            1.75,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 1.4,
+          "rotation": [
+            0,
+            1.75,
+            0
+          ],
+          "translation": null
+        }
+      ]
+    },
+    {
+      "action": "spin",
+      "samples": [
+        {
+          "phase": 0,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.125,
+          "rotation": [
+            0.7853981633974483,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.3,
+          "rotation": [
+            1.884955592153876,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.5,
+          "rotation": [
+            3.141592653589793,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 0.9,
+          "rotation": [
+            5.654866776461627,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 1,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "translation": null
+        },
+        {
+          "phase": 1.25,
+          "rotation": [
+            1.5707963267948966,
+            0,
+            0
+          ],
+          "translation": null
+        }
+      ]
+    },
+    {
+      "action": "drive",
+      "samples": [
+        {
+          "phase": 0,
+          "rotation": null,
+          "translation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "phase": 0.25,
+          "rotation": null,
+          "translation": [
+            0,
+            3,
+            0
+          ]
+        },
+        {
+          "phase": 0.5,
+          "rotation": null,
+          "translation": [
+            0,
+            6,
+            0
+          ]
+        },
+        {
+          "phase": 1,
+          "rotation": null,
+          "translation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "phase": 1.5,
+          "rotation": null,
+          "translation": [
+            0,
+            6,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "action": "flyover",
+      "samples": [
+        {
+          "phase": 0,
+          "rotation": null,
+          "translation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "phase": 0.4,
+          "rotation": null,
+          "translation": [
+            23.999999999999993,
+            0,
+            0
+          ]
+        },
+        {
+          "phase": 0.8,
+          "rotation": null,
+          "translation": [
+            48,
+            0,
+            0
+          ]
+        },
+        {
+          "phase": 1,
+          "rotation": null,
+          "translation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "phase": 2.2,
+          "rotation": null,
+          "translation": [
+            12.00000000000001,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "action": "stand",
+      "samples": [
+        {
+          "phase": 0,
+          "rotation": null,
+          "translation": null
+        },
+        {
+          "phase": 0.5,
+          "rotation": null,
+          "translation": null
+        }
+      ]
+    }
+  ],
+  "derived": {
+    "driveStrideMetres": 12,
+    "flyoverStrideMetres": 60,
+    "doorSwingSeconds": 3,
+    "continuousCycleSeconds": 2,
+    "phaseAtFrame30Fps20": 0.3333333333333333,
+    "phaseAtFrame30Fps60": 0.6666666666666666
+  }
+}

@@ -21,7 +21,8 @@ from app.services.scene3d.held_items import held_keyframe_positions
 # Imported rather than reimplemented: the draft pass must render exactly the
 # frames ``extract_keyframes`` copies and ``control_passes`` aligns to, or a
 # keyframe deliverable would silently miss frames the full pass produces.
-from app.services.scene3d import character_pose
+from app.services.scene3d import character_pose, object_motion
+from app.services.scene3d import rotation_pivot
 from app.services.scene3d.keyframes import _shot_keyframe_frames
 from app.services.scene3d.rotation_pivot import needs_pivot_empty, rotation_pivot_for
 
@@ -762,6 +763,81 @@ def _character_pose_code(char, total_frames: int) -> list[str]:
     return lines
 
 
+def _actor_motion_code(char, frame_rate: float, total_frames: int) -> list[str]:
+    """Keyframe a non-human actor from the object-motion library.
+
+    The converter had no equivalent of the preview's ``objectMotion.ts``, so a
+    ``door_swing_open`` or a ``drive`` sat at its rest pose here -- the same silent
+    gap the character pose had.
+
+    The rotation lands on the actor's PIVOT empty rather than the wrapper, for the
+    same reason the prop rotation does: a door that rotates about its own centre is a
+    door spinning in place, not a hinge. The pivot comes from the same
+    ``KIND_ROTATION_PIVOT`` table the props and the preview read.
+
+    Unlike the human pose this is wall-clock phased, because a door opens once across
+    its shot and a wheel turns whether or not it moves. Continuous motions are keyed
+    every frame; the one-shot door is keyed at the ends plus a few samples, because
+    its curve is a clamp, not a cycle.
+    """
+    if total_frames <= 0:
+        return []
+
+    actions = [kf.action for kf in char.keyframes]
+    frames = [kf.frame for kf in char.keyframes]
+    # The action in force when the actor's animation begins, which is what decides
+    # its phase basis. A later action change re-bases it, so a door that opens then
+    # holds does not restart.
+    lines = [
+        "# === ACTOR MOTION: " + _esc(char.id) + " (" + _esc(char.type) + ") ===",
+        "# Actions: " + ", ".join(sorted({str(a) for a in actions})) +
+        ". Phased by wall clock: a door opens once, a wheel turns regardless of travel.",
+    ]
+    needs_pivot = rotation_pivot.needs_pivot_empty(char.type)
+    if needs_pivot:
+        lines.append(
+            f"# Rotation pivot for {_esc(char.id)} ({char.type}): about this point, "
+            "not the actor's centre."
+        )
+    lines.append(f"_rot_{_esc(char.id)} = bpy.data.objects["
+                 f"{char.id + '_pivot'!r} if {needs_pivot} else {char.id!r}]")
+    lines.append("")
+
+    for frame in range(total_frames + 1):
+        action = character_pose.action_at_frame(actions, frames, frame)
+        phase = object_motion.cycle_phase_for_frame(action, frame, frame_rate)
+        motion = object_motion.object_motion_at(action, phase)
+        rotation = motion.get("rotation")
+        translation = motion.get("translation")
+        if not rotation and not translation:
+            continue
+        blender_frame = frame + 1
+        lines.append(f"# frame {frame} action={action} phase={phase:.4f}")
+        if rotation:
+            rx, ry, rz = rotation
+            # Blender is Z-up and so is SceneScript, but the PREVIEW's three.js is
+            # Y-up, so the axis indices swap: the preview's x is Blender's y.
+            lines.append(
+                f"_rot_{_esc(char.id)}.rotation_euler = "
+                f"(math.radians({ry:.6f}), math.radians({rx:.6f}), math.radians({rz:.6f}))"
+            )
+            lines.append(
+                f"_rot_{_esc(char.id)}.keyframe_insert(data_path='rotation_euler', frame={blender_frame})"
+            )
+        if translation:
+            tx, ty, tz = translation
+            base = char.keyframes[0].position
+            lines.append(
+                f"char_obj.location = "
+                f"({base[0] + ty:.6f}, {base[1] + tx:.6f}, {base[2] + tz:.6f})"
+            )
+            lines.append(
+                f"char_obj.keyframe_insert(data_path='location', frame={blender_frame})"
+            )
+    lines.append("")
+    return lines
+
+
 def scene_script_to_blender(
     scene_script: SceneScriptRoot,
     output_dir: str,
@@ -911,10 +987,15 @@ def scene_script_to_blender(
     if s.characters:
         lines.append("# === CHARACTERS ===")
         for char in s.characters:
-            # Build character at origin, then animate via wrapper
+            # A non-human actor is the SCHEMA'S type, not always a person. This used
+            # to hardcode `lowpoly_human`, so a `door`-typed actor built a seven-box
+            # figure with a head while the preview drew an actual door -- two
+            # renderers, two different objects, and the disagreement only visible by
+            # putting the frames side by side.
+            is_human = char.type == "lowpoly_human"
             lines.append(_build_asset(
                 obj_id=char.id,
-                obj_type="lowpoly_human",
+                obj_type=char.type,
                 position=char.keyframes[0].position,
                 rotation_y=char.keyframes[0].rotation_y,
                 scale=char.appearance.scale,
@@ -924,9 +1005,23 @@ def scene_script_to_blender(
             # Character keyframes
             lines.append(f"# Character keyframes: {char.id}")
             lines.append(f'char_obj = bpy.data.objects["{_esc(char.id)}"]')
-            lines.extend(
-                _character_pose_code(char, total_frames=_last_frame(s))
-            )
+            if is_human:
+                lines.extend(
+                    _character_pose_code(char, total_frames=_last_frame(s))
+                )
+            else:
+                # A non-human actor needs the same pivot empty a prop gets, so its
+                # rotation lands at the hinge instead of the actor's centre.
+                lines.append(
+                    _pivot_parent_code(
+                        char.id, char.type, char.keyframes[0].position, char.appearance.scale
+                    )
+                )
+                lines.extend(
+                    _actor_motion_code(
+                        char, frame_rate=s.scene.frame_rate, total_frames=_last_frame(s)
+                    )
+                )
             for kf in char.keyframes:
                 lines.append(f"# frame {kf.frame}")
                 lines.append(f"char_obj.location = {_vec(kf.position)}")

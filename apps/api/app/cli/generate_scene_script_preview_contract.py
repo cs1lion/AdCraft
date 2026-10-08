@@ -33,7 +33,7 @@ from app.services.scene3d.blender_converter import (
     _DEGRADED_ASSET_COLOR,
     _PART_COLOR_OVERRIDES,
 )
-from app.services.scene3d import character_pose
+from app.services.scene3d import character_pose, object_motion
 from app.services.scene3d.director_motion import (
     CAMERA_MOTION_PRESET_IDS,
     CHARACTER_MOTION_PRESET_IDS,
@@ -163,6 +163,22 @@ def render_typescript() -> str:
             f"  talkTorsoRadians: {character_pose.TALK_TORSO_RADIANS},",
             f"  talkMouthRatio: {character_pose.TALK_MOUTH_RATIO},",
             f"  mouthClosedRatio: {character_pose.MOUTH_CLOSED_RATIO},",
+            "} as const;",
+            "",
+            "/**",
+            " * Non-human motion constants, from scene3d/object_motion.py. A door, a wheel",
+            " * and a dropship have no body, so their motion is a delta on the rest pose",
+            " * rather than a set of joint angles -- see objectMotion.ts.",
+            " *",
+            " * These are wall-clock cycles, not distance-driven: a door opens once across",
+            " * its shot and a wheel turns whether or not it is moving.",
+            " */",
+            "export const OBJECT_MOTION_CONSTANTS = {",
+            f"  driveStrideMetres: {object_motion.MOTION_STRIDE_METRES['drive']},",
+            f"  flyoverStrideMetres: {object_motion.MOTION_STRIDE_METRES['flyover']},",
+            f"  doorSwingSeconds: {object_motion.DOOR_SWING_SECONDS},",
+            f"  continuousCycleSeconds: {object_motion.CONTINUOUS_CYCLE_SECONDS},",
+            f"  doorSwingOpenRadians: {object_motion.DOOR_SWING_OPEN_RADIANS},",
             "} as const;",
             "",
             "/**",

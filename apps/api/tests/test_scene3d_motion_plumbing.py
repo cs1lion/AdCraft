@@ -146,6 +146,50 @@ class TestFullAnimationReachesBlender:
             )
             assert script.count(f"_p_{character.id}LegL.keyframe_insert(") == 1
 
+    def test_a_non_human_character_builds_its_own_type_not_a_person(self) -> None:
+        """A `door`-typed character must build a door.
+
+        This hardcoded `obj_type="lowpoly_human"`, so every non-human actor came out
+        of Blender as a seven-box figure with a head while the preview drew the actual
+        actor. Nothing said so: the script rendered happily, and the disagreement was
+        only visible by putting two renderers' frames side by side.
+        """
+        from app.schemas.scene_script import (
+            CharacterType,
+            SceneCharacter,
+            SceneScriptRoot,
+        )
+        from app.services.scene3d.blender_converter import scene_script_to_blender
+
+        def character(kind: str, action: str) -> SceneCharacter:
+            return SceneCharacter.model_validate({
+                "id": "actor",
+                "type": kind,
+                "appearance": {"color": "#B08D57", "height": 1.8, "scale": 1.0},
+                "keyframes": [{
+                    "frame": 0, "position": [0, 0, 0], "rotation_y": 0,
+                    "action": action,
+                }],
+            })
+
+        base = _scene()
+        for kind in [t for t in CharacterType.__args__ if t != "lowpoly_human"]:
+            action = "door_swing_open" if kind == "door" else "spin"
+            script = scene_script_to_blender(
+                base.model_copy(update={"characters": [character(kind, action)]}),
+                output_dir="unused",
+            )
+            human_script = scene_script_to_blender(
+                base.model_copy(update={"characters": [character("lowpoly_human", "walk")]}),
+                output_dir="unused",
+            )
+            body = script.split("CHARACTERS ===")[1]
+            assert "_Head" not in body, f"a {kind} actor was built with a human head"
+            assert script != human_script, (
+                f"a {kind} actor generated the same script as a person"
+            )
+        assert SceneScriptRoot is not None
+
     def test_each_shot_gets_a_timeline_marker_bound_to_its_camera(self) -> None:
         """Markers are what makes the render cut between cameras."""
 

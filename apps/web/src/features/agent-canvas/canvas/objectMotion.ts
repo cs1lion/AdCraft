@@ -43,21 +43,26 @@ export type NonHumanAction =
   | "drive"
   | "flyover";
 
+import { OBJECT_MOTION_CONSTANTS } from "../../../types/scene-script.generated";
+
+const {
+  driveStrideMetres: DRIVE_STRIDE_METRES,
+  flyoverStrideMetres: FLYOVER_STRIDE_METRES,
+  doorSwingSeconds: DOOR_SWING_SECONDS,
+  continuousCycleSeconds: CONTINUOUS_CYCLE_SECONDS,
+  doorSwingOpenRadians: DOOR_SWING_OPEN_RADIANS,
+} = OBJECT_MOTION_CONSTANTS;
+
 /** How far one cycle carries a moving actor, in metres. */
 export const MOTION_STRIDE_METRES: Record<"drive" | "flyover", number> = {
-  drive: 12,
-  flyover: 60,
+  drive: DRIVE_STRIDE_METRES,
+  flyover: FLYOVER_STRIDE_METRES,
 };
 
-/** How long a door takes to swing open, in seconds. */
-export const DOOR_SWING_SECONDS = 3.0;
-
-/** One cycle of a continuous motion (spin, drive, flyover), in seconds. */
-export const CONTINUOUS_CYCLE_SECONDS = 2.0;
-
-/** How far a swinging door opens, in radians. Past a right angle so the last
- *  frames of the swing are still visibly moving. */
-const DOOR_SWING_OPEN_RADIANS = 1.75;
+// Re-exported so a caller can reason about the phase without recomputing it -- and so
+// the parity fixture cannot silently lose a value by importing a name that is no
+// longer exported and having JSON.stringify drop the resulting undefined.
+export { DOOR_SWING_SECONDS, CONTINUOUS_CYCLE_SECONDS, DOOR_SWING_OPEN_RADIANS };
 
 /**
  * The motion for `action` at `phase` (0..1, one full cycle).
