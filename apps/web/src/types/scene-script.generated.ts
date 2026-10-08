@@ -135,6 +135,47 @@ export const POSE_CONSTANTS = {
 } as const;
 
 /**
+ * Held-item grip geometry, from scene3d/held_item_grip.py.
+ *
+ * A character holding something used to get a prop at a hand offset that
+ * was a fixed 0.32 m and 0.72 of the character's height, while the rig hangs
+ * the hand at 0.49 of it and places the arm lateral in proportion to height.
+ * The two matched at exactly 1.75 m and disagreed for everyone else: a 1.1 m
+ * character's weapon sat 60% further outboard than their hand.
+ *
+ * `armPitchRadians` is the forward rotation the arms need to bring the hand
+ * up to the grip. It is height-independent because the shoulder and the target
+ * are both proportional to height.
+ */
+export const HOLD_GRIP = {
+  armPitchRadians: 1.352398,
+  gripHeightRatio: 0.72,
+  kindGripRatio: {"weapon": 0.32},
+} as const;
+
+/**
+ * The rig's proportions, from scene3d/held_item_grip.py. The held-item
+ * geometry above is derived from these, so a change to the rig has to move
+ * them together -- which is what a fixed metre constant cannot do.
+ */
+export const CHARACTER_RIG_FRACTIONS_MIRROR = {
+  leg: 0.5,
+  torso: 0.3,
+  neck: 0.03,
+  headRadius: 0.11,
+  arm: 0.3,
+  armHang: 0.55,
+  limbWidth: 0.055,
+  torsoWidth: 0.3,
+  torsoDepth: 0.16,
+  legSpread: 0.075,
+  armOutset: 0.6,
+  armWidthFactor: 0.8,
+  legDepthFactor: 1.2,
+  headSeat: 0.85,
+} as const;
+
+/**
  * Non-human motion constants, from scene3d/object_motion.py. A door, a wheel
  * and a dropship have no body, so their motion is a delta on the rest pose
  * rather than a set of joint angles -- see objectMotion.ts.

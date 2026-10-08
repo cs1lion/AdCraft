@@ -35,7 +35,7 @@
  */
 
 import type { CharacterRig } from "./lowPolyHumanRig";
-import { POSE_CONSTANTS } from "../../../types/scene-script.generated";
+import { HOLD_GRIP, POSE_CONSTANTS } from "../../../types/scene-script.generated";
 
 const {
   walkStrideMetres: WALK_STRIDE_METRES,
@@ -203,7 +203,18 @@ function walkLegShape(q: number): number {
 export function segmentPoseAt(
   action: string | null | undefined,
   cyclePhase: number,
-  options: { legLengthMetres?: number } = {},
+  options: {
+    legLengthMetres?: number;
+    /**
+     * Which hand is carrying something, or null/undefined for neither.
+     *
+     * Not an action, deliberately. A `hold` action would have to be kept in step
+     * with the prop's `held_by` by whoever wrote the script, and the two drifting is
+     * the same class of bug as `held_by` versus `keyframes` having no stated
+     * precedence -- two writers for one fact.
+     */
+    holding?: "left" | "right" | null;
+  } = {},
 ): SegmentPose {
   const phase = ((cyclePhase % 1) + 1) % 1;
   // theta runs 0..2π across the cycle, so the figures start at a double contact
@@ -211,11 +222,32 @@ export function segmentPoseAt(
   const theta = phase * Math.PI * 2;
   const sine = Math.sin(theta);
   const cosine = Math.cos(theta);
+  const pose = poseForAction(action, phase, sine, cosine, options.legLengthMetres);
 
+  const holding = options.holding;
+  if (!holding) return pose;
+  // The grip overrides the arms only. Everything else stays on its own action: a
+  // character walking with a rifle still walks, and its legs and bob must not stop.
+  const pitch = HOLD_GRIP.armPitchRadians;
+  return {
+    ...pose,
+    armL: holding === "left" ? pitch : pose.armL ?? 0,
+    armR: holding === "right" ? pitch : pose.armR ?? 0,
+  };
+}
+
+/** The pose an action asks for, before any held-item override. */
+function poseForAction(
+  action: string | null | undefined,
+  phase: number,
+  sine: number,
+  cosine: number,
+  legLengthMetres?: number,
+): SegmentPose {
   switch (action) {
     case "walk": {
       const { armOverLeg, torso } = POSE.walk;
-      const amplitude = walkLegAmplitude(options.legLengthMetres);
+      const amplitude = walkLegAmplitude(legLengthMetres);
       const left = walkLegShape(phase);
       const right = walkLegShape(phase + STANCE_FRACTION);
       const legL = amplitude * left;

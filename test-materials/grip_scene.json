@@ -1,0 +1,23 @@
+{
+  "scene": {"name": "grip", "environment": "outdoor", "lighting": "neutral", "duration": 2, "frame_rate": 30},
+  "characters": [
+    {"id": "tall", "type": "lowpoly_human",
+     "appearance": {"color": "#4A5568", "height": 1.85, "scale": 1.0},
+     "keyframes": [{"frame": 0, "position": [-1.2, 0, 0], "rotation_y": 0, "action": "stand"}]},
+    {"id": "short", "type": "lowpoly_human",
+     "appearance": {"color": "#6B46C1", "height": 1.10, "scale": 1.0},
+     "keyframes": [{"frame": 0, "position": [1.2, 0, 0], "rotation_y": 0, "action": "stand"}]}
+  ],
+  "props": [
+    {"id": "sword_tall", "type": "weapon", "position": [-9, -9, 0], "scale": 1.2,
+     "held_by": "tall"},
+    {"id": "sword_short", "type": "weapon", "position": [-9, -9, 0], "scale": 1.2,
+     "held_by": "short"}
+  ],
+  "environment": [{"id": "g", "type": "ground", "position": [0, 0, 0], "scale": 2.0}],
+  "cameras": [{"id": "cam", "shot_type": "wide", "keyframes": [
+      {"frame": 0, "position": [0, -7, 1.6], "look_at": [0, 0, 1.0]}]}],
+  "shots": [{"id": "s1", "camera": "cam", "start_frame": 0, "end_frame": 30,
+             "description": "grip"}],
+  "speech_bindings": []
+}

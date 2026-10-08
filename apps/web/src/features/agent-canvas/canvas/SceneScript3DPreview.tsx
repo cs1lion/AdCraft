@@ -193,12 +193,21 @@ function LowPolyHuman({
   dialogueLines,
   frameRate,
   handlers,
+  heldSide,
 }: {
   character: SceneCharacter;
   frame: number;
   dialogueLines: readonly SpeechOverlayLine[];
   frameRate: number;
   handlers: EditHandlers;
+  /**
+   * Which hand is carrying something, from the scene's own `held_by` links.
+   *
+   * Passed in rather than looked up so the figure does not need the whole script,
+   * and so the arms and the held item are resolved by ONE reader of `held_by`
+   * instead of two that could disagree.
+   */
+  heldSide?: "left" | "right" | null;
 }) {
   const color = character.appearance.color ?? DEFAULT_CHARACTER_COLOR;
   // The body is the rig the Blender converter emits — seven segments at the
@@ -291,8 +300,12 @@ function LowPolyHuman({
     );
     return segmentPoseAt(action, cyclePhaseForDistance(distance, rig.legLength), {
       legLengthMetres: rig.legLength,
+      // A character carrying something reaches for it. Derived from the scene's own
+      // `held_by`, not from an authored action, so the arms and the item cannot
+      // disagree about whether anything is being held.
+      holding: heldSide ?? undefined,
     });
-  }, [character, frame, action, rig.legLength]);
+  }, [character, frame, action, rig.legLength, heldSide]);
 
   // The bob is a TRANSLATION of the whole figure, and it is deliberately not
   // multiplied by a limb length: that is how a walk ends up bouncing someone off
@@ -605,9 +618,29 @@ function PropMesh({
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * Which hand a character is carrying something in, from the scene's `held_by` links.
+ *
+ * One reader of `held_by`, so the arms that reach and the item that is held cannot
+ * come from two places and disagree — the same single-source rule that
+ * `_validate_held_and_keyframed` exists to enforce on the backend. When both hands
+ * carry something the right wins, because that is the hand the item offset defaults
+ * to and picking the other would put the two on opposite sides.
+ */
+function heldSideFor(
+  script: SceneScriptRoot,
+  characterId: string,
+): "left" | "right" | null {
+  let side: "left" | "right" | null = null;
+  for (const prop of script.props) {
+    if (prop.held_by !== characterId) continue;
+    side = prop.held_side ?? "right";
+  }
+  return side;
+}
+
 // Scale reference
 // ---------------------------------------------------------------------------
-
 /**
  * A 1.75 m human silhouette beside each character, so the author can read scale off
  * the viewport instead of guessing.
@@ -1506,6 +1539,7 @@ export function SceneScript3DPreview({
                     frame={currentFrame}
                     dialogueLines={dialogueLines}
                     frameRate={sceneScript.scene.frame_rate}
+                    heldSide={heldSideFor(sceneScript, object.id)}
                     handlers={handlersFor(
                       { kind: "character", id: object.id },
                       selectedObject?.kind === "character" && selectedObject.id === object.id,

@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from app.services.scene3d import held_item_grip
 from app.schemas.scene_script import (
     CharacterKeyframe,
     SceneCharacter,
@@ -41,28 +42,59 @@ from app.schemas.scene_script import (
 )
 
 # Horizontal distance from the character's centre to the carrying hand (m).
+#
+# DEPRECATED as a constant, kept so the name still resolves. This was a fixed 0.32 m,
+# which happens to equal the rig's arm lateral for a 1.75 m figure and for no other
+# size: the rig places the arm in proportion to height, so a 1.85 m adult's hand is
+# at 0.339 m and a 1.1 m child's at 0.201 m, and a child's weapon was landing 60%
+# further outboard than their hand. `held_item_grip.arm_geometry(height)` derives it.
 HAND_REACH_M = 0.32
 # Hand height as a share of the character's authored height (chest level).
-HAND_HEIGHT_RATIO = 0.72
+# The rig hangs the resting hand at 0.49 of height, so a weapon carried here needs
+# the arms pitched forward -- see `held_item_grip.hold_arm_pitch`.
+HAND_HEIGHT_RATIO = held_item_grip.GRIP_HEIGHT_RATIO
 # An authored position this far from the holder's entire path is a stale rest
 # position, not a placement (m).
 AUTHORED_POSITION_SLACK_M = 2.5
 
 
-def hand_offset(rotation_y: float, side: str | None, height: float) -> list[float]:
-    """The hand offset in SceneScript space for a character pose.
+def hand_offset(
+    rotation_y: float,
+    side: str | None,
+    height: float,
+    kind: str | None = None,
+    scale: float = 1.0,
+) -> list[float]:
+    """Where a held item goes so its GRIP lands in the carrying hand.
 
     ``rotation_y`` is degrees with 0 = facing +Y, so facing is
-    ``(sin yaw, cos yaw)`` and the right hand is facing rotated by -90 degrees
-    (``cos yaw, -sin yaw``). The left hand mirrors it.
+    ``(sin yaw, cos yaw)``; the right hand is facing rotated by -90 degrees and the
+    left mirrors it.
+
+    Every component is DERIVED from the rig rather than typed in, which is the whole
+    of the §2.2 fix. Both the lateral reach and the forward reach of a raised arm
+    scale with height, so a fixed metre value matched one character size and quietly
+    disagreed with all the others.
+
+    ``kind`` and ``scale`` position the item's GRIP rather than its origin: a
+    ``weapon`` carries its grip 0.32 of its scale above where it stands, with the
+    blade a metre above that, so placing the origin in the hand holds a sword by the
+    blade.
     """
 
+    arm = held_item_grip.arm_geometry(height)
     yaw = math.radians(rotation_y)
     sign = -1.0 if side == "left" else 1.0
+    # The two horizontal components the rig actually produces, rotated into the
+    # character's facing. Lateral is out to the side; forward is how far in front of
+    # the chest axis the raised hand ends up.
+    lateral = arm.grip_lateral * math.cos(yaw) - arm.grip_forward * math.sin(yaw)
+    forward = arm.grip_lateral * math.sin(yaw) + arm.grip_forward * math.cos(yaw)
+    grip = held_item_grip.grip_ratio_for(kind) * scale
     return [
-        sign * HAND_REACH_M * math.cos(yaw),
-        -sign * HAND_REACH_M * math.sin(yaw),
-        height * HAND_HEIGHT_RATIO,
+        sign * lateral,
+        sign * forward,
+        height * HAND_HEIGHT_RATIO - grip,
     ]
 
 
@@ -111,7 +143,9 @@ def held_position_at_frame(
     """Where a held prop sits at ``frame`` (the holder's hand)."""
 
     position, yaw = _pose_at(character, frame)
-    offset = hand_offset(yaw, prop.held_side, character.appearance.height)
+    offset = hand_offset(
+        yaw, prop.held_side, character.appearance.height, prop.type, prop.scale
+    )
     return [
         position[0] + offset[0],
         position[1] + offset[1],

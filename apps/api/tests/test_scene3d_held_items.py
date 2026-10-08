@@ -24,6 +24,7 @@ from app.services.scene3d.held_items import (
     AUTHORED_POSITION_SLACK_M,
     HAND_HEIGHT_RATIO,
     HAND_REACH_M,
+    held_item_grip,
     check_held_items,
     hand_offset,
     held_keyframe_positions,
@@ -73,13 +74,27 @@ def _script(props: list[SceneProp], characters: list[SceneCharacter] | None = No
 
 
 class TestHandOffset:
-    def test_right_hand_at_yaw_zero_is_off_the_facing_plus_y_axis(self) -> None:
-        # yaw 0 faces +Y, so the right hand is +X (facing rotated -90 degrees):
-        # face north, right hand east.
-        offset = hand_offset(0.0, "right", 1.7)
-        assert offset[0] == pytest.approx(HAND_REACH_M)
-        assert offset[1] == pytest.approx(0.0)
-        assert offset[2] == pytest.approx(1.7 * HAND_HEIGHT_RATIO)
+    def test_right_hand_lands_where_the_rigs_arm_ends(self) -> None:
+        # Not "at HAND_REACH_M". That constant matched the rig only for a 1.75 m
+        # figure: the rig places the arm in proportion to height, so a 1.1 m
+        # character's hand is 60% closer in than the constant put the weapon.
+        height = 1.7
+        arm = held_item_grip.arm_geometry(height)
+        offset = hand_offset(0.0, "right", height)
+        assert offset[0] == pytest.approx(arm.grip_lateral)
+        # And forward, which the old offset left at zero: a raised arm ends up in
+        # front of the chest, so an item carried at the chest was half a metre
+        # behind the hand.
+        assert offset[1] == pytest.approx(arm.grip_forward)
+        assert offset[2] == pytest.approx(height * HAND_HEIGHT_RATIO)
+
+    def test_reach_scales_with_the_character(self) -> None:
+        # The defect in one assertion: a constant metre reach cannot be right for two
+        # heights.
+        adult = hand_offset(0.0, "right", 1.9)
+        child = hand_offset(0.0, "right", 1.1)
+        assert abs(adult[0]) > abs(child[0])
+        assert abs(child[0]) < HAND_REACH_M * 0.75
 
     def test_left_hand_mirrors_the_right(self) -> None:
         right = hand_offset(37.0, "right", 1.7)
@@ -93,25 +108,51 @@ class TestHandOffset:
         tall = hand_offset(0.0, "right", 2.0)
         assert tall[2] == pytest.approx(short[2] * 2)
 
-    def test_yaw_quarter_turn_moves_the_hand_along_x(self) -> None:
-        # facing +X: the right hand is -Y.
-        offset = hand_offset(90.0, "right", 1.7)
-        assert offset[0] == pytest.approx(0.0, abs=1e-9)
-        assert offset[1] == pytest.approx(-HAND_REACH_M)
+    def test_yaw_quarter_turn_rotates_the_hand_as_a_rigid_pair(self) -> None:
+        # The hand is diagonal in the character's own frame -- out to the side AND in
+        # front -- so facing +X does not put it purely on one axis. Rotating +90
+        # degrees maps (lateral, forward) -> (-forward, lateral), and the distance
+        # from the chest has to be preserved.
+        height = 1.7
+        arm = held_item_grip.arm_geometry(height)
+        north = hand_offset(0.0, "right", height)
+        east = hand_offset(90.0, "right", height)
+        assert east[0] == pytest.approx(-arm.grip_forward)
+        assert east[1] == pytest.approx(arm.grip_lateral)
+        assert math.hypot(*north[:2]) == pytest.approx(math.hypot(*east[:2]))
+
+    def test_a_weapon_is_gripped_by_its_handle_not_its_origin(self) -> None:
+        # The first render of the grip fix held the sword BY THE BLADE, because a
+        # weapon's grip sits 0.32 of its scale above where the prop stands.
+        height = 1.7
+        bare = hand_offset(0.0, "right", height)
+        sword = hand_offset(0.0, "right", height, "weapon", 1.2)
+        assert sword[2] == pytest.approx(bare[2] - 0.32 * 1.2)
+        # And a kind with no known grip is untouched.
+        assert hand_offset(0.0, "right", height, "crate", 2.0) == pytest.approx(bare)
 
 
 class TestHeldFollow:
     def test_the_item_rides_the_hand_at_every_authored_pose(self) -> None:
         prop = _prop()
         character = _character()
+        arm = held_item_grip.arm_geometry(character.appearance.height)
 
         at_start = held_position_at_frame(prop, character, 0)
-        assert at_start[0] == pytest.approx(HAND_REACH_M)  # right of the start pose
+        # Right of the start pose, and forward of it, because a raised arm ends in
+        # front of the chest.
+        assert at_start[0] == pytest.approx(arm.grip_lateral)
+        assert at_start[1] == pytest.approx(arm.grip_forward)
 
         at_end = held_position_at_frame(prop, character, 90)
-        # The character walked to [2,0,0] facing +X; the hand followed.
-        assert at_end[0] == pytest.approx(2.0, abs=1e-9)
-        assert at_end[1] == pytest.approx(-HAND_REACH_M)
+        # The character walked to [2,0,0] facing +X; the hand followed, so the reach
+        # from the chest is unchanged and the item has not switched sides.
+        assert at_end[2] == pytest.approx(at_start[2])
+        assert math.hypot(at_end[0] - 2.0, at_end[1]) == pytest.approx(
+            math.hypot(arm.grip_lateral, arm.grip_forward)
+        )
+        assert at_end[0] == pytest.approx(2.0 - arm.grip_forward)
+        assert at_end[1] == pytest.approx(arm.grip_lateral)
 
     def test_between_poses_the_hand_interpolates_with_the_character(self) -> None:
         prop = _prop()
@@ -278,11 +319,19 @@ class TestConverterEmission:
         for component in expected:
             assert f"{component:.4f}" in location_line
 
-    def test_hand_offset_is_orthogonal_to_the_facing_vector(self) -> None:
-        # Sanity: the hand offset is perpendicular to facing at every yaw.
+    def test_hand_offset_is_a_rigid_vector_rotated_with_the_body(self) -> None:
+        # It used to be asserted perpendicular to facing, which was true only while
+        # the offset was purely lateral. A hand reaching FORWARD for a weapon is not
+        # perpendicular to facing, and should not be. The property that must hold at
+        # every yaw is that the reach neither grows nor shrinks as the body turns --
+        # otherwise the item slides around the character on a cut.
         for yaw in (0.0, 30.0, 90.0, 175.0, 270.0):
-            yaw_rad = math.radians(yaw)
-            facing = (math.sin(yaw_rad), math.cos(yaw_rad))
             offset = hand_offset(yaw, "right", 1.7)
-            dot = facing[0] * offset[0] + facing[1] * offset[1]
-            assert dot == pytest.approx(0.0, abs=1e-9)
+            assert math.hypot(offset[0], offset[1]) == pytest.approx(
+                math.hypot(
+                    held_item_grip.arm_geometry(1.7).grip_lateral,
+                    held_item_grip.arm_geometry(1.7).grip_forward,
+                )
+            )
+            # And the height never depends on which way the body faces.
+            assert offset[2] == pytest.approx(1.7 * HAND_HEIGHT_RATIO)
