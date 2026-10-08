@@ -19,7 +19,9 @@ const snapshot = (page: Page) =>
   page.evaluate(() => (window as unknown as { leanScene: { snapshot: () => Snapshot } }).leanScene.snapshot());
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/tests/browser/lean-scene-canvas-mock.html?character=1");
+  // `nogizmos` because the viewport's authoring aids -- the scale reference among
+  // them -- draw boxes of their own, and this spec's counts are about the character.
+  await page.goto("/tests/browser/lean-scene-canvas-mock.html?character=1&nogizmos=1");
   // The speech overlay is the Html-driven proof the character is mounted (and
   // talking), so the scene tree is up before anything is counted.
   await expect(page.getByTestId("speech-overlay-lone")).toBeVisible();

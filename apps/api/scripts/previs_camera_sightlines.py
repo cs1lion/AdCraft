@@ -28,6 +28,7 @@ This is still an approximation in two stated ways, both of which used to bite:
 import json
 import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 # (half_width, half_height, half_depth, centre_height) as multiples of `scale`,
@@ -166,43 +167,174 @@ def segment_hits_box(eye, target, box) -> float | None:
 
 
 def report(scene: dict) -> None:
+    for finding in findings(scene):
+        print(f"  {finding}")
+
+
+# ---------------------------------------------------------------------------
+# The gate
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One thing wrong with a shot, in a form both the CLI and a test can read."""
+
+    shot_id: str
+    frame: int
+    kind: str
+    detail: str
+
+    def __str__(self) -> str:
+        return f"{self.shot_id} f{self.frame}: {self.kind} -- {self.detail}"
+
+
+#: How close to the subject an obstruction has to be to count as blocking. Half the
+#: sightline: something in front of the middle of the frame is in the way of whoever
+#: the shot is about, and something past it is scenery.
+BLOCKS_WITHIN = 0.5
+
+#: A slab whose underside is this far above the feet is something a character stands
+#: ON, not under. ``platform` at scale 0.2 has its underside 4 cm up, which reads as
+#: a step; at 1.0 the same kind is a 0.4 m slab they are visibly inside.
+FOOT_CLEARANCE = 0.05
+
+
+def _dedupe(items: list[Finding]) -> list[Finding]:
+    """One finding per (shot, kind, detail).
+
+    A shot is sampled at its start and end frame, so a static subject reports the
+    identical thing twice -- which reads as two problems when it is one, and trains
+    the reader to skim the output instead of fixing it.
+    """
+    unique: dict[tuple[str, str, str], Finding] = {}
+    for finding in items:
+        unique.setdefault((finding.shot_id, finding.kind, finding.detail), finding)
+    return list(unique.values())
+
+
+def blocked_by_subject(scene: dict) -> list[Finding]:
+    """Obstructions between a camera and what its shot is looking at."""
+    out: list[Finding] = []
     cameras = {c["id"]: c for c in scene["cameras"]}
     for shot in scene["shots"]:
         camera = cameras[shot["camera"]]
         for label, frame in (("start", shot["start_frame"]), ("end", shot["end_frame"] - 1)):
             eye, target = camera_at(camera, frame)
             span = math.dist(eye, target)
-            found = []
             for ident, shapes in scene_objects(scene, frame):
                 for index, box in enumerate(shapes):
                     at = segment_hits_box(eye, target, box)
-                    if at is not None:
-                        found.append((at, ident, index))
-            found.sort()
-            print(f"\n{shot['id']} [{label}] f{frame}  eye={tuple(round(v,1) for v in eye)}"
-                  f" -> {tuple(round(v,1) for v in target)}  ({span:.1f}m)")
-            if not found:
-                print("  clear")
-            for at, ident, index in found:
-                where = f"{at * span:5.1f}m"
-                note = ""
-                if at == 0.0:
-                    note = "  <-- CAMERA IS INSIDE IT"
-                elif at * span < span * 0.5:
-                    note = "  blocks the subject"
-                elif index:
-                    note = "  (one post of a group)"
-                print(f"  {ident}{note} at {where} ({at:.0%} of the way)")
+                    if at is None:
+                        continue
+                    if at == 0.0:
+                        out.append(Finding(
+                            shot["id"], frame, "camera_inside_geometry",
+                            f"the camera is inside {ident}",
+                        ))
+                    elif at < BLOCKS_WITHIN:
+                        where = f"{at * span:.1f} m of a {span:.1f} m sightline"
+                        out.append(Finding(
+                            shot["id"], frame, "subject_blocked",
+                            f"{ident} sits {where} in, in front of the subject",
+                        ))
+    return _dedupe(out)
+
+
+def subjects_under_floating(scene: dict) -> list[Finding]:
+    """Characters authored at z = 0 underneath a slab that floats above the ground.
+
+    §2.6 of the gap doc calls this out specifically: a `platform` is
+    ``BoxGeometry [5s, 0.4s, 5s]`` raised by ``0.4s``, so at scale 5 the slab occupies
+    z 1..3 -- and every character keyframe is authored at z = 0, i.e. UNDERNEATH it.
+    Five of eight camera positions were inside the same slab, which is why the frames
+    came out a flat brown wall.
+
+    This needs no raycasting: it is a footprint overlap plus a z-interval test, and it
+    is exact where the sightline check is a conservative approximation.
+    """
+    out: list[Finding] = []
+    floats: list[tuple[str, tuple]] = []
+    for item in scene.get("environment", []) + scene.get("props", []):
+        if item["type"] not in FLOATING_KINDS:
+            continue
+        for box in boxes(item):
+            floats.append((item["id"], box))
+
+    for shot in scene["shots"]:
+        for frame in (shot["start_frame"], shot["end_frame"] - 1):
+            for person in scene.get("characters", []):
+                keyframe = min(person["keyframes"], key=lambda k: abs(k["frame"] - frame))
+                px, py, pup = (float(v) for v in keyframe["position"])
+                scale = float(person["appearance"].get("scale", 1.0))
+                person_item = {"type": "lowpoly_human", "position": keyframe["position"],
+                               "scale": scale}
+                for cx, cy, cup, hx, hy, hz, _ in boxes(person_item):
+                    for ident, (fx, fy, fup, fhx, fhy, fhz, _) in floats:
+                        if not _overlaps(px + cx, hx, py + cy, hz, fx, fhx, fy, fhz):
+                            continue
+                        slab_bottom = fup - fhy
+                        slab_top = fup + fhy
+                        head = pup + cup + hy
+                        if (slab_bottom - pup) > FOOT_CLEARANCE and slab_bottom < head:
+                            out.append(Finding(
+                                shot["id"], frame, "subject_under_floating",
+                                f"{person['id']} at z={pup:g} is under {ident}, "
+                                f"whose underside is at z={slab_bottom:.2f} "
+                                f"(slab spans {slab_bottom:.2f}..{slab_top:.2f})",
+                            ))
+    return _dedupe(out)
+
+
+def _overlaps(
+    ax: float, ahx: float, ay: float, ahz: float,
+    bx: float, bhx: float, by: float, bhz: float,
+) -> bool:
+    return abs(ax - bx) < ahx + bhx and abs(ay - by) < ahz + bhz
+
+
+#: Kinds that can bury a character standing at z = 0.
+#:
+#: A SUBSET of ``asset_dimensions.floating_kinds()``, not a copy of it: that set is
+#: "geometry with a positive base", and `weapon` qualifies -- a blade hanging 18 cm up.
+#: Nothing can be standing under a sword, so including it would report nonsense.
+#: `test_every_floating_kind_is_actually_floating` holds the subset honest in the other
+#: direction, so a kind that starts floating is added here deliberately.
+#:
+#: Mirrored rather than imported because this script runs standalone against a scene
+#: file with no package context.
+FLOATING_KINDS = {
+    "platform", "window", "rect_table", "chair", "lantern", "scroll",
+    "flat_roof", "gable_roof", "stairs", "fence",
+}
+
+
+def findings(scene: dict) -> list[Finding]:
+    """Everything wrong with this scene's shots, from both detectors.
+
+    Deduplicated, because a shot is checked at its start and its end frame and a
+    static subject reports the identical thing twice -- which reads as two problems
+    when it is one, and trains the reader to skim the output.
+    """
+    return [*blocked_by_subject(scene), *subjects_under_floating(scene)]
 
 
 def main() -> int:
     scene = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    strict = "--strict" in sys.argv[2:]
     report(scene)
+    problems = findings(scene)
     if UNKNOWN:
-        print(f"\nWARNING: no box model for {sorted(UNKNOWN)} — treated as a 1 m cube, "
+        print(f"\nWARNING: no box model for {sorted(UNKNOWN)} -- treated as a 1 m cube, "
               "so those are NOT checked", file=sys.stderr)
-        return 2
-    return 0
+    if problems:
+        print(f"\n{len(problems)} finding(s).", file=sys.stderr)
+        # Non-zero even without --strict: a lint that only warns is the tool that
+        # nobody runs. --strict additionally fails on a blocked subject, which the
+        # jinghai fixtures do legitimately contain.
+        if strict:
+            return 1
+    return 2 if UNKNOWN else 0
 
 
 if __name__ == "__main__":

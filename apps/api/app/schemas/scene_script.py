@@ -16,6 +16,8 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.services.scene3d import asset_dimensions
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -335,6 +337,19 @@ class SceneProp(BaseModel):
     def _check_rotation(cls, v: float) -> float:
         return _validate_rotation_y(v, "rotation_y")
 
+    @model_validator(mode="after")
+    def _check_rendered_size(self) -> "SceneProp":
+        # `le=10.0` above is a backstop for a fat-fingered number, not a plausibility
+        # bound: a pillar at 10 is a 42 m column beside a 1.85 m person and the
+        # global cap says nothing is wrong with it. The real limit is per kind and
+        # derived from what the geometry actually measures (see
+        # asset_dimensions.max_scale), and the message names the metres so whoever
+        # wrote the scale can write a different one.
+        explanation = asset_dimensions.scale_explanation(self.type, self.scale)
+        if explanation:
+            raise ValueError(explanation)
+        return self
+
 
 class SceneEnvironmentObject(BaseModel):
     """A fixed environmental structure (walls, pillars, floors, roofs)."""
@@ -362,6 +377,18 @@ class SceneEnvironmentObject(BaseModel):
     @classmethod
     def _check_rotation(cls, v: float) -> float:
         return _validate_rotation_y(v, "rotation_y")
+
+    @model_validator(mode="after")
+    def _check_rendered_size(self) -> "SceneEnvironmentObject":
+        # Same contract as SceneProp, and this is where it bites hardest: `le=50.0`
+        # admits a 250 m platform and a 210 m pillar, which is how the jinghai scene
+        # came to have characters authored at z = 0 standing underneath a 25 m slab.
+        # The per-kind bound is derived from the rendered size; `ground` and `floor`
+        # are exempt because a site plate is the scene rather than an object in it.
+        explanation = asset_dimensions.scale_explanation(self.type, self.scale)
+        if explanation:
+            raise ValueError(explanation)
+        return self
 
 
 class CameraKeyframe(BaseModel):

@@ -91,6 +91,88 @@ ASSET_DIMENSIONS: dict[str, AssetDimensions] = {
 #: relative to this, so it is the unit the generator prompt reasons in.
 REFERENCE_PERSON_HEIGHT = 1.75
 
+#: The largest extent any kind may reach, as a multiple of the reference person.
+#:
+#: A single number rather than a per-kind taste table, because the failure it
+#: prevents is always the same one: something big enough to dwarf the characters
+#: standing in it. At 8 the jinghai recomposition -- the hand-tuned sample this was
+#: checked against -- passes with room to spare (its tallest ratio is a `fence` at
+#: 6.6x), while every value the doc calls out as absurd is rejected: a `pillar` at
+#: 4.5 is 10.8x a person, a `wall` at 5 is 17.1x, a `platform` at 5 is 14.3x.
+#:
+#: 14 m is also simply a real ceiling for previs set dressing: taller than that and
+#: the figure stops being a reference for the shot at all.
+MAX_EXTENT_PERSON_HEIGHTS = 8.0
+
+#: Kinds that ARE the ground, so no extent bound applies. A site plate is supposed
+#: to be bigger than the people standing on it -- `ground` at scale 2 is a 30 m
+#: square, which is the scene, not an object in it. Exempting them is why the rule
+#: can be one number rather than a judgement per kind.
+SITE_PLATE_KINDS = frozenset({"ground", "floor"})
+
+
+def _largest_extent_at_scale_one(dims: AssetDimensions) -> float:
+    return max(dims.width, dims.height, dims.depth)
+
+
+def max_scale(kind: str) -> float | None:
+    """The largest ``scale`` at which ``kind`` stays a plausible object.
+
+    Derived from the rendered size rather than chosen per kind: a bound that let a
+    ``cup`` reach 3 would also let a ``pillar`` reach 3, and a 12.6 m column beside
+    a 1.85 m person is the bug this exists to catch. So the bound is whatever keeps
+    the largest extent within the ceiling, which means small objects get a generous
+    bound (correct -- a big cup hides nobody) and large ones get a tight one.
+
+    ``None`` for a site plate or an unknown kind: no bound is better than a wrong
+    one, and an unknown kind is already reported by the geometry completeness check.
+    """
+    dims = ASSET_DIMENSIONS.get(kind)
+    if dims is None or kind in SITE_PLATE_KINDS:
+        return None
+    largest = _largest_extent_at_scale_one(dims)
+    if largest <= 0:
+        return None
+    return (MAX_EXTENT_PERSON_HEIGHTS * REFERENCE_PERSON_HEIGHT) / largest
+
+
+def scale_explanation(kind: str, scale: float) -> str | None:
+    """Why ``scale`` is too large for ``kind``, in metres. ``None`` if it is fine.
+
+    The message is the deliverable, not the rejection. The whole reason these values
+    went unchecked is that the model writing the SceneScript had no idea what
+    ``scale: 4.5`` meant for a ``pillar``; saying "scale 4.5 makes this 18.9 m tall,
+    which is 10.8x a 1.75 m person" tells it what to write instead, where "le=50"
+    told it nothing at all.
+    """
+    limit = max_scale(kind)
+    dims = ASSET_DIMENSIONS.get(kind)
+    if limit is None or dims is None or scale <= limit:
+        return None
+    # Not `rendered = rendered(...)`: that shadows the module-level function with a
+    # local of the same name and the next line cannot find it.
+    at_scale = rendered(kind, scale)
+    assert at_scale is not None
+    ceiling = MAX_EXTENT_PERSON_HEIGHTS * REFERENCE_PERSON_HEIGHT
+    # Name the dimension that actually exceeds. Quoting the width for a pillar that
+    # is too TALL reads as a contradiction -- "18.9 m tall, which is 1.5x a person"
+    # -- and the author stops trusting the message.
+    extents = {
+        "wide": at_scale.width,
+        "tall": at_scale.height,
+        "deep": at_scale.depth,
+    }
+    worst_axis = max(extents, key=lambda axis: extents[axis])
+    worst = extents[worst_axis]
+    return (
+        f"{kind} at scale {scale:g} renders {at_scale.width:g} m wide x "
+        f"{at_scale.height:g} m tall x {at_scale.depth:g} m deep; the {worst_axis} "
+        f"extent is {worst / REFERENCE_PERSON_HEIGHT:.1f}x a "
+        f"{REFERENCE_PERSON_HEIGHT:g} m person. Set dressing may not exceed "
+        f"{ceiling:g} m in any direction ({MAX_EXTENT_PERSON_HEIGHTS:g}x a person); "
+        f"use scale {limit:.2f} or less for a {kind}."
+    )
+
 
 def kinds() -> list[str]:
     return sorted(ASSET_DIMENSIONS)

@@ -71,7 +71,10 @@ import type {
   SceneEnvironment,
   CameraKeyframe,
 } from "../../../types/scene-script";
-import { PLACEHOLDER_ASSET_COLOR } from "../../../types/scene-script.generated";
+import {
+  PLACEHOLDER_ASSET_COLOR,
+  REFERENCE_PERSON_HEIGHT,
+} from "../../../types/scene-script.generated";
 import { assetGeometryFor, rotationPivotFor, unimplementedKinds } from "./sceneScriptGeometry";
 import {
   CHARACTER_SKIN_COLOR,
@@ -597,6 +600,76 @@ function PropMesh({
   return (
     <Group position={[pivot[0], pivot[1], pivot[2]]} rotation={extraRotation}>
       {body}
+    </Group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scale reference
+// ---------------------------------------------------------------------------
+
+/**
+ * A 1.75 m human silhouette beside each character, so the author can read scale off
+ * the viewport instead of guessing.
+ *
+ * Not decoration. `REFERENCE_PERSON_HEIGHT` was generated to the frontend contract
+ * and then had no consumers at all, which is the whole of §2.6's third missing
+ * contract: the prompt now says what each kind measures in metres and the schema
+ * rejects an implausible scale, but neither of those is visible while authoring, and
+ * an author dragging a pillar taller than the tower has no way to notice.
+ *
+ * A wireframe rather than a solid so it cannot be mistaken for a real character and
+ * does not occlude the thing being judged, and `renderOrder` plus `depthTest={false}`
+ * so it stays readable when it is behind geometry -- which is exactly the case worth
+ * seeing, since "is my camera inside that wall" is the question.
+ */
+function ScaleReferenceFigures({
+  sceneScript,
+  frame,
+}: {
+  sceneScript: SceneScriptRoot;
+  frame: number;
+}) {
+  return (
+    <Group>
+      {sceneScript.characters
+        .filter((character) => character.type === "lowpoly_human")
+        .map((character) => {
+          const position = characterStateAtFrame(character, frame).position;
+          const height = REFERENCE_PERSON_HEIGHT;
+          return (
+            <Group key={`scale-ref-${character.id}`}>
+              {/* A vertical extent bar, so the height is legible even edge-on. */}
+              <Mesh
+                position={[position[0], position[2] + height / 2, position[1]]}
+                renderOrder={999}
+              >
+                <BoxGeometry args={[0.035, height, 0.035]} />
+                <MeshBasicMaterial
+                  color="#8BE9FD"
+                  wireframe
+                  transparent
+                  opacity={0.85}
+                  depthTest={false}
+                />
+              </Mesh>
+              {/* A head-height tick: the part an author actually compares against. */}
+              <Mesh
+                position={[position[0], position[2] + height * 0.93, position[1]]}
+                renderOrder={999}
+              >
+                <BoxGeometry args={[0.22, 0.035, 0.22]} />
+                <MeshBasicMaterial
+                  color="#8BE9FD"
+                  wireframe
+                  transparent
+                  opacity={0.85}
+                  depthTest={false}
+                />
+              </Mesh>
+            </Group>
+          );
+        })}
     </Group>
   );
 }
@@ -1443,6 +1516,20 @@ export function SceneScript3DPreview({
                   />
 
                 ))}
+
+                {/* Scale reference. Gated on showGizmos, so it is an AUTHORING aid
+                    and never reaches a delivered frame -- the render entry passes
+                    showGizmos={false}, and a grey mannequin in the output would be a
+                    worse defect than the one this fixes.
+
+                    The point is that scale is unreadable. §2.6 of the gap doc: a
+                    `pillar` at scale 4.5 is a 19 m column and `platform` at 5 is a
+                    25 m slab with the characters underneath it, and nobody noticed
+                    because nothing in the viewport said how big a person was. One
+                    fixed-height figure per character gives every shot a ruler. */}
+                {showGizmos && sceneScript.characters.length > 0 && (
+                  <ScaleReferenceFigures sceneScript={sceneScript} frame={currentFrame} />
+                )}
 
                 {/* Cameras */}
                 {showGizmos && sceneScript.cameras.map((object, index) => (

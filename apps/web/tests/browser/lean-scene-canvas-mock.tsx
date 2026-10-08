@@ -226,9 +226,15 @@ const loneCharacterScene = {
   speech_bindings: [],
 } as SceneScriptRoot;
 function CharacterFixture() {
+  // `?nogizmos=1` so a spec counting the character's own meshes is not also counting
+  // the authoring aids. The scale reference is two more boxes per character, and
+  // the rig spec's whole job is to notice the character drawing fewer parts than the
+  // converter emits -- muddying that count with viewport furniture would blunt it.
+  // `scene-scale-reference.spec.ts` covers the aids with gizmos left on.
+  const nogizmos = new URLSearchParams(location.search).has("nogizmos");
   return <SceneScriptPlaybackProvider sceneScript={loneCharacterScene}>
     <output data-testid="character-fixture">lone</output>
-    <SceneScript3DPreview sceneScript={loneCharacterScene} height={400} editMode={false} selectedObject={null} dialogueLines={[{ character_id: "lone", text: "rig check", start_time: 0, end_time: 2 }]}>
+    <SceneScript3DPreview sceneScript={loneCharacterScene} height={400} editMode={false} selectedObject={null} showGizmos={!nogizmos} dialogueLines={[{ character_id: "lone", text: "rig check", start_time: 0, end_time: 2 }]}>
       <CharacterMeshProbe />
     </SceneScript3DPreview>
   </SceneScriptPlaybackProvider>;

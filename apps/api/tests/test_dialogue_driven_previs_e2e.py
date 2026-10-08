@@ -73,7 +73,12 @@ def _scene() -> SceneScriptRoot:
             ],
             "environment": [
                 {"id": "floor1", "type": "floor", "position": [0.0, 0.0, 0.0], "scale": 8.0},
-                {"id": "wall_back", "type": "wall", "position": [0.0, 4.0, 1.5], "scale": 8.0},
+                # scale 1.6 = 9.6 x 8 m. This was 8.0, i.e. a 48 x 40 m wall with
+                # a 2.2 m door standing in front of it -- picked to make the room feel
+                # big without anyone working out what it renders. The per-kind scale
+                # bound rejects that (a 40 m wall is 23x a person), and the door next
+                # to it is the tell: the two were never the same size.
+                {"id": "wall_back", "type": "wall", "position": [0.0, 4.0, 1.5], "scale": 1.6},
                 {"id": "door1", "type": "door", "position": [0.0, 4.0, 1.1], "scale": 1.0},
             ],
             "cameras": [
