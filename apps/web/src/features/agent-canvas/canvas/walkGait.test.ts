@@ -33,6 +33,8 @@ const TRAVEL_FRAMES = 89;
 const TRAVEL_PER_FRAME = TRAVEL_METRES / TRAVEL_FRAMES;
 
 interface Leg {
+  /** The knee angle, so a test can assert the foot really left the ground. */
+  knee?: number;
   pitch: number;
   /** Height of the foot above z = 0, in metres. */
   height: number;
@@ -68,8 +70,9 @@ function legAt(
   frame: number,
   part: "LegL" | "LegR",
 ): Leg {
-  const segment = rig.segments.find((candidate) => candidate.part === part);
-  if (!segment) throw new Error(`rig has no ${part}`);
+  const thigh = rig.segments.find((candidate) => candidate.part === part);
+  const shin = rig.segments.find((candidate) => candidate.part === (part === "LegL" ? "ShinL" : "ShinR"));
+  if (!thigh || !shin) throw new Error(`rig has no ${part} or its shin`);
   const distance = travelledMetres(
     character.keyframes.map((keyframe) => keyframe.position),
     character.keyframes.map((keyframe) => keyframe.frame),
@@ -79,18 +82,25 @@ function legAt(
     legLengthMetres: rig.legLength,
   });
   const bob = bobOffset(pose, rig);
-  const pitch = part === "LegL" ? (pose.legL ?? 0) : (pose.legR ?? 0);
-  const reach =
-    segment.geometry.kind === "box"
-      ? segment.geometry.size[1] / 2
-      : segment.geometry.kind === "cylinder"
-        ? segment.geometry.depth / 2
-        : 0;
+  const thighPitch = part === "LegL" ? (pose.legL ?? 0) : (pose.legR ?? 0);
+  const kneeBend = part === "LegL" ? (pose.kneeL ?? 0) : (pose.kneeR ?? 0);
+  // Two segments, so the foot is the far end of the SHIN, not of the thigh. The
+  // knee is relative to the thigh the way it is in the converter, where the
+  // knee empty is parented under the hip: a bent knee ADDS to the hip angle.
+  const shinPitch = thighPitch + kneeBend;
+  const thighLength =
+    thigh.geometry.kind === "box" ? thigh.geometry.size[1] : thigh.geometry.depth;
+  const shinLength = shin.geometry.kind === "box" ? shin.geometry.size[1] : shin.geometry.depth;
   const root = characterStateAtFrame(character as never, frame).position;
+  const hipForward = root[0] + thigh.position[2];
+  const hipHeight = thigh.position[1] + thighLength / 2;
+  const kneeForward = hipForward - thighLength * Math.sin(thighPitch);
+  const kneeHeight = hipHeight - thighLength * Math.cos(thighPitch);
   return {
-    pitch,
-    height: segment.position[1] + reach - 2 * reach * Math.cos(pitch) + bob,
-    forward: root[0] + segment.position[2] - 2 * reach * Math.sin(pitch),
+    pitch: thighPitch,
+    knee: kneeBend,
+    height: kneeHeight - shinLength * Math.cos(shinPitch) + bob,
+    forward: kneeForward - shinLength * Math.sin(shinPitch),
   };
 }
 
@@ -126,6 +136,33 @@ describe("a walk does not skate", () => {
     expect(worst / TRAVEL_PER_FRAME).toBeLessThan(0.1);
   });
 
+  it("lifts the swing foot clear of the ground", () => {
+    // The other half of the same claim: a foot that never slides but never leaves
+    // the floor is a shuffle, not a walk. Measured through the REAL two-segment
+    // rig, so it fails if the shin stops being parented to the knee.
+    const { rig, character } = walker(1.85);
+    let peak = 0;
+    for (let frame = 0; frame <= TRAVEL_FRAMES; frame += 1) {
+      const { left, right } = plantedLegAt(character, rig, frame);
+      // The swing leg is whichever one is not bearing weight.
+      const swing = left.height <= right.height ? right : left;
+      peak = Math.max(peak, swing.height);
+    }
+    // 5 cm is about a fifth of a real walk's clearance and the least that reads
+    // as a step at previs scale.
+    expect(peak).toBeGreaterThan(0.05);
+  });
+
+  it("keeps the swing leg straight through its own stance", () => {
+    // The no-slide argument assumes a planted foot is a straight leg. If the knee
+    // ever flexed during stance the thigh would stop carrying the whole leg angle
+    // and the slide measured above would quietly come back.
+    const { rig, character } = walker(1.85);
+    for (let frame = 0; frame <= TRAVEL_FRAMES; frame += 1) {
+      const { left, right } = plantedLegAt(character, rig, frame);
+      expect(Math.min(left.knee ?? 0, right.knee ?? 0)).toBe(0);
+    }
+  });
   it("holds the planted foot on the ground rather than stopping in mid-air", () => {
     // Slide was only half of it: a foot that no longer moves but hangs 12 cm up is
     // just as wrong, and cheaper to assert than to spot by eye.

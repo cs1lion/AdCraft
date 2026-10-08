@@ -70,14 +70,33 @@ TALK_TORSO_RADIANS = 0.04
 TALK_MOUTH_RATIO = 0.5
 MOUTH_CLOSED_RATIO = 0.08
 
+#: Peak knee flexion during the swing half of a stride, radians (~34 degrees).
+#:
+#: A bend only, never a hyperextension: the sign is fixed so the preview and the
+#: converter cannot disagree about which way a knee goes. Chosen for the lift it
+#: produces rather than for looking right -- `walk_foot_lift_metres` is what
+#: measures it, and the swing test asserts the clearance it actually achieves.
+WALK_KNEE_BEND_RADIANS = 0.6
+
+#: Knee flexion for `sit`, radians (~80 degrees). Paired with
+#: `SIT_THIGH_LIFT_RADIANS` so the shin hangs down from a raised thigh, which is
+#: what sitting looks like. A lifted thigh on its own is a kick.
+SIT_KNEE_BEND_RADIANS = 1.4
+
+#: Where the knee sits along the leg, as a fraction of leg length. Halfway, so the
+#: thigh and shin are the same length and either can be the one that changes.
+KNEE_FRACTION_OF_LEG = 0.5
+
 #: Limb names, in the order the rig declares them. The converter must keyframe the
-#: same five joints the preview rotates or the two renderers disagree.
-LIMB_FIELDS = ("leg_l", "leg_r", "arm_l", "arm_r")
+#: same six joints the preview rotates or the two renderers disagree.
+LIMB_FIELDS = ("leg_l", "leg_r", "knee_l", "knee_r", "arm_l", "arm_r")
 
 #: How far down the constant contract lives, so a caller can spot-check it.
 POSE_FIELDS = (
     "leg_l",
     "leg_r",
+    "knee_l",
+    "knee_r",
     "arm_l",
     "arm_r",
     "torso",
@@ -138,6 +157,55 @@ def walk_leg_shape(q: float) -> float:
     return 1.0 - 2.0 * (0.5 - 0.5 * math.cos(math.pi * swing))
 
 
+def walk_knee_shape(phase: float) -> float:
+    """Knee flexion as a fraction of `WALK_KNEE_BEND_RADIANS`, over one cycle.
+
+    Zero for the whole of stance, and zero at both ends of swing. That is the
+    whole design, and it is why the verified no-slide result survives a knee:
+    a planted foot is a STRAIGHT leg, so the thigh carries the whole leg angle
+    through stance exactly as the rigid leg did, and ``L*sin(theta)`` still rises
+    at the rate the hip advances.
+
+    The zeros at each end of swing are what put the foot down properly. A knee
+    still bent at heel strike would land the character on its toe, and one still
+    bent at toe off would tear the foot off the floor instead of pushing off.
+    A raised cosine reaches zero with zero slope at both ends, so neither happens.
+    """
+    t = phase % 1.0
+    if t < STANCE_FRACTION:
+        return 0.0
+    swing = (t - STANCE_FRACTION) / (1.0 - STANCE_FRACTION)
+    # Over 2*pi, not pi: a single half-cosine RISES from 0 to 1 across the swing
+    # and would be at full flexion exactly at heel strike, landing the character
+    # on its toe with a knee that never straightens. This is the bump -- zero at
+    # toe off, peak mid-swing, zero again at the next contact.
+    return 0.5 - 0.5 * math.cos(2.0 * math.pi * swing)
+
+
+def walk_foot_lift_metres(
+    cycle_phase: float,
+    leg_length_metres: float = DEFAULT_LEG_LENGTH_METRES,
+) -> float:
+    """How high the swing foot clears the ground at ``cycle_phase``, in metres.
+
+    The measurement the knee exists to make, so it is stated in metres rather
+    than trusted as a look. The knee sits halfway down the leg, so bending it by
+    ``kappa`` raises the foot by ``shin * (cos(phi) - cos(phi - kappa))`` -- the
+    shin no longer hangs along the thigh's direction, and the slack it recovers
+    is lift.
+
+    Positive means clear of the ground. The walk is only a walk if this is
+    positive over the swing, and the swing test asserts a floor on it.
+    """
+    length = leg_length_metres if leg_length_metres > 0 else DEFAULT_LEG_LENGTH_METRES
+    shin = length * KNEE_FRACTION_OF_LEG
+    knee = walk_knee_shape(cycle_phase) * WALK_KNEE_BEND_RADIANS
+    if knee == 0.0:
+        return 0.0
+    thigh = walk_leg_amplitude(length) * walk_leg_shape(cycle_phase)
+    return shin * (math.cos(thigh) - math.cos(thigh - knee))
+
+
 def segment_pose_at(
     action: str | None,
     cycle_phase: float,
@@ -189,9 +257,14 @@ def _pose_for_action(
         # on the floor and, as a side effect, produces the real bob: two dips per
         # stride, one at each double contact.
         stance = left if phase < STANCE_FRACTION else right
+        # The knee is zero through stance and bends only over the swing. Split out
+        # because the stance leg has to stay exactly the straight leg the no-slide
+        # argument was measured on: a planted foot IS a straight leg.
         return {
             "leg_l": amplitude * left,
             "leg_r": amplitude * right,
+            "knee_l": WALK_KNEE_BEND_RADIANS * walk_knee_shape(phase),
+            "knee_r": WALK_KNEE_BEND_RADIANS * walk_knee_shape(phase + STANCE_FRACTION),
             "arm_l": -amplitude * WALK_ARM_OVER_LEG * left,
             "arm_r": -amplitude * WALK_ARM_OVER_LEG * right,
             "bob": -0.5 * (1.0 - math.cos(amplitude * stance)),
@@ -205,6 +278,8 @@ def _pose_for_action(
             "arm_l": -GESTURE_ARM_OUT_RADIANS,
             "torso": GESTURE_TORSO_RADIANS,
             "head": GESTURE_HEAD_RADIANS + GESTURE_HEAD_TILT_RADIANS,
+            "knee_l": 0.0,
+            "knee_r": 0.0,
             "spine": 0.0,
         }
     if action == "talk":
@@ -213,12 +288,16 @@ def _pose_for_action(
             "arm_l": -TALK_ARM_RADIANS * 0.4,
             "torso": TALK_TORSO_RADIANS,
             "head": -TALK_TORSO_RADIANS,
+            "knee_l": 0.0,
+            "knee_r": 0.0,
             "spine": 0.0,
         }
     if action == "sit":
         return {
             "leg_l": SIT_THIGH_LIFT_RADIANS,
             "leg_r": SIT_THIGH_LIFT_RADIANS,
+            "knee_l": SIT_KNEE_BEND_RADIANS,
+            "knee_r": SIT_KNEE_BEND_RADIANS,
             "torso": SIT_TORSO_RADIANS,
             "head": SIT_HEAD_RADIANS,
             "spine": 0.0,
@@ -226,6 +305,8 @@ def _pose_for_action(
     return {
         "leg_l": STAND_LEG_SPREAD_RADIANS,
         "leg_r": -STAND_LEG_SPREAD_RADIANS,
+        "knee_l": 0.0,
+        "knee_r": 0.0,
         "arm_l": STAND_ARM_REST_RADIANS,
         "arm_r": -STAND_ARM_REST_RADIANS,
         "spine": 0.0,

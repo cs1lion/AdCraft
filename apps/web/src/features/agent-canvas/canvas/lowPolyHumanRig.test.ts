@@ -48,22 +48,29 @@ function segmentHeight(entry: CharacterSegment): number {
   return top - bottom;
 }
 
-describe("low-poly human rig: the converter's seven segments", () => {
+describe("low-poly human rig: the converter's nine segments", () => {
   it("emits exactly the segments Blender emits, in the converter's order", () => {
-    // torso + neck + head + LegL/LegR + ArmL/ArmR. A rig that gains or loses a
+    // torso + neck + head + thigh/shin per leg + ArmL/ArmR. A rig that gains or loses a
     // part here has drifted from the render, and the deliverable drifts with it.
     expect(characterRig(appearance()).segments.map((entry) => entry.part)).toEqual([
       ...CHARACTER_SEGMENT_PARTS,
     ]);
-    expect(characterRig(appearance()).segments).toHaveLength(7);
+    expect(characterRig(appearance()).segments).toHaveLength(9);
   });
 
   it("stands on the ground with the crown at the scripted height", () => {
     const rig = characterRig(appearance({ height: 1.8 }));
-    const legs = rig.segments.filter((entry) => entry.part.startsWith("Leg"));
-    for (const leg of legs) {
-      const [bottom] = segmentExtent(leg);
+    // The SHIN reaches the floor, not the thigh -- a thigh is supposed to be up in
+    // the air, so checking the thigh would fail on a correct rig.
+    for (const part of ["ShinL", "ShinR"] as const) {
+      const [bottom] = segmentExtent(segment(part, 1.8));
       expect(bottom).toBeCloseTo(0, 10);
+    }
+    // And thigh plus shin still span the whole leg, so the split did not shorten it.
+    for (const side of ["L", "R"] as const) {
+      const leg =
+        segmentHeight(segment(`Leg${side}`, 1.8)) + segmentHeight(segment(`Shin${side}`, 1.8));
+      expect(leg).toBeCloseTo(CHARACTER_RIG_FRACTIONS.leg * 1.8, 10);
     }
     // Feet at 0, crown (head top) at ~height*scale — the figure is as tall as
     // the script says it is.
@@ -126,12 +133,14 @@ describe("low-poly human rig: proportional to the script's own height", () => {
     const tall = characterRig(appearance({ height: 1.9 }));
     // Leg length is half the figure, for BOTH figures — and the tall one's legs
     // really are longer, the way two people's are.
-    expect(segmentHeight(segment("LegL", 1.65))).toBeCloseTo(0.5 * 1.65, 10);
-    expect(segmentHeight(segment("LegL", 1.9))).toBeCloseTo(0.5 * 1.9, 10);
-    expect(segmentHeight(segment("LegL", 1.9)) / segmentHeight(segment("LegL", 1.65))).toBeCloseTo(
-      1.9 / 1.65,
-      10,
-    );
+    // Leg length is half the figure for BOTH figures, counted as thigh + shin.
+    const legOf = (part: "LegL" | "ShinL", height: number) =>
+      segmentHeight(segment(part, height));
+    expect(legOf("LegL", 1.65) + legOf("ShinL", 1.65)).toBeCloseTo(0.5 * 1.65, 10);
+    expect(legOf("LegL", 1.9) + legOf("ShinL", 1.9)).toBeCloseTo(0.5 * 1.9, 10);
+    expect(
+      (legOf("LegL", 1.9) + legOf("ShinL", 1.9)) / (legOf("LegL", 1.65) + legOf("ShinL", 1.65)),
+    ).toBeCloseTo(1.9 / 1.65, 10);
     // The whole rig scales together: head, torso and arms included.
     expect(tall.height / short.height).toBeCloseTo(1.9 / 1.65, 10);
     expect(tall.headRadius / short.headRadius).toBeCloseTo(1.9 / 1.65, 10);
@@ -166,7 +175,7 @@ describe("low-poly human rig: proportional to the script's own height", () => {
   it("falls back to the converter's own defaults when the script omits them", () => {
     const rig = characterRig({});
     expect(rig.height).toBeCloseTo(DEFAULT_CHARACTER_HEIGHT * DEFAULT_CHARACTER_SCALE, 10);
-    expect(rig.segments).toHaveLength(7);
+    expect(rig.segments).toHaveLength(9);
     const partial = characterRig({ height: 2 });
     expect(partial.height).toBeCloseTo(2 * DEFAULT_CHARACTER_SCALE, 10);
     expect(DEFAULT_CHARACTER_COLOR).toBe("#8B4513");

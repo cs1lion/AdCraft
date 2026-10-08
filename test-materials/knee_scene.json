@@ -1,0 +1,20 @@
+{
+  "scene": {"name": "knee", "environment": "outdoor", "lighting": "neutral", "duration": 3, "frame_rate": 30},
+  "characters": [
+    {"id": "walker", "type": "lowpoly_human",
+     "appearance": {"color": "#4A5568", "height": 1.75, "scale": 1.0},
+     "keyframes": [
+       {"frame": 0, "position": [-1.6, 0, 0], "rotation_y": 0, "action": "walk"},
+       {"frame": 89, "position": [1.6, 0, 0], "rotation_y": 0, "action": "walk"}
+     ]}
+  ],
+  "props": [],
+  "environment": [
+    {"id": "plate", "type": "ground", "position": [0, 0, 0], "scale": 2.0}
+  ],
+  "cameras": [{"id": "cam", "shot_type": "wide", "keyframes": [
+      {"frame": 0, "position": [0, -2.2, 0.75], "look_at": [0.4, 0, 0.45]}]}],
+  "shots": [{"id": "s1", "camera": "cam", "start_frame": 0, "end_frame": 89,
+             "description": "knee"}],
+  "speech_bindings": []
+}

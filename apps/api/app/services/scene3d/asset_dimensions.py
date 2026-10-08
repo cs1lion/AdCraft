@@ -86,7 +86,7 @@ ASSET_DIMENSIONS: dict[str, AssetDimensions] = {
     "cup": AssetDimensions(0.14, 0.14, 0.14, 0.0, "cylinder"),
     # --- characters --------------------------------------------------------
     "lowpoly_human": AssetDimensions(0.7, 1.8, 0.7, 0.0, "segments",
-                                     "seven segments; `appearance.height` sets the real size"),
+                                     "nine segments, knees included; `appearance.height` sets the real size"),
 }
 
 #: The size a SceneScript is implicitly written against. Every `scale` is

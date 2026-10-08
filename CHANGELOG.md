@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed — 走路时摆动腿会穿过地面：骨骼终于有了膝盖
+
+一个铰在髋部的**刚性**腿，抬脚和落脚时高度完全相同——所以摆动腿从地面穿过去。这是 rig 的限制，不是 bug：7 个盒子没有关节。
+
+- **摆动期屈膝，支撑期保持伸直。** 这正是"不滑步"结论能存活的原因：不滑步是**支撑期**的性质，而一只踩实的脚就是一条直的腿——支撑期大腿仍承担整条腿的角度，`L*sin(theta)` 仍以髋部前进的速率上升。实测支撑期膝角**恒为 0.000000 rad**，滑步依旧 < 0.5%。
+- 屈膝曲线是**一个鼓包**，不是半余弦的上升。写成 `cos(pi*s)` 的话，脚掌落地那一刻正好是**最大屈膝**——角色用脚尖着地，膝盖永远伸不直。`walk_knee_shape` 的边界断言抓到了这个我自己写出来的 bug。
+- **9 cm 的抬脚高度是量出来的，不是声称的**：`walk_foot_lift_metres` 按 `shin * (cos(thigh) - cos(thigh - knee))` 算，并且**随腿长等比缩放**（0.925 m 腿 vs 0.55 m 腿的比值与腿长比一致到 2%）——孩子迈小步，不是用同一种抬脚高度。
+- 膝盖在**腿正中**（`KNEE_FRACTION_OF_LEG = 0.5`）。这不只是比例：抬脚高度的算式假设的就是正中，改了骨骼而没改算式（或反之）会让"测量"和"画面"分家。两侧都有断言锁住。
+- 胫骨**挂在膝盖空物体下**，不是髋部——否则屈膝角会和髋角**相加**而不是相对，而且照样能渲染出来。
+- `sit` 顺手修好：大腿抬起 66° 而小腿垂下 80°。之前只有抬腿没有屈膝，看起来是一记踢腿。TS 那边原本的注释就写着"knees bent"，但姿态里根本没有膝盖。
+- 变异测试：把鼓包改回单调上升 → 落地断言失败；让支撑期也屈膝 → 不滑步断言失败。两条都真的能失败。
+- 真机验证：Blender 5.2.1 与 three.js 预览同帧都能看到膝盖关节，屈膝腿与伸直腿分明。
+- 真机还抓到 snippet 测试漏掉的东西：Blender 渲染直接 `KeyError`——builder 建的叫 `LegLShin`、keyframer 找的是 `ShinL`。只检查生成片段的测试看不出这个，只有把脚本交给 Blender 才会炸。
+
 ### Fixed — 环形坑：让画面有"场景"的第一个形状（§2.3）
 
 `EnvironmentType` 里没有 crater，而一个 rock 不是坑——所以 10-04 那种环形坑一直画不出来。

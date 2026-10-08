@@ -920,6 +920,8 @@ const POSE_FIELD: Partial<Record<string, keyof SegmentPose>> = {
   torso: "torso",
   LegL: "legL",
   LegR: "legR",
+  ShinL: "kneeL",
+  ShinR: "kneeR",
   ArmL: "armL",
   ArmR: "armR",
   neck: "spine",

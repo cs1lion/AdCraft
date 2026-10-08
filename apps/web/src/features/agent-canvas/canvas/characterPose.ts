@@ -52,6 +52,9 @@ const {
   gestureArmOutRadians: GESTURE_ARM_OUT,
   gestureTorsoRadians: GESTURE_TORSO,
   gestureHeadRadians: GESTURE_HEAD,
+  walkKneeBendRadians: WALK_KNEE_BEND,
+  kneeFractionOfLeg: KNEE_FRACTION,
+  sitKneeBendRadians: SIT_KNEE_BEND,
   sitThighLiftRadians: SIT_THIGH_LIFT,
   sitTorsoRadians: SIT_TORSO,
   sitHeadRadians: SIT_HEAD,
@@ -74,6 +77,8 @@ export interface SegmentPose {
   /** Hips: positive swings the segment forward, negative swings it back. */
   legL?: number;
   legR?: number;
+  kneeL?: number;
+  kneeR?: number;
   /** Shoulders: same sense as the legs. */
   armL?: number;
   armR?: number;
@@ -121,7 +126,7 @@ const POSE = {
   /** Held, plus the gesture: one arm up and out, torso leaning into it. */
   gesture: { armRaise: GESTURE_ARM_RAISE, armOut: GESTURE_ARM_OUT, torso: GESTURE_TORSO, head: GESTURE_HEAD },
   /** Held: knees bent and torso tipped forward, as if on something low. */
-  sit: { thighLift: SIT_THIGH_LIFT, torso: SIT_TORSO, head: SIT_HEAD },
+  sit: { thighLift: SIT_THIGH_LIFT, kneeBend: SIT_KNEE_BEND, torso: SIT_TORSO, head: SIT_HEAD },
   /** Held: one hand forward at waist height, as if mid-explanation. */
   talk: { arm: TALK_ARM, torso: TALK_TORSO },
 } as const;
@@ -187,6 +192,38 @@ function walkLegShape(q: number): number {
   if (t < STANCE_FRACTION) return -1 + (2 * t) / STANCE_FRACTION;
   const swing = (t - STANCE_FRACTION) / (1 - STANCE_FRACTION);
   return 1 - 2 * (0.5 - 0.5 * Math.cos(Math.PI * swing));
+}
+
+/**
+ * Knee flexion as a fraction of `walkKneeBendRadians`, over one cycle.
+ *
+ * Zero for the whole of stance, and zero at both ends of swing. That is the whole
+ * design, and it is why the verified no-slide result survives a knee: a planted
+ * foot is a STRAIGHT leg, so the thigh carries the whole leg angle through stance
+ * exactly as the rigid leg did.
+ *
+ * Over 2*pi, not pi: a single half-cosine RISES from 0 to 1 across the swing and
+ * would be at full flexion exactly at heel strike, landing the character on its
+ * toe with a knee that never straightens. This is the bump.
+ */
+export function walkKneeShape(phase: number): number {
+  const t = ((phase % 1) + 1) % 1;
+  if (t < STANCE_FRACTION) return 0;
+  const swing = (t - STANCE_FRACTION) / (1 - STANCE_FRACTION);
+  return 0.5 - 0.5 * Math.cos(2 * Math.PI * swing);
+}
+
+/** How high the swing foot clears the ground at `phase`, in metres. */
+export function walkFootLiftMetres(
+  phase: number,
+  legLengthMetres: number = DEFAULT_LEG_LENGTH_METRES,
+): number {
+  const length = legLengthMetres > 0 ? legLengthMetres : DEFAULT_LEG_LENGTH_METRES;
+  const knee = walkKneeShape(phase) * WALK_KNEE_BEND;
+  if (knee === 0) return 0;
+  const shin = length * KNEE_FRACTION;
+  const thigh = walkLegAmplitude(length) * walkLegShape(phase);
+  return shin * (Math.cos(thigh) - Math.cos(thigh - knee));
 }
 
 /**
@@ -262,6 +299,8 @@ function poseForAction(
       return {
         legL,
         legR,
+        kneeL: WALK_KNEE_BEND * walkKneeShape(phase),
+        kneeR: WALK_KNEE_BEND * walkKneeShape(phase + STANCE_FRACTION),
         // Same rhythm, opposite direction, scaled off the leg's own shape.
         armL: -amplitude * armOverLeg * left,
         armR: -amplitude * armOverLeg * right,
@@ -289,8 +328,9 @@ function poseForAction(
       return { armR: arm, armL: -arm * 0.4, torso, head: -torso };
     }
     case "sit": {
-      const { thighLift, torso, head } = POSE.sit;
-      return { legL: thighLift, legR: thighLift, torso, head };
+      const { thighLift, kneeBend, torso, head } = POSE.sit;
+      // A raised thigh on its own is a kick. The shin has to hang from the knee.
+      return { legL: thighLift, legR: thighLift, kneeL: kneeBend, kneeR: kneeBend, torso, head };
     }
     case "stand":
     default: {

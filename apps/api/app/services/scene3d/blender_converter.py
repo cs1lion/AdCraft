@@ -99,6 +99,35 @@ bpy.ops.object.empty_add(type='PLAIN_AXES', location=({cx:.4f}, 0, {cz + box_h /
 {part}.parent = {part}_pivot
 {part}.matrix_parent_inverse = {part}_pivot.matrix_world.inverted()"""
 
+    def _leg(part: str, shin: str, cx: float) -> str:
+        """One leg as thigh + shin, so it has a knee.
+
+        A single box hinged at the hip cannot walk: a rigid leg's foot is at the
+        same height going forward as coming back, so the swing leg passes through
+        the floor. Splitting it is the whole point -- and the split is only
+        visible if the shin is PARENTED to the knee empty rather than to the hip,
+        so the knee angle is relative to the thigh the way a real knee is.
+
+        The knee sits halfway down (`KNEE_FRACTION_OF_LEG`), which is the fraction
+        the pose library's foot-lift arithmetic assumes. Moving one without the
+        other would put the measured clearance and the rendered clearance apart.
+        """
+        shin_h = leg_h * character_pose.KNEE_FRACTION_OF_LEG
+        thigh_h = leg_h - shin_h
+        return f"""
+{_limb(part, cx, leg_h - thigh_h / 2, limb_w, limb_w * 1.2, thigh_h)}
+bpy.ops.mesh.primitive_cube_add(size=1, location=({cx:.4f}, 0, {shin_h / 2:.4f}))
+{shin} = bpy.context.object
+{shin}.name = "{_esc(obj_id)}_{shin}"
+{shin}.scale = ({limb_w:.4f}, {limb_w * 1.2:.4f}, {shin_h:.4f})
+bpy.ops.object.empty_add(type='PLAIN_AXES', location=({cx:.4f}, 0, {shin_h:.4f}))
+{shin}_pivot = bpy.context.object
+{shin}_pivot.name = "{_esc(obj_id)}_{shin}_pivot"
+{shin}_pivot.parent = {part}_pivot
+{shin}_pivot.matrix_parent_inverse = {part}_pivot.matrix_world.inverted()
+{shin}.parent = {shin}_pivot
+{shin}.matrix_parent_inverse = {shin}_pivot.matrix_world.inverted()"""
+
     return f"""
 # Character: {_esc(obj_id)}
 bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, {torso_bottom + torso_h / 2:.4f}))
@@ -109,8 +138,8 @@ mat_body = bpy.data.materials.new(name="{_esc(obj_id)}_BodyMat")
 mat_body.use_nodes = True
 mat_body.node_tree.nodes["Principled BSDF"].inputs[0].default_value = ({_hex_to_rgb(color)}, 1.0)
 body.data.materials.append(mat_body)
-{_limb("LegL", -0.075 * h, leg_h / 2, limb_w, limb_w * 1.2, leg_h)}
-{_limb("LegR", 0.075 * h, leg_h / 2, limb_w, limb_w * 1.2, leg_h)}
+{_leg("LegL", "ShinL", -0.075 * h)}
+{_leg("LegR", "ShinR", 0.075 * h)}
 {_limb("ArmL", -(torso_w / 2 + limb_w * 0.6), arm_z, limb_w * 0.8, limb_w * 0.8, arm_h)}
 {_limb("ArmR", torso_w / 2 + limb_w * 0.6, arm_z, limb_w * 0.8, limb_w * 0.8, arm_h)}
 bpy.ops.mesh.primitive_cylinder_add(radius={limb_w * 0.55:.4f}, depth={neck_h:.4f},
@@ -686,6 +715,8 @@ def _last_frame(script: SceneScriptRoot) -> int:
 _LIMB_POSE_FIELDS = (
     ("LegL", "leg_l"),
     ("LegR", "leg_r"),
+    ("ShinL", "knee_l"),
+    ("ShinR", "knee_r"),
     ("ArmL", "arm_l"),
     ("ArmR", "arm_r"),
 )

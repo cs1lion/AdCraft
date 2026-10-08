@@ -39,6 +39,8 @@ TOLERANCE = 1e-12
 _FIELD_MAP = {
     "legL": "leg_l",
     "legR": "leg_r",
+    "kneeL": "knee_l",
+    "kneeR": "knee_r",
     "armL": "arm_l",
     "armR": "arm_r",
     "torso": "torso",
@@ -151,3 +153,89 @@ def test_travelled_metres_is_monotonic_and_clamped() -> None:
     assert character_pose.travelled_metres(positions, frames, 999) == pytest.approx(5.0)
     halfway = character_pose.travelled_metres(positions, frames, 15)
     assert 0.0 < halfway < 2.0
+
+
+class TestTheKnee:
+    """The knee exists for one measurable reason: the swing foot must clear.
+
+    A seven-box rig has no knee, so the swing leg passed through the ground at
+    the same height on the way forward as on the way back. These are the numbers
+    that say whether that is fixed, rather than a claim that it looks better.
+    """
+
+    def test_the_fixture_actually_samples_a_bent_knee(self, parity: dict) -> None:
+        """The parity comparison of the knee must not be vacuous.
+
+        Every walk phase below STANCE_FRACTION has a perfectly straight knee, so a
+        fixture made only of those would report "both sides agree on the knee"
+        while never once asking what the knee does.
+        """
+        walk = [c for c in parity["cases"] if c["action"] == "walk"]
+        assert walk, "the fixture has no walk case to sample"
+        bent = [s for case in walk for s in case["samples"] if s["kneeL"] != 0.0]
+        assert bent, "no walk sample lands in the swing, so the knee is never compared"
+    def test_the_swing_foot_lifts_off_the_ground(self) -> None:
+        leg = 0.5 * 1.75
+        lifts = [character_pose.walk_foot_lift_metres(q / 400, leg) for q in range(400)]
+        peak = max(lifts)
+        # An absolute floor in metres, so this cannot pass by the lift shrinking
+        # with a rig change. 5 cm is about a fifth of the clearance a real walk
+        # has and the least that reads as a step at previs scale.
+        assert peak > 0.05, f"the swing foot only ever clears {peak * 100:.1f} cm"
+
+    def test_the_clearance_scales_with_the_figure(self) -> None:
+        """A child takes a smaller step, so the lift cannot be a fixed distance."""
+        tall = max(character_pose.walk_foot_lift_metres(q / 400, 0.925) for q in range(400))
+        short = max(character_pose.walk_foot_lift_metres(q / 400, 0.55) for q in range(400))
+        assert tall > short
+        ratio = tall / short
+        assert ratio == pytest.approx(0.925 / 0.55, rel=0.02), (
+            "the lift is not proportional to the leg, so one of two figures clears "
+            f"the ground by the wrong amount: {ratio:.3f} against {0.925 / 0.55:.3f}"
+        )
+
+    def test_the_stance_leg_is_straight_so_the_no_slide_result_survives(self) -> None:
+        """The no-slide argument is a STANCE property, and a planted foot is straight.
+
+        If the knee ever flexed during stance the thigh would stop carrying the
+        whole leg angle, `L*sin(theta)` would no longer rise at the rate the hip
+        advances, and the verified 4% slide would quietly come back.
+        """
+        stance_samples = 500
+        for q in range(int(character_pose.STANCE_FRACTION * stance_samples)):
+            assert character_pose.walk_knee_shape(q / stance_samples) == 0.0
+        for leg in (0.925, 0.55, 0.5 * 1.10):
+            for frame in range(0, 40):
+                pose = character_pose.pose_at_frame(
+                    ["walk"], [[0, 0, 0], [0, 0, 4.0]], [0, 60],
+                    frame, leg,
+                )
+                # Whichever leg is in stance this frame must be perfectly straight.
+                knees = (pose["knee_l"], pose["knee_r"])
+                assert min(knees) == 0.0, f"a planted leg is bent: {knees}"
+
+    def test_the_foot_lands_flat_at_both_contacts(self) -> None:
+        """Zero at toe off and zero at heel strike, or the foot lands on its toe.
+
+        The bump has to return to zero *before* the next stance starts, which is
+        a different requirement from peaking in the middle of the swing.
+        """
+        for contact in (0.0, character_pose.STANCE_FRACTION, 1.0):
+            assert character_pose.walk_knee_shape(contact) == pytest.approx(0.0, abs=1e-12)
+        # Just before the wrap, too -- that is the frame the foot actually lands on.
+        assert character_pose.walk_knee_shape(1.0 - 1e-12) == pytest.approx(0.0, abs=1e-9)
+
+    def test_the_knee_never_hyperextends(self) -> None:
+        for action in ("walk", "stand", "sit", "talk", "gesture"):
+            for q in range(0, 50):
+                pose = character_pose.segment_pose_at(action, q / 50, 0.925)
+                for field in ("knee_l", "knee_r"):
+                    assert pose[field] >= 0.0, f"{action} {field} went negative"
+
+    def test_the_legs_stay_half_a_cycle_apart(self) -> None:
+        """A knee that lost its phase offset would have both legs off the ground."""
+        for q in range(0, 100):
+            phase = q / 100
+            assert character_pose.walk_knee_shape(phase + character_pose.STANCE_FRACTION) == (
+                pytest.approx(character_pose.walk_knee_shape(phase + 0.5), abs=1e-12)
+            )

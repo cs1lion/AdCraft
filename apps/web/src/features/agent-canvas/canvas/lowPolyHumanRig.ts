@@ -46,6 +46,9 @@ export const CHARACTER_RIG_FRACTIONS = {
   torsoDepth: 0.16,
   /** The head sphere sits 0.85 radii above the top of the neck. */
   headSeat: 0.85,
+  /** Where the knee sits along the leg, as a fraction of leg length. Halfway, so the
+   * thigh and shin match and the converter's foot-lift arithmetic holds. */
+  knee: 0.5,
   /** Legs straddle the spine by ±0.075; arms start 0.6 limb widths outside the torso wall. */
   legSpread: 0.075,
   armOutset: 0.6,
@@ -72,7 +75,9 @@ export const CHARACTER_SKIN_COLOR = "#E8D5C4";
 export const CHARACTER_SEGMENT_PARTS = [
   "torso",
   "LegL",
+  "ShinL",
   "LegR",
+  "ShinR",
   "ArmL",
   "ArmR",
   "neck",
@@ -162,22 +167,42 @@ export function characterRig(appearance: CharacterAppearanceLike): CharacterRig 
   const armHeight = f.arm * h;
   const armY = torsoTop - armHeight * f.armHang;
   const limbWidth = f.limbWidth * h;
+  const shinHeight = legHeight * f.knee;
+  const thighHeight = legHeight - shinHeight;
   const torsoWidth = f.torsoWidth * h;
   const torsoDepth = f.torsoDepth * h;
 
   const segments: CharacterSegment[] = [
     box("torso", "body", [0, torsoBottom + torsoHeight / 2, 0], [torsoWidth, torsoHeight, torsoDepth]),
+    // Thigh and shin, not one leg. A single box hinged at the hip cannot walk --
+    // a rigid leg's foot is the same height going forward as coming back, so the
+    // swing leg passes through the floor. The knee has to be a real joint, and it
+    // has to be halfway down: the pose library measures the foot's clearance as
+    // `shin * (cos(thigh) - cos(thigh - knee))`, which is only the clearance the
+    // eye sees if the two halves are equal.
     box(
       "LegL",
       "body",
-      [-f.legSpread * h, legHeight / 2, 0],
-      [limbWidth, legHeight, limbWidth * f.legDepthFactor],
+      [-f.legSpread * h, legHeight - (shinHeight / 2), 0],
+      [limbWidth, thighHeight, limbWidth * f.legDepthFactor],
+    ),
+    box(
+      "ShinL",
+      "body",
+      [-f.legSpread * h, shinHeight / 2, 0],
+      [limbWidth, shinHeight, limbWidth * f.legDepthFactor],
     ),
     box(
       "LegR",
       "body",
-      [f.legSpread * h, legHeight / 2, 0],
-      [limbWidth, legHeight, limbWidth * f.legDepthFactor],
+      [f.legSpread * h, legHeight - (shinHeight / 2), 0],
+      [limbWidth, thighHeight, limbWidth * f.legDepthFactor],
+    ),
+    box(
+      "ShinR",
+      "body",
+      [f.legSpread * h, shinHeight / 2, 0],
+      [limbWidth, shinHeight, limbWidth * f.legDepthFactor],
     ),
     box(
       "ArmL",

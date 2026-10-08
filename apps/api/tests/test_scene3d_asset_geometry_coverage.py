@@ -349,12 +349,55 @@ class TestTheHumanIsAPerson:
         # that once ("characters rendered as floating heads" -- see the comment
         # on the part-parenting loop in `_build_asset`), so it is asserted rather
         # than assumed: the centre must be exactly half the box height above 0.
+        #
+        # Asserted on the SHIN, not the thigh. The leg is two segments now, so the
+        # thigh is supposed to be up in the air -- checking the thigh instead would
+        # have failed on a correct rig and passed on a leg that stopped at the knee.
         snippet = self._snippet()
-        leg_z = _primitive_location(snippet, "her_LegL")[2]
-        leg_height = _part_scale(snippet, "her_LegL")[2]
-        assert abs(leg_z - leg_height / 2) < 1e-6, (
-            f"legs are centred at z={leg_z} with half-height {leg_height / 2}, "
-            "so they do not start at the floor"
+        shin_z = _primitive_location(snippet, "her_ShinL")[2]
+        shin_height = _part_scale(snippet, "her_ShinL")[2]
+        assert abs(shin_z - shin_height / 2) < 1e-6, (
+            f"the shin is centred at z={shin_z} with half-height {shin_height / 2}, "
+            "so the foot does not reach the floor"
+        )
+
+    def test_the_knee_splits_the_leg_in_half(self) -> None:
+        """Thigh and shin must be equal, because the foot-lift arithmetic assumes it.
+
+        `character_pose.walk_foot_lift_metres` recovers lift as
+        `shin * (cos(thigh) - cos(thigh - knee))`, which is only the clearance the
+        eye sees if the knee really is halfway down. A rig that moved the knee
+        would keep every pose test green and quietly disagree with the measurement
+        that justifies the knee.
+        """
+        snippet = self._snippet()
+        thigh_height = _part_scale(snippet, "her_LegL")[2]
+        shin_height = _part_scale(snippet, "her_ShinL")[2]
+        assert abs(thigh_height - shin_height) < 1e-6, (
+            f"thigh is {thigh_height:.4f} m and shin is {shin_height:.4f} m, so the "
+            "knee is not halfway down the leg the way the pose math assumes"
+        )
+        # And the two together must still span the whole leg, feet to hip.
+        leg_top = _primitive_location(snippet, "her_LegL")[2] + thigh_height / 2
+        assert abs(leg_top - (shin_height * 2)) < 1e-6, (
+            f"thigh plus shin reach {leg_top:.4f} m but a 0.50 leg is "
+            f"{shin_height * 2:.4f} m, so the leg changed length"
+        )
+
+    def test_the_shin_is_parented_to_the_knee_not_the_hip(self) -> None:
+        """The knee angle has to be relative to the thigh, or it is not a knee.
+
+        Parenting the shin straight to the hip empty would rotate it by the same
+        absolute angle as the thigh, doubling the bend instead of adding to it --
+        and it would still render, which is why this is asserted.
+        """
+        snippet = self._snippet()
+        assert "ShinL_pivot.parent = LegL_pivot" in snippet, (
+            "the knee empty is not parented to the thigh, so the shin rotates "
+            "about the hip instead of about the knee"
+        )
+        assert "ShinL.parent = ShinL_pivot" in snippet, (
+            "the shin mesh is not parented to its own pivot"
         )
 
     def test_the_figure_stands_as_tall_as_it_claims(self) -> None:
