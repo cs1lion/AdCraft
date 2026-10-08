@@ -3,9 +3,13 @@
 > 状态: **待用户确认**，未开始实施。
 > 触发: 用户确认"只要形到位，精细度不做要求"，且最小验证通过。
 >
-> **2026-10-07 更新**：阶段 1–5 已完成（见 §6），相机接线经复核后重做。渲染层替换把预演从
-> **不成立**推到**成立**；离"可用"剩下的差距全在资产与动画，已单独成文：
+> **2026-10-08 更新（架构结论修订）**：阶段 1–5 已完成（见 §6），相机接线经复核后重做。
+> 渲染层把预演从**不成立**推到**成立**；离"可用"剩下的差距全在资产与动画，已单独成文：
 > `docs/plans/previs-asset-and-motion-gap.md`（含与另一份 prop-keyframes 计划的差异评估）。
+>
+> **不再以"取代 Blender"为目标**，改为"分工 + 互相仲裁"，见 §8。原 §6 第 6 项
+> （退役 Blender）随之从"待办"改为"已决策：不做"——它此前看起来像在排队，实际结论是
+> 保留。§8 写清了理由与三条角色的边界，避免下一位读者把它重新当成待办捡起来。
 
 ## 1. 最小验证结论（本方案的地基）
 
@@ -220,7 +224,7 @@ three.js 用 `DepthTexture` / `gl.readPixels` 读深度缓冲，输出到同一 
 | **3** | 编排接线（`SCENE3D_RENDERER_BACKEND=threejs`） | 完成 |
 | **4** | depth control pass（§4.5） | 完成 |
 | **5** | 视口相机跟随分镜相机 | 完成（depth subagent 暴露的缺口） |
-| **6** | 退役 Blender（默认切换 / 移除依赖 / 旧测试处置） | **未做** |
+| **6** | ~~退役 Blender~~ | **已决策：不做**（见 §8） |
 
 ### 本回合实测数字
 
@@ -239,10 +243,12 @@ three.js 用 `DepthTexture` / `gl.readPixels` 读深度缓冲，输出到同一 
 
 1. **无人值守执行模型**（§4.3）：渲染由一个 headless Chrome 会话完成，API 进程持有它。
    批跑多镜头时是串行占用；尚未做节点状态机的"等待会话"语义与心跳。
-2. **默认切换**：开关默认仍是 `SCENE3D_RENDERER_BACKEND=blender`。切默认前需要一次更大规模真机对比
-   （多场景 x 多镜头 x 与 Blender 产物的目视比对）。
+2. **默认切换**：开关默认仍是 `SCENE3D_RENDERER_BACKEND=blender`。**已决策：不切**（见 §8）——
+   three.js 是可选快路径，不是继任者；把它设为默认会让参照实现不再被运行，从而失去对照组。
 3. **退役清单**：`blender_renderer.py`、`blender_converter.py`、
-   `blender_mcp_client.py`、`BLENDER_EXECUTABLE` 仍在仓库里。
+   `BLENDER_EXECUTABLE` **已决策：保留**（见 §8）。其中 `blender_mcp_client.py` +
+   `BLENDER_MCP_TOOL_WHITELIST` + `use_mcp` 分支是例外：它驱动的是 Blender **建模**而非渲染，
+   本机跑不起来、无 UI 入口，与"渲染层选谁"无关，属于可清理的死代码（未清理，待单独一刀）。
 4. **§5 的两个 schema 缺口**（道具/环境无 keyframes、action 无姿态实现）——
    与渲染器无关，独立排期。
 5. **相机 FOV**：schema 无镜头字段，当前用预览的 50 度；Blender 由 `lens` 推导。
@@ -274,3 +280,55 @@ three.js 用 `DepthTexture` / `gl.readPixels` 读深度缓冲，输出到同一 
 2. **客户端渲染意味着渲染发生在作者的机器上**——多作者各自渲染，产物会有 GPU 差异。可接受吗？
 3. **是否接受分阶段**，尤其是阶段 1–3 期间 Blender 与 three.js 并存？
 4. **§5 的两个 schema 缺口**（道具/环境无关键帧、action 无姿态）要一并做，还是单独排期？
+
+---
+
+## 8. 架构结论修订：不再以"取代 Blender"为目标（2026-10-08）
+
+### 8.1 初衷，以及它在哪兑现了
+
+一句话：让"预览"和"成片"是同一个东西。
+
+- Blender 路径：SceneScript -> `blender_converter.py` 生成 Python -> `blender --python` -> PNG。
+  场景逻辑被实现两遍——转换器里的 `_build_lowpoly_human` 与前端 `SceneScript3DPreview.tsx` 的
+  `lowPolyHumanRig`。这就是所谓"两套词汇表"。
+- three.js 路径：SceneScript -> URL fragment -> `render.html` 挂载 `SceneScript3DPreview`
+  （作者编辑时看的同一个组件）-> 逐帧元素截图 -> PNG。
+
+一张表，兑现与未兑现：
+
+| 兑现了（几何题，统一） | 未兑现（有设计判断，改为镜像） |
+|---|---|
+| 相机（预览相机即渲染相机） | 姿态库 `character_pose.py` <-> `characterPose.ts` |
+| 七段人形 rig（1:1 移植） | 物体运动 `object_motion.py` <-> `objectMotion.ts` |
+| 深度通道（render target） | held 道具握持 `held_item_grip.py` / `heldItems.ts` |
+| 抓帧链路 | |
+
+未兑现的三项不是疏忽，是清醒的选择：成对镜像 + 一致性测试（`test_character_pose_parity.py`、
+`test_object_motion_parity.py` 及对应 fixtures）。**几何统一，判断镜像**——这是本方案的最终结论。
+
+### 8.2 三条角色，以及各自的边界
+
+| 角色 | 承担者 | 说明 |
+|---|---|---|
+| 创作回路 | three.js | 作者拖物体、拖时间轴、看构图。**这个角色在渲染工程之前就存在，且不可替代——它就是编辑器本身。** |
+| 快速渲染路径 | three.js | 可选，实测同场景约 8 倍于 Blender；不依赖 `BLENDER_EXECUTABLE`。**不是默认。** |
+| 参照实现 / 仲裁者 | Blender | 1131 行久经考验的转换器；three.js 产物的"对不对"由它回答。 |
+
+### 8.3 为什么保留 Blender 是资产而非负债
+
+1. **它是零成本的**：不是默认路径，没人跑它。留着不花钱，删除要承担"参考实现消失"的风险。
+2. **它是唯一能回答"three.js 渲得对不对"的东西**。没有它，"720 帧跑通"不可验证——
+   本方案作者曾因此收回过一次性能数字（那套 harness 只断言非黑，未断言帧间差异）。
+3. **精度天花板更高**：白模预览够用的那天之前，光照/材质那条路是现成的；现在删了，
+   将来要重建 1131 行。
+4. **两个实现互为对照组**。本回合三个致命 bug 全是靠"质疑自己的证据链"抓到的，而不是靠
+   任何单个实现的自信：相机 prop 只在创建时读一次、抓帧页面把自己的 HUD 与播放条烧进每一帧
+   （并因此让驱动的冻结守卫永久失效）、`include_control_passes` 是收了不用的假参数。
+
+### 8.4 一句话结论
+
+**不是"取代"，是"分工 + 互相仲裁"。** 相机 bug 那一类（预览显示 A、渲染出 B）在
+同一份代码下无处藏身；而"渲得对不对"没有 Blender 就无法回答。两者都是必需的。
+
+—— 另注：`blender_mcp_client.py` 一节见 §6 决策第 3 条。
