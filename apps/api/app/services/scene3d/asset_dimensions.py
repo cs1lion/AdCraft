@@ -215,8 +215,18 @@ def prompt_lines() -> list[str]:
         if dims.base > 0:
             flag = f"  [FLOATS {dims.base:g} m above the ground — anything at z=0 is under it]"
         note = f"  ({dims.note})" if dims.note else ""
+        # The limit, not just the size. `SceneProp.scale` and
+        # `SceneEnvironmentObject.scale` reject anything past it, so a prompt that
+        # gives the size but not the ceiling still lets the model write a value that
+        # bounces off the schema — the exact blind-writing this table exists to stop.
+        limit = max_scale(kind)
+        ceiling = (
+            f"; scale {limit:.2f} max"
+            if limit is not None
+            else "; no scale limit (this is the ground)"
+        )
         lines.append(
             f"  {kind:<14} scale 1.0 = {at_one.width:g} m wide x {at_one.height:g} m tall "
-            f"x {at_one.depth:g} m deep{note}{flag}"
+            f"x {at_one.depth:g} m deep{ceiling}{note}{flag}"
         )
     return lines

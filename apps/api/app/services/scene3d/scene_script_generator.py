@@ -56,7 +56,9 @@ def _vocabulary() -> str:
     return f"""\
 Sizes, in metres. Every `scale` above 1 multiplies these, and a human is \
 {asset_dimensions.REFERENCE_PERSON_HEIGHT:g} m tall — size the scene against \
-that, not against the number.
+that, not against the number. Each line states the largest `scale` the schema will \
+accept for that kind; a scale past it is REJECTED, so these are hard limits rather \
+than advice.
 {sizes}
 Two traps the sizes above imply:
 - A `platform` is a raised DECK, not a room. Anything meant to stand beside it
