@@ -18,6 +18,53 @@
  * Axis discipline: SceneScript is Blender Z-up ([x, y, z] = right, forward,
  * up); three.js is Y-up. Every scene coordinate crosses `sceneScriptAxes`
  * exactly once, in both directions, so drags land in the axis Blender means.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE CHROME MUST BE HIDEABLE — and why an ELEMENT screenshot sees it
+ * ---------------------------------------------------------------------------
+ * This component is mounted twice for two different jobs: once as the author's
+ * interactive viewport, and once inside `src/render/PrevisRenderEntry.tsx`, the
+ * page the headless render driver (`scripts/render-frames.mjs`) loads and
+ * screenshots frame by frame. THAT instance is rendered with `hideChrome`, and
+ * that prop is the single thing keeping the interactive affordances out of the
+ * delivered PNGs.
+ *
+ * THE MECHANISM. The driver captures with a Playwright ELEMENT screenshot of the
+ * `<canvas>`, not with `canvas.toDataURL()`. An element screenshot is a crop of
+ * the COMPOSITED page at the canvas's bounding box, so it contains whatever the
+ * compositor painted there — including absolutely-positioned DOM SIBLINGS of the
+ * canvas that overlap that box. This file mounts exactly two such siblings, both
+ * `position: "absolute"` and both sibling to the canvas:
+ *   - the HUD strip (top: 8, left: 8), whose first token is
+ *     `Frame {currentFrame}/{totalFrames}` — text REGENERATED on every frame;
+ *   - the play controls (bottom: 8, left: 50%), whose 150px
+ *     `<input type="range">` paints its track and fill at the playhead.
+ * Neither is any part of a previs picture, yet both fall inside the crop.
+ *
+ * PROVEN, NOT GUESSED. Measured on a scene in which nothing can move — one
+ * static prop with no keyframes and a camera whose two keyframes are the
+ * identical pose — the renders of frame 0 and frame 119 came out DIFFERENT, and
+ * 100% of the differing pixels fell inside those two regions (~764 px in the
+ * top-left HUD corner, ~1272 px bottom-centre, 0 px elsewhere). Every frame this
+ * path delivered therefore carried a burned-in frame counter and a burned-in
+ * playback slider.
+ *
+ * WHY IT IS WORSE THAN UGLY. The driver hashes every captured frame and fails a
+ * run when a hash equals the previous frame's (`render_frames_frozen`) — the
+ * guard that stopped 481 byte-identical PNGs from "passing" once already. Chrome
+ * whose pixels change every frame makes that guard structurally UNFIREABLE: a
+ * contaminated run can never look frozen, so the one failure the driver was
+ * built to catch (a canvas that stops redrawing) can ship again and still report
+ * success. Leaving the overlays on does not merely dirty the output; it silently
+ * disarms the check that exists to catch dirty output.
+ *
+ * WHAT `hideChrome` GATES. The HUD strip and the play controls — nothing else.
+ * The scene itself, the `<Html>` labels, the camera/mannequin gizmos
+ * (`showGizmos`), the selection-ring and placement layers (`editMode`) and every
+ * edit handler stay as they are. The DEPTH control pass is unaffected either way
+ * (`controlDepthPass` → `sceneDepthPass*` renders into its own target and reads
+ * it back with `readRenderTargetPixels`, so it never composites DOM). The
+ * interactive agent-canvas view renders WITHOUT `hideChrome` and keeps all of it.
  */
 
 import {
@@ -1313,6 +1360,44 @@ export interface SceneScript3DPreviewProps {
    * render per frame on a pass nobody asked for).
    */
   controlDepthPass?: ControlDepthPassOptions;
+  /**
+   * Draw NOTHING but the scene — no HUD strip, no play controls.
+   *
+   * The headless renderer (`src/render/PrevisRenderEntry.tsx`) captures each
+   * frame with a Playwright ELEMENT screenshot of the `<canvas>`, and an
+   * element screenshot is a crop of the COMPOSITED page, not a read of the
+   * drawing buffer: any absolutely-positioned DOM sibling that overlaps the
+   * canvas box lands inside the PNG. This component mounts exactly two such
+   * siblings —
+   *   - the HUD strip, whose first token is `Frame {n}/{total}`, a string that
+   *     CHANGES on every frame, and
+   *   - the play controls, whose timeline slider fills with the playhead
+   *     (`aria-valuetext`/value) as it advances,
+   * so without this prop every delivered frame carries a burned-in frame
+   * counter and a burned-in playback slider. Measured: a scene with nothing
+   * moving — one static prop, no keyframes, a camera whose two keyframes are
+   * the identical pose — rendered frame 0 and frame 119 as DIFFERENT images,
+   * and 100% of the changed pixels fell in those two regions (~764 px in the
+   * top-left HUD corner, ~1272 px in the bottom-centre controls, 0 elsewhere).
+   *
+   * The damage is not only cosmetic. `scripts/render-frames.mjs` hashes every
+   * captured frame and fails a run whose hash equals the previous frame's
+   * (`render_frames_frozen`) — the guard that stopped 481 identical black PNGs
+   * from "passing" once already. Chrome that redraws a different string each
+   * frame makes that guard structurally unfireable: a contaminated run can
+   * never trip the check meant to catch frozen output, so the one failure mode
+   * that already shipped twice would ship a third time, silently.
+   *
+   * A separate prop rather than a rule like "hide whenever not editing": the
+   * authoring UI's playback view genuinely wants the HUD and the scrubber
+   * (read-only is not the same as captured), exactly the `showGizmos`
+   * distinction. The caller that knows it is being captured says so.
+   *
+   * Do NOT fold this into `showGizmos` or `editMode`: gizmos are an authoring
+   * aid and edit mode is an authoring mode, while this is "this instance is a
+   * capture target, not a viewport".
+   */
+  hideChrome?: boolean;
 }
 
 /** One dialogue line as the live overlay consumes it. */
@@ -1343,6 +1428,8 @@ export function SceneScript3DPreview({
   onGestureCancel,
   captureFrames = false,
   showGizmos = true,
+  // Capture targets draw the scene and nothing else — see the prop doc.
+  hideChrome = false,
   children,
   controlDepthPass,
 }: SceneScript3DPreviewProps) {
@@ -1689,56 +1776,66 @@ is the entire point of a control pass. */}
         )}
       </Canvas>
 
-      {/* HUD overlay */}
-      <div
-        style={{
-          position: "absolute",
-          top: 8,
-          left: 8,
-          background: "rgba(0,0,0,0.6)",
-          color: "#fff",
-          padding: "4px 10px",
-          borderRadius: 4,
-          fontSize: 12,
-          fontFamily: "monospace",
-        }}
-      >
-        Frame {currentFrame}/{totalFrames} | {sceneScript.scene.name}
-        {editMode && placementMode && (
-          <span style={{ color: "#FFD166", marginLeft: 8 }}>
-            放置相机：第一次点击设机位 · 第二次点击设注视点 · Esc 取消
-          </span>
-        )}
-        {editMode && !placementMode && (
-          <span style={{ color: "#FFD166", marginLeft: 8 }}>
-            编辑模式：点击选中 · 拖拽移动 · 点击空白取消
-          </span>
-        )}
-        {unimplemented.length > 0 && (
-          <span
-            style={{ color: PLACEHOLDER_ASSET_COLOR, marginLeft: 8 }}
-            title="This preview has no geometry for these kinds, so they render as magenta placeholder boxes"
-          >
-            ⚠ no preview geometry: {unimplemented.join(", ")}
-          </span>
-        )}
-      </div>
+      {/* HUD overlay — absolutely positioned inside the preview root, so it is
+          INSIDE the canvas box the render driver's ELEMENT screenshot crops.
+          `Frame {n}/{total}` changes every frame and `hideChrome` removes it from
+          captured instances (headless render entry); the authoring UI leaves it
+          on. See the prop doc for the frozen-canvas consequence. */}
+      {!hideChrome && (
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            background: "rgba(0,0,0,0.6)",
+            color: "#fff",
+            padding: "4px 10px",
+            borderRadius: 4,
+            fontSize: 12,
+            fontFamily: "monospace",
+          }}
+        >
+          Frame {currentFrame}/{totalFrames} | {sceneScript.scene.name}
+          {editMode && placementMode && (
+            <span style={{ color: "#FFD166", marginLeft: 8 }}>
+              放置相机：第一次点击设机位 · 第二次点击设注视点 · Esc 取消
+            </span>
+          )}
+          {editMode && !placementMode && (
+            <span style={{ color: "#FFD166", marginLeft: 8 }}>
+              编辑模式：点击选中 · 拖拽移动 · 点击空白取消
+            </span>
+          )}
+          {unimplemented.length > 0 && (
+            <span
+              style={{ color: PLACEHOLDER_ASSET_COLOR, marginLeft: 8 }}
+              title="This preview has no geometry for these kinds, so they render as magenta placeholder boxes"
+            >
+              ⚠ no preview geometry: {unimplemented.join(", ")}
+            </span>
+          )}
+        </div>
+      )}
 
-      {/* Play controls */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 8,
-          left: "50%",
-          transform: "translateX(-50%)",
-          background: "rgba(0,0,0,0.6)",
-          padding: "4px 12px",
-          borderRadius: 4,
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-        }}
-      >
+      {/* Play controls — the other absolutely-positioned sibling inside the
+          preview root. The `<input type="range">` paints its track and fill at
+          the playhead, so it differs frame to frame for the same reason the HUD
+          does. Gated on `hideChrome` for captured instances only. */}
+      {!hideChrome && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 8,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "rgba(0,0,0,0.6)",
+            padding: "4px 12px",
+            borderRadius: 4,
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
         <button
           type="button"
           onClick={toggle}
@@ -1789,7 +1886,9 @@ is the entire point of a control pass. */}
             {audioEnabled ? "🔊" : "🔇"}
           </button>
         )}
-      </div>
+        </div>
+      )}
+
       {speechAudioUrl && <audio ref={audioRef} src={speechAudioUrl} preload="none" />}
     </div>
   );

@@ -149,6 +149,14 @@ function boot() {
           // middle of every frame with a black cone now that the camera really
           // follows the shot camera.
           showGizmos={false}
+          // And no DOM chrome: the driver captures an ELEMENT screenshot of the
+          // canvas, which crops the composited page, so the absolutely-positioned
+          // HUD strip and play controls (siblings of the canvas, inside its box)
+          // would land in every frame. The HUD's `Frame n/total` text even
+          // changes per frame, which is what let a contaminated run never hash
+          // identically and thus never trip the driver's `render_frames_frozen`
+          // guard. Nothing here is interactive, so nothing is lost.
+          hideChrome
           controlDepthPass={{ onFrame: (delivery) => void depthDeliveries.set(delivery.frame, delivery) }}
         />
       </SceneScriptPlaybackProvider>
