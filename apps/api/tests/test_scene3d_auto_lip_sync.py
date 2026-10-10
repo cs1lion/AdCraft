@@ -221,7 +221,7 @@ def _executor(**overrides):
         "capability_probe": lambda: type(
             "Cap", (), {"state": "ready", "version": "5.0", "executable": "blender", "error": None}
         )(),
-        "renderer": lambda script, frames_dir, timeout_seconds=1800, keyframes_only=True: type(
+        "renderer": lambda script, frames_dir, timeout_seconds=1800, include_control_passes=False, keyframes_only=True: type(
             "R",
             (),
             {

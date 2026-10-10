@@ -1552,7 +1552,7 @@ def _animatic_executor(
         return _FakeMuxResult(success=False, error=mux_error or "ffmpeg mux failed")
 
     return _scene3d_executor(
-        renderer=lambda script, frames_dir, timeout_seconds=1800, keyframes_only=True: (
+        renderer=lambda script, frames_dir, timeout_seconds=1800, include_control_passes=False, keyframes_only=True: (
             _FakeRenderResult(rendered_frames=rendered_frames)
         ),
         encoder=_encoder,

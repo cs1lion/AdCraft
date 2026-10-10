@@ -229,7 +229,7 @@ def _executor(**overrides):
 
     params = {
         "capability_probe": lambda: type("Cap", (), {"state": "ready", "version": "5.0", "executable": "blender", "error": None})(),
-        "renderer": lambda script, frames_dir, timeout_seconds=1800, keyframes_only=True: type(
+        "renderer": lambda script, frames_dir, timeout_seconds=1800, include_control_passes=False, keyframes_only=True: type(
             "R", (), {"success": True, "frame_count": 5, "error": None, "blender_version": "5.0", "degraded_assets": (), "rendered_frames": "keyframes"}
         )(),
         # The encoder must leave a real file: the executor reads the bytes back

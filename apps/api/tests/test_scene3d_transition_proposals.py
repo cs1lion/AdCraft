@@ -582,8 +582,28 @@ def _stub_render_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_path, *, mux_succ
             return _MuxResult(success=True, output_path=output_path)
         return _MuxResult(success=False, error="mux boom")
 
-    monkeypatch.setattr(scene_3d_endpoint, "get_blender_capability", lambda executable=None: _Capability())
-    monkeypatch.setattr(scene_3d_endpoint, "render_scene_script", lambda script, frames_dir, **kwargs: _RenderResult())
+    # Two seams moved out from under this test, both deliberately: the renderer
+    # and the capability probe are now resolved through the same helpers the node
+    # executor uses, so this endpoint cannot pick a different backend than the
+    # node does. Patching the old module-level names created attributes the
+    # endpoint never reads, so the stubs did nothing and the REAL capability
+    # probe ran -- which is why a missing audio bed came back as success=False
+    # with no render attempted at all.
+    monkeypatch.setattr(
+        scene_3d_endpoint,
+        "get_blender_capability",
+        lambda executable=None: _Capability(),
+    )
+    monkeypatch.setattr(
+        scene_3d_endpoint,
+        "resolve_scene3d_capability_probe",
+        lambda settings: lambda: _Capability(),
+    )
+    monkeypatch.setattr(
+        scene_3d_endpoint,
+        "resolve_scene3d_renderer",
+        lambda settings: lambda script, frames_dir, **kwargs: _RenderResult(),
+    )
     monkeypatch.setattr(scene_3d_endpoint, "encode_png_sequence", _encoder)
     monkeypatch.setattr(scene_3d_endpoint, "mux_audio_to_video", _muxer)
     return calls
