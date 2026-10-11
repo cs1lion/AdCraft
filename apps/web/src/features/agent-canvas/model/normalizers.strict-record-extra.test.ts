@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentCanvasVideoSkillRunV2, CanvasBindingMutationResponseV2, CanvasConnectedNodeCreateResponseV2, ActionableFailureV1, CanvasVariationDraftResponseV2, CanvasVariationMaterializeResponseV2, ChatTimelineListResponseV2, EditingExportRuntimeV2, CanvasEditingExportImportResponseV2, EditingNodeContentV2, DecisionBundleActionAcceptedV2, ProjectAssetSummaryV2, ProjectAssetListResponseV2, ProjectAssetStatusV2, ProjectAssetUploadResponseV2, ResolvedTextInputSnapshotV2, GuidedInteractionAcceptedV1, ProposalMaterializationErrorV2 } from "../../../types-v2.ts";
 import { V2ContractValidationError } from "../../../api/v2ContractValidationError.ts";
-import { normalizeProjectAssetSummaryV2, normalizeCanvasConnectedNodeCreateResponseV2, normalizeCanvasBindingMutationResponseV2, normalizeResolvedTextInputSnapshotV2, normalizeProposalMaterializationErrorV2, normalizeEditingExportRuntimeV2, normalizeEditingNodeContentV2, normalizeCanvasEditingExportImportResponseV2, normalizeCanvasVariationDraftResponseV2, normalizeCanvasVariationMaterializeResponseV2, normalizeProjectAssetUploadResponseV2, normalizeProjectAssetListResponseV2, normalizeDecisionBundleActionAcceptedV2, normalizeGuidedInteractionAcceptedV1, normalizeAgentCanvasVideoSkillRunV2, normalizeChatTimelineListResponseV2, normalizeCanvasNodeV2, normalizeCanvasBindingV2, normalizeEditingSkippedInputV2, normalizeCanvasNodeErrorV2, normalizeEditingManifestV2, normalizeEditingPreviewV2, normalizeCanvasVariationDraftV2, normalizeAgentPlacementHintV2, normalizeVideoSkillPublicDetailV2, normalizeGuidanceAdvancePreconditionV1, normalizeChatTimelineItemV2, normalizeActionableFailureV1 } from "./normalizers.ts";
+import { normalizeProjectAssetSummaryV2, normalizeCanvasConnectedNodeCreateResponseV2, normalizeCanvasBindingMutationResponseV2, normalizeResolvedTextInputSnapshotV2, normalizeProposalMaterializationErrorV2, normalizeEditingExportRuntimeV2, normalizeEditingExportAcceptanceV2, normalizeEditingNodeContentV2, normalizeCanvasEditingExportImportResponseV2, normalizeCanvasVariationDraftResponseV2, normalizeCanvasVariationMaterializeResponseV2, normalizeProjectAssetUploadResponseV2, normalizeProjectAssetListResponseV2, normalizeDecisionBundleActionAcceptedV2, normalizeGuidedInteractionAcceptedV1, normalizeAgentCanvasVideoSkillRunV2, normalizeChatTimelineListResponseV2, normalizeCanvasNodeV2, normalizeCanvasBindingV2, normalizeEditingSkippedInputV2, normalizeCanvasNodeErrorV2, normalizeEditingManifestV2, normalizeEditingPreviewV2, normalizeCanvasVariationDraftV2, normalizeAgentPlacementHintV2, normalizeVideoSkillPublicDetailV2, normalizeGuidanceAdvancePreconditionV1, normalizeChatTimelineItemV2, normalizeActionableFailureV1 } from "./normalizers.ts";
 // Frozen from the dirty working baseline BEFORE production edits. No strict-record helper is shared.
 // Unchanged nested public normalizers are deliberately shared; selected nested functions are frozen too.
 type JsonRecord = Record<string, unknown>;
@@ -318,7 +318,7 @@ function baselineProposalMaterializationErrorV2(
 
 function baselineEditingExportRuntimeV2(value: unknown, path = "editing.exportRuntime"): EditingExportRuntimeV2 {
   const record = expectRecord(value, path);
-  forbidUnknownFields(record, ["export_id", "status", "manifest_revision", "fingerprint", "ready_video_node_ids", "skipped_inputs", "bgm_node_id", "output_asset_id", "error", "started_at", "finished_at"], path);
+  forbidUnknownFields(record, ["export_id", "status", "manifest_revision", "fingerprint", "ready_video_node_ids", "skipped_inputs", "bgm_node_id", "output_asset_id", "error", "started_at", "finished_at", "acceptance"], path);
   return {
     export_id: expectNonEmptyString(record.export_id, `${path}.export_id`),
     status: expectLiteral(record.status, EDITING_EXPORT_STATUSES, `${path}.status`),
@@ -333,6 +333,7 @@ function baselineEditingExportRuntimeV2(value: unknown, path = "editing.exportRu
     error: record.error === null ? null : normalizeCanvasNodeErrorV2(record.error, `${path}.error`),
     started_at: record.started_at === undefined ? null : nullableString(record.started_at, `${path}.started_at`),
     finished_at: record.finished_at === undefined ? null : nullableString(record.finished_at, `${path}.finished_at`),
+    acceptance: record.acceptance === undefined || record.acceptance === null ? null : normalizeEditingExportAcceptanceV2(record.acceptance, `${path}.acceptance`),
   };
 }
 

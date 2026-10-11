@@ -1,0 +1,360 @@
+.sync-compare {
+  position: fixed;
+  z-index: 2500;
+  inset: 0;
+  display: grid;
+  padding: clamp(16px, 3vw, 48px);
+  place-items: center;
+  background: rgba(7, 8, 13, 0.86);
+  color: var(--text-primary, #f1f2f6);
+  -webkit-backdrop-filter: blur(16px) saturate(0.9);
+  backdrop-filter: blur(16px) saturate(0.9);
+}
+
+.sync-compare__panel {
+  display: grid;
+  width: min(1440px, 100%);
+  max-height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 20px 24px 16px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 14px;
+  background: var(--surface-card, #13161d);
+  box-shadow: var(--shadow, 0 24px 70px rgba(0, 0, 0, 0.42));
+}
+
+.sync-compare__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.sync-compare__title-group {
+  margin-right: auto;
+}
+
+.sync-compare__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.sync-compare__subtitle {
+  margin: 4px 0 0;
+  color: var(--text-secondary, #9399a9);
+  font-size: 13px;
+}
+
+.sync-compare__modes {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 999px;
+}
+
+.sync-compare__modes button {
+  padding: 7px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary, #9399a9);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sync-compare__modes button.is-active {
+  background: var(--brand-subtle, #20283f);
+  color: var(--brand, #9dafe6);
+}
+
+.sync-compare__close {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary, #9399a9);
+  cursor: pointer;
+}
+
+.sync-compare__stage {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  gap: 14px;
+}
+
+.sync-compare__stage.is-split {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* 分割/差异：两个 pane 叠在同一格。pane 常驻，切视图不重建 video、不丢播放进度 */
+.sync-compare__stage.is-wipe,
+.sync-compare__stage.is-diff {
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.sync-compare__stage.is-wipe .sync-compare__pane,
+.sync-compare__stage.is-diff .sync-compare__pane {
+  grid-area: 1 / 1;
+  min-height: 0;
+}
+
+.sync-compare__stage.is-wipe .sync-compare__pane figcaption,
+.sync-compare__stage.is-diff .sync-compare__pane figcaption,
+.sync-compare__stage.is-wipe .sync-compare__pane > .sync-compare__source,
+.sync-compare__stage.is-diff .sync-compare__pane > .sync-compare__source {
+  visibility: hidden;
+}
+
+/* 差异混合：顶层 difference——黑=一致、亮=差异（video 内容不透明，底层纯黑衬底保证可读） */
+.sync-compare__stage.is-diff .sync-compare__pane.is-right video {
+  mix-blend-mode: difference;
+}
+
+.sync-compare__pane {
+  display: grid;
+  min-height: 0;
+  margin: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.sync-compare__pane video {
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+  border-radius: 10px;
+  background: #05060a;
+  object-fit: contain;
+}
+
+.sync-compare__pane figcaption {
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+  text-align: center;
+}
+
+.sync-compare__source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.sync-compare__source-label {
+  color: var(--text-secondary, #9399a9);
+  white-space: nowrap;
+}
+
+.sync-compare__source select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 8px;
+  background: var(--surface-input, #101218);
+  color: var(--text-primary, #f1f2f6);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sync-compare__empty {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  border: 1px dashed var(--border-default, #222733);
+  border-radius: 10px;
+  color: var(--text-secondary, #9399a9);
+  font-size: 13px;
+}
+
+.sync-compare__divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 2px;
+  background: var(--brand, #9dafe6);
+  box-shadow: 0 0 12px rgba(157, 175, 230, 0.6);
+  cursor: ew-resize;
+}
+
+.sync-compare__divider::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--brand, #9dafe6);
+  border-radius: 50%;
+  background: rgba(10, 12, 18, 0.9);
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.sync-compare__wipe-tag {
+  position: absolute;
+  top: 12px;
+  z-index: 2;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(8, 9, 13, 0.78);
+  color: var(--text-primary, #f1f2f6);
+  font-size: 12px;
+}
+
+.sync-compare__wipe-tag.is-left {
+  left: 12px;
+}
+
+.sync-compare__wipe-tag.is-right {
+  right: 12px;
+}
+
+.sync-compare__wipe-pickers {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+}
+
+.sync-compare__diff-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(8, 9, 13, 0.78);
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+}
+
+.sync-compare__audio {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 999px;
+}
+
+.sync-compare__audio button {
+  padding: 5px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary, #9399a9);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sync-compare__audio button.is-active {
+  background: var(--brand-subtle, #20283f);
+  color: var(--brand, #9dafe6);
+}
+
+.sync-compare__transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sync-compare__transport button {
+  display: grid;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  place-items: center;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 8px;
+  background: var(--glass-button, #191d26);
+  color: var(--text-primary, #f1f2f6);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sync-compare__play {
+  font-size: 15px;
+}
+
+.sync-compare__time {
+  color: var(--text-secondary, #9399a9);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sync-compare__seek {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--brand, #9dafe6);
+}
+
+.sync-compare__rate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+}
+
+.sync-compare__rate select {
+  padding: 5px 6px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 8px;
+  background: var(--surface-input, #101218);
+  color: var(--text-primary, #f1f2f6);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sync-compare__drift {
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sync-compare__offset {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+}
+
+.sync-compare__offset button {
+  padding: 4px 7px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 8px;
+  background: var(--surface-input, #101218);
+  color: var(--text-primary, #f1f2f6);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sync-compare__offset button:hover:not(:disabled) {
+  border-color: var(--border-strong, #3a4356);
+}
+
+.sync-compare__offset button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sync-compare__offset-value {
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #f1f2f6);
+}
