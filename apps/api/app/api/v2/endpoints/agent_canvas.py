@@ -221,7 +221,7 @@ from app.schemas.agent_canvas_editing import (
     EditingExportRequestV2,
     EditingManifestV2,
 )
-from app.schemas.v2_asset_library import AssetLibraryEntityDetailV2
+from app.schemas.v2_asset_library import AssetLibraryEntityDetailV2, AssetVersionListResponseV2
 from app.schemas.workflow_v2_projects import (
     ProjectV2,
     ProjectV2ListResponse,
@@ -2938,6 +2938,20 @@ def get_asset_content(
         media_type=content.media_type,
         headers=content.headers,
     )
+
+
+@router.get("/assets/{asset_id}/versions", response_model=AssetVersionListResponseV2)
+def list_asset_versions(
+    asset_id: str,
+    runtime: Annotated[AgentCanvasRuntime, Depends(get_agent_canvas_runtime)],
+) -> AssetVersionListResponseV2:
+    """Version chain of one asset, oldest first (Frame.io-style version stack)."""
+
+    try:
+        versions = runtime.assets.list_versions(asset_id)
+    except V2PersistenceError as error:
+        raise _persistence_http_error(error) from error
+    return AssetVersionListResponseV2(versions=tuple(versions))
 
 
 @router.post(

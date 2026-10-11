@@ -61,7 +61,7 @@
 | B1-1 | 单路参考音 + A/B/静音切换 | Premiere 参考监视器 | ✅ 已实施（音源 segmented control，默认 A；兼修 A3） | 0.5 天 |
 | B1-2 | In/Out 点 + 区间循环 | 全体 NLE 的 I/O 键 | ✅ 已实施：I/O 键 + 入/出按钮 + 进度条色带；越出点回入点循环（`loopBoundaryTime`，越点自动交换保持 in ≤ out） | 1 天 |
 | B1-3 | Difference / 叠化混合模式 | Figma onion skin、开源 video-compare | ✅ 已实施：新增第三视图「差异」（顶层 `mix-blend-mode: difference`，黑=一致亮=差异 + 提示角标）；叠化 opacity 滑杆仍待办 | 0.5 天 |
-| B1-4 | 版本栈对比 | Frame.io Version Stack | ⚠️ **pivot 到后端**：前端 `ProjectAssetSummaryV2` 无版本链字段（无 parent_version_id/version_no），v2 也无 asset-versions HTTP 端点（仅 v1 workflow_graph 有 node 级 versions）。需先建 `GET /api/v2/assets/{asset_id}/versions` 类端点 + 类型同步（`check:agent-canvas-contract`），再做前端接线 | 3-4 天 |
+| B1-4 | 版本栈对比 | Frame.io Version Stack | ✅ 已实施（跨上下文）：后端 `GET /api/v2/assets/{asset_id}/versions`（`AssetVersionListResponseV2`，oldest-first）+ 前端 `pickPreviousVersion` 沿链回溯；右 pane「上一版」按钮把右侧切到左侧节点输出的历史版本，连点继续回溯，caption/tag 标注「上一版 vN」；unavailable 版本跳过；`listVersions` 为测试注入点 | 3-4 天 |
 | B1-5 | 一键自动对齐 | Resolve/Premiere 音频波形 merge；自有亮度轨迹互相关（NCC 0.978，见通览视频标定） | ✅ 已实施（浏览器版）：0.5s 网格采样两轨迹（32×18 canvas luma 均值）→ `bestOffsetByNcc` 互相关取峰（±3s 限幅）→ 写 offsetB，显示相关度；`sampleTracks` 为测试注入点。音频波形对齐/服务端逐帧 NCC 可作后续精度增强 | 1-2 天 |
 | B1-6 | 镜号刻度/时间戳评论 | SyncSketch timestamped comments、Resolve markers | scene-3d 分镜 manifest 铺上 transport 做刻度，点击跳镜；导演口令钉时间戳 | 2-3 天 |
 | B1-7 | 破 gang 独立 scrub | Resolve unganged trim | Shift 拖单侧独立 seek，松手 re-gang | 1 天 |

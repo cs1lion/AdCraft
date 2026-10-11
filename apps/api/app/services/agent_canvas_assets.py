@@ -642,6 +642,17 @@ class AgentCanvasAssetService:
                 stage="agent_canvas_asset_service",
             )
 
+    def list_versions(self, asset_id: str) -> list[AssetVersionMetadataV2]:
+        """List every immutable version of one asset, oldest first (version stack)."""
+
+        versions = self._assets.list_versions(asset_id)
+        if not versions:
+            raise V2PersistenceError(
+                "asset_not_found",
+                f"Asset not found: {asset_id}.",
+            )
+        return list(versions)
+
     def open_content(
         self,
         asset_id: str,

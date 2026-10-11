@@ -118,6 +118,12 @@ class AssetVersionMetadataV2(_AssetLibraryModel):
     created_at: str = Field(min_length=1)
 
 
+class AssetVersionListResponseV2(_AssetLibraryModel):
+    """Version chain of one asset, oldest first — powers version-stack comparison."""
+
+    versions: tuple[AssetVersionMetadataV2, ...] = ()
+
+
 class AssetEntityCreate(_AssetLibraryModel):
     """Create one reusable entity without changing its member versions."""
 

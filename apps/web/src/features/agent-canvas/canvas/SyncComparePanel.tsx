@@ -11,16 +11,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { agentCanvasApi } from "../../../api/agentCanvasApi.ts";
 import { CloseIcon } from "../../../icons.tsx";
-import type { AgentCanvasWorkflowV2 } from "../../../types-v2.ts";
+import type { AgentCanvasWorkflowV2, V2AssetVersionListResponse } from "../../../types-v2.ts";
 import {
   aspectMismatch,
+  assetVersionContentPath,
   bestOffsetByNcc,
   clampOffsetSeconds,
   collectSyncCompareCandidates,
   expectedRightTime,
   FRAME_RATE,
   loopBoundaryTime,
+  pickPreviousVersion,
   pickSyncCompareDefaults,
   SYNC_DRIFT_TOLERANCE,
   SYNC_HARD_SEEK_SECONDS,
@@ -35,6 +38,8 @@ export interface SyncComparePanelProps {
   onClose: () => void;
   /** 测试注入点：亮度轨迹采样（默认 canvas 实现，逐 seek 读像素均值） */
   sampleTracks?: (video: HTMLVideoElement, times: number[]) => Promise<number[]>;
+  /** 测试注入点：版本链获取（默认走 agentCanvasApi） */
+  listVersions?: (assetId: string) => Promise<V2AssetVersionListResponse>;
 }
 
 type CompareMode = "split" | "wipe" | "diff";
@@ -88,7 +93,7 @@ async function sampleLumaTrack(video: HTMLVideoElement, times: number[]): Promis
   return track;
 }
 
-export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: SyncComparePanelProps) {
+export function SyncComparePanel({ workflow, open, onClose, sampleTracks, listVersions }: SyncComparePanelProps) {
   const candidates = useMemo(() => collectSyncCompareCandidates(workflow), [workflow]);
   const defaults = useMemo(() => pickSyncCompareDefaults(candidates), [candidates]);
   const [leftId, setLeftId] = useState<string | null>(defaults.leftId);
@@ -113,6 +118,10 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
   // 自动对齐（亮度轨迹 NCC）：运行中标记与结果提示
   const [aligning, setAligning] = useState(false);
   const [alignNote, setAlignNote] = useState<string | null>(null);
+  // 版本栈（Frame.io Version Stack）：右侧切到左侧节点输出的历史版本
+  const [versionOverride, setVersionOverride] = useState<{ assetId: string; versionId: string; versionNo: number; label: string } | null>(null);
+  const [versionBusy, setVersionBusy] = useState(false);
+  const [versionNote, setVersionNote] = useState<string | null>(null);
   const leftRef = useRef<HTMLVideoElement>(null);
   const rightRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -122,8 +131,17 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
   const right = candidates.find((c) => c.node.node_id === rightId) ?? null;
   const leftUrl = left?.url ?? null;
   const rightUrl = right?.url ?? null;
+  // 右侧实际展示源：版本栈覆盖优先，否则取节点当前输出
+  const rightSource = versionOverride
+    ? {
+        url: assetVersionContentPath(versionOverride.assetId, versionOverride.versionId),
+        title: versionOverride.label,
+      }
+    : right
+      ? { url: right.url, title: right.node.title || right.node.node_id }
+      : null;
 
-  // 打开时重置 Transport；候选或产物版本变化（url 变）也重置（偏移/区间按对记忆，换对归零）
+  // 打开时重置 Transport；候选或产物版本变化（url 变）也重置（偏移/区间/版本栈按对记忆，换对归零）
   useEffect(() => {
     setPlaying(false);
     setTime(0);
@@ -133,6 +151,8 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
     setOutPoint(null);
     setLoadError(null);
     setDims({ left: null, right: null });
+    setVersionOverride(null);
+    setVersionNote(null);
     for (const ref of [leftRef, rightRef]) {
       const el = ref.current;
       if (el) {
@@ -273,6 +293,32 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
     setInPoint(null);
     setOutPoint(null);
   }, []);
+
+  // 版本栈：把右侧切到左侧节点输出的上一版；连点沿链继续往回走
+  const loadPreviousVersion = useCallback(async () => {
+    if (!left || versionBusy) return;
+    setVersionBusy(true);
+    setVersionNote(null);
+    try {
+      const response = await (listVersions ?? ((assetId: string) => agentCanvasApi.listAgentCanvasAssetVersions(assetId)))(left.asset.asset_id);
+      const currentVersionId = versionOverride?.versionId ?? left.node.output_asset_version_id ?? null;
+      const previous = pickPreviousVersion(response.versions, currentVersionId);
+      if (!previous) {
+        setVersionNote(currentVersionId ? "已是链上最早版本" : "版本链不足两版");
+        return;
+      }
+      setVersionOverride({
+        assetId: left.asset.asset_id,
+        versionId: previous.versionId,
+        versionNo: previous.versionNo,
+        label: `${left.node.title || left.node.node_id} · 上一版 v${previous.versionNo}`,
+      });
+    } catch {
+      setVersionNote("版本链获取失败");
+    } finally {
+      setVersionBusy(false);
+    }
+  }, [left, versionBusy, versionOverride, listVersions]);
 
   // 自动对齐：采样两条视频的亮度轨迹做互相关，把峰值偏移写进 offsetB（通览标定 NCC 的浏览器版）
   const runAutoAlign = useCallback(async () => {
@@ -478,7 +524,7 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
         {/* 双 pane 常驻：并排=双列网格，分割/差异=同格叠加。切视图不重建 video，播放进度不丢 */}
         <div className={`sync-compare__stage is-${mode}`} ref={stageRef} data-testid="sync-compare-stage">
           <figure className="sync-compare__pane is-left">
-            {picker("left")}
+            <div className="sync-compare__pane-head">{picker("left")}</div>
             {left ? (
               <video
                 ref={leftRef}
@@ -509,16 +555,31 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
             <figcaption>{left?.node.title ?? "—"}</figcaption>
           </figure>
           <figure className="sync-compare__pane is-right">
-            {picker("right")}
-            {right ? (
+            <div className="sync-compare__pane-head">
+              {picker("right")}
+              {left ? (
+                <button
+                  type="button"
+                  className="sync-compare__prev-version"
+                  onClick={() => void loadPreviousVersion()}
+                  disabled={versionBusy}
+                  title="版本栈：把右侧切到左侧节点输出的上一版，连点沿链回溯（Frame.io Version Stack）"
+                  data-testid="sync-compare-prev-version"
+                >
+                  {versionBusy ? "取版本…" : "上一版"}
+                </button>
+              ) : null}
+              {versionNote ? <span className="sync-compare__version-note" data-testid="sync-compare-version-note">{versionNote}</span> : null}
+            </div>
+            {rightSource ? (
               <video
                 ref={rightRef}
-                src={right.url}
+                src={rightSource.url}
                 playsInline
                 preload="metadata"
                 muted={audioSide !== "B"}
                 style={mode === "wipe" ? { clipPath: `inset(0 0 0 ${divider}%)` } : undefined}
-                onError={() => setLoadError({ side: "right", url: right.url })}
+                onError={() => setLoadError({ side: "right", url: rightSource.url })}
                 onLoadedMetadata={(event) => {
                   const w = event.currentTarget.videoWidth;
                   const h = event.currentTarget.videoHeight;
@@ -535,7 +596,7 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
                 <button type="button" onClick={() => { setLoadError(null); rightRef.current?.load(); }}>重试</button>
               </div>
             ) : null}
-            <figcaption>{right?.node.title ?? "—"}</figcaption>
+            <figcaption>{rightSource?.title ?? "—"}</figcaption>
           </figure>
           {mode === "wipe" ? (
             <>
@@ -552,7 +613,7 @@ export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: Sync
                 tabIndex={0}
               />
               <span className="sync-compare__wipe-tag is-left">{left?.node.title ?? "A"}</span>
-              <span className="sync-compare__wipe-tag is-right">{right?.node.title ?? "B"}</span>
+              <span className="sync-compare__wipe-tag is-right">{rightSource?.title ?? "B"}</span>
               <div className="sync-compare__wipe-pickers">
                 {picker("left")}
                 {picker("right")}

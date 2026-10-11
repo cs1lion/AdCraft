@@ -1,17 +1,19 @@
 import { cleanup, render, screen, fireEvent, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentCanvasWorkflowV2, CanvasNodeV2, ProjectAssetSummaryV2 } from "../../../types-v2.ts";
+import type { AgentCanvasWorkflowV2, CanvasNodeV2, ProjectAssetSummaryV2, V2AssetVersionMetadata } from "../../../types-v2.ts";
 import {
   SyncComparePanel,
 } from "./SyncComparePanel.tsx";
 import {
   aspectMismatch,
+  assetVersionContentPath,
   bestOffsetByNcc,
   clampOffsetSeconds,
   collectSyncCompareCandidates,
   expectedRightTime,
   loopBoundaryTime,
+  pickPreviousVersion,
   pickSyncCompareDefaults,
   SYNC_DRIFT_TOLERANCE,
   SYNC_OFFSET_LIMIT,
@@ -189,8 +191,47 @@ describe("aspectMismatch", () => {
   });
 });
 
-describe("bestOffsetByNcc", () => {
-  const pattern = (i: number) => Math.sin(i * 1.7) + 0.5 * Math.sin(i * 0.53);
+describe("assetVersionContentPath", () => {
+  it("按版本寻址内容 URL", () => {
+    expect(assetVersionContentPath("asset_wm", "ver_1")).toBe("/api/v2/assets/asset_wm/content?v=ver_1");
+  });
+});
+
+describe("pickPreviousVersion", () => {
+  const version = (version_id: string, version_no: number, status: "ready" | "unavailable" = "ready"): V2AssetVersionMetadata => ({
+    version_id,
+    asset_id: "asset_wm",
+    version_no,
+    storage_key: `generated/a/v${version_no}.mp4`,
+    sha256: `sha-${version_no}`,
+    size_bytes: 1,
+    mime_type: "video/mp4",
+    width: 1280,
+    height: 720,
+    duration_seconds: 15,
+    status,
+    created_at: "2026-10-11T00:00:00Z",
+  });
+
+  it("沿版本链往回走：当前 v3 → 上一版 v2 → 上一版 v1 → null", () => {
+    const versions = [version("v1", 1), version("v2", 2), version("v3", 3)];
+    expect(pickPreviousVersion(versions, "v3")).toEqual({ versionId: "v2", versionNo: 2 });
+    expect(pickPreviousVersion(versions, "v2")).toEqual({ versionId: "v1", versionNo: 1 });
+    expect(pickPreviousVersion(versions, "v1")).toBeNull();
+  });
+
+  it("当前为 null 时取最新版的上一版；unavailable 版本跳过", () => {
+    const versions = [version("v1", 1), version("v2", 2, "unavailable"), version("v3", 3)];
+    expect(pickPreviousVersion(versions, null)).toEqual({ versionId: "v1", versionNo: 1 });
+  });
+
+  it("当前版不在链上或链不足两版返回 null", () => {
+    expect(pickPreviousVersion([version("v1", 1)], "v9")).toBeNull();
+    expect(pickPreviousVersion([version("v1", 1)], null)).toBeNull();
+  });
+});
+
+describe("bestOffsetByNcc", () => {  const pattern = (i: number) => Math.sin(i * 1.7) + 0.5 * Math.sin(i * 0.53);
 
   it("平移轨迹找到正确 lag：B 落后 3 格 → offset +1.5s、相关≈1", () => {
     const trackA = Array.from({ length: 40 }, (_, i) => pattern(i));
@@ -489,5 +530,43 @@ describe("SyncComparePanel", () => {
       playSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it("版本栈：上一版按钮把右侧切到版本链上一版，到头给出提示", async () => {
+    const version = (version_id: string, version_no: number): V2AssetVersionMetadata => ({
+      version_id,
+      asset_id: "asset_wm",
+      version_no,
+      storage_key: `generated/a/v${version_no}.mp4`,
+      sha256: `sha-${version_no}`,
+      size_bytes: 1,
+      mime_type: "video/mp4",
+      width: 1280,
+      height: 720,
+      duration_seconds: 15,
+      status: "ready",
+      created_at: "2026-10-11T00:00:00Z",
+    });
+    const listVersions = vi.fn(async () => ({ versions: [version("version_asset_wm", 2), version("version_asset_wm_v1", 1)] }));
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} listVersions={listVersions} />);
+    const right = screen.getByTestId("sync-compare-video-right") as HTMLVideoElement;
+    expect(right.getAttribute("src")).toContain("v=version_asset_fin");
+
+    fireEvent.click(screen.getByTestId("sync-compare-prev-version"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(listVersions).toHaveBeenCalledWith("asset_wm");
+    expect(right.getAttribute("src")).toContain("v=version_asset_wm_v1");
+    expect(screen.getByText(/上一版 v1/)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("sync-compare-prev-version"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("sync-compare-version-note").textContent).toBe("已是链上最早版本");
   });
 });

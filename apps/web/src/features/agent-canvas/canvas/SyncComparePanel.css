@@ -117,9 +117,45 @@
 
 .sync-compare__stage.is-wipe .sync-compare__pane figcaption,
 .sync-compare__stage.is-diff .sync-compare__pane figcaption,
-.sync-compare__stage.is-wipe .sync-compare__pane > .sync-compare__source,
-.sync-compare__stage.is-diff .sync-compare__pane > .sync-compare__source {
+.sync-compare__stage.is-wipe .sync-compare__pane > .sync-compare__pane-head,
+.sync-compare__stage.is-diff .sync-compare__pane > .sync-compare__pane-head {
   visibility: hidden;
+}
+
+.sync-compare__pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sync-compare__pane-head .sync-compare__source {
+  flex: 1;
+  min-width: 0;
+}
+
+.sync-compare__prev-version {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 8px;
+  background: var(--surface-input, #101218);
+  color: var(--text-primary, #f1f2f6);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sync-compare__prev-version:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sync-compare__version-note {
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* 差异混合：顶层 difference——黑=一致、亮=差异（video 内容不透明，底层纯黑衬底保证可读） */

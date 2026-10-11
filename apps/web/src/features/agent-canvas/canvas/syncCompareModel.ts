@@ -3,7 +3,7 @@
  * 与组件分离，便于单测与 fast-refresh。
  */
 
-import type { AgentCanvasWorkflowV2, CanvasNodeV2, ProjectAssetSummaryV2 } from "../../../types-v2.ts";
+import type { AgentCanvasWorkflowV2, CanvasNodeV2, ProjectAssetSummaryV2, V2AssetVersionMetadata } from "../../../types-v2.ts";
 import { mediaAssetContentPath } from "../../../workflow/mediaPreview.ts";
 
 export interface SyncCompareCandidate {
@@ -139,4 +139,30 @@ export function pickSyncCompareDefaults(
     ?? candidates.find((c) => c.node.node_id !== left.node.node_id)
     ?? null;
   return { leftId: left.node.node_id, rightId: right?.node.node_id ?? null };
+}
+
+/** 指定版本的媒体内容 URL（与 mediaAssetContentPath 同形，可寻址任意历史版本） */
+export function assetVersionContentPath(assetId: string, versionId: string): string {
+  return `/api/v2/assets/${encodeURIComponent(assetId)}/content?v=${encodeURIComponent(versionId)}`;
+}
+
+/**
+ * 版本栈：从 ready 版本链挑「当前版的上一版」（Frame.io Version Stack 语义）。
+ * currentVersionId 为 null 时取最新版的上一个；当前版不在链上或链上无更早的
+ * ready 版时返回 null。版本链按 version_no 降序走。
+ */
+export function pickPreviousVersion(
+  versions: V2AssetVersionMetadata[],
+  currentVersionId: string | null,
+): { versionId: string; versionNo: number } | null {
+  const ready = versions
+    .filter((version) => version.status === "ready")
+    .sort((a, b) => b.version_no - a.version_no || b.version_id.localeCompare(a.version_id));
+  if (ready.length < 2) return null;
+  const currentIndex = currentVersionId
+    ? ready.findIndex((version) => version.version_id === currentVersionId)
+    : 0;
+  if (currentIndex < 0) return null;
+  const previous = ready[currentIndex + 1];
+  return previous ? { versionId: previous.version_id, versionNo: previous.version_no } : null;
 }
