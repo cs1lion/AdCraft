@@ -7,6 +7,7 @@ import {
 } from "./SyncComparePanel.tsx";
 import {
   aspectMismatch,
+  bestOffsetByNcc,
   clampOffsetSeconds,
   collectSyncCompareCandidates,
   expectedRightTime,
@@ -188,6 +189,27 @@ describe("aspectMismatch", () => {
   });
 });
 
+describe("bestOffsetByNcc", () => {
+  const pattern = (i: number) => Math.sin(i * 1.7) + 0.5 * Math.sin(i * 0.53);
+
+  it("平移轨迹找到正确 lag：B 落后 3 格 → offset +1.5s、相关≈1", () => {
+    const trackA = Array.from({ length: 40 }, (_, i) => pattern(i));
+    const trackB = Array.from({ length: 40 }, (_, i) => pattern(i - 3));
+    const result = bestOffsetByNcc(trackA, trackB, 0.5, 3);
+    expect(result).not.toBeNull();
+    expect(result!.offset).toBeCloseTo(1.5, 6);
+    expect(result!.score).toBeGreaterThan(0.99);
+  });
+
+  it("轨迹过平（零方差）返回 null", () => {
+    expect(bestOffsetByNcc(new Array(40).fill(1), new Array(40).fill(1), 0.5, 3)).toBeNull();
+  });
+
+  it("轨迹太短返回 null", () => {
+    expect(bestOffsetByNcc([1, 2, 3], [1, 2, 3], 0.5, 3)).toBeNull();
+  });
+});
+
 describe("SyncComparePanel", () => {
   it("打开时双播放器就位，默认选中白模与成片", () => {
     const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
@@ -356,6 +378,7 @@ describe("SyncComparePanel", () => {
       });
       expect(right.currentTime).toBe(5.5);
       Object.defineProperty(right, "seeking", { value: false, configurable: true });
+      right.currentTime = 5.8;
       act(() => {
         vi.advanceTimersByTime(260);
       });
@@ -403,5 +426,68 @@ describe("SyncComparePanel", () => {
     Object.defineProperty(right, "videoWidth", { value: 1280, configurable: true });
     fireEvent(right, new Event("loadedmetadata"));
     expect(screen.queryByTestId("sync-compare-aspect-warn")).toBeNull();
+  });
+
+  it("打开时焦点进入面板（焦点陷阱）", () => {
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+    expect(document.activeElement).toBe(screen.getByTestId("sync-compare-panel"));
+  });
+
+  it("自动对齐：采样→NCC→写 offsetB 并恢复播放位置", async () => {
+    const pattern = (i: number) => Math.sin(i * 1.7) + 0.5 * Math.sin(i * 0.53);
+    const sampler = vi.fn(async (video: HTMLVideoElement, times: number[]) => {
+      const shift = video.getAttribute("data-testid") === "sync-compare-video-right" ? 3 : 0;
+      return times.map((_, i) => pattern(i - shift));
+    });
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} sampleTracks={sampler} />);
+    const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+    const right = screen.getByTestId("sync-compare-video-right") as HTMLVideoElement;
+    Object.defineProperty(left, "duration", { value: 10, configurable: true });
+    Object.defineProperty(right, "duration", { value: 10, configurable: true });
+    fireEvent.click(screen.getByTestId("sync-compare-auto-align"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sampler).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("sync-compare-offset").textContent).toContain("+1.5");
+    expect(screen.getByTestId("sync-compare-align-note").textContent).toContain("自动对齐");
+    expect(left.currentTime).toBe(0);
+    expect(right.currentTime).toBeCloseTo(1.5, 6);
+  });
+
+  it("小漂移用 playbackRate 微调，回阈值内复位，大漂移硬 seek", () => {
+    vi.useFakeTimers();
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    try {
+      const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+      render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+      const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+      const right = screen.getByTestId("sync-compare-video-right") as HTMLVideoElement;
+      Object.defineProperty(right, "readyState", { value: 4, configurable: true });
+      fireEvent.click(screen.getByTestId("sync-compare-play"));
+      left.currentTime = 5;
+      right.currentTime = 5.3;
+      act(() => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(right.playbackRate).toBeCloseTo(0.88, 5);
+      right.currentTime = 5.02;
+      act(() => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(right.playbackRate).toBe(1);
+      right.currentTime = 5.8;
+      act(() => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(right.currentTime).toBe(5);
+      expect(right.playbackRate).toBe(1);
+    } finally {
+      playSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

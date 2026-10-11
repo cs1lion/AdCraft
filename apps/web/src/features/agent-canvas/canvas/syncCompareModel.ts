@@ -15,6 +15,9 @@ export interface SyncCompareCandidate {
 /** 漂移校正阈值（秒）：双播放器时间差超过它就把从动方拉回主动方 */
 export const SYNC_DRIFT_TOLERANCE = 0.15;
 
+/** 硬 seek 阈值（秒）：漂移超过它直接跳，以内用 playbackRate 微调平滑追平 */
+export const SYNC_HARD_SEEK_SECONDS = 0.5;
+
 /** 逐帧步进假定的帧率（预演管线 24fps） */
 export const FRAME_RATE = 24;
 
@@ -50,6 +53,52 @@ export function aspectMismatch(
   const ratioA = a.w / a.h;
   const ratioB = b.w / b.h;
   return Math.abs(ratioA - ratioB) / Math.max(ratioA, ratioB) > 0.01;
+}
+
+/**
+ * 亮度轨迹互相关求最佳 B 侧偏移（自家通览标定 NCC 的纯函数版）。
+ * trackA/trackB 是同一时间网格（间隔 gridSeconds）上的平均亮度；
+ * 语义：offsetB 使 B(t+offset) 对上 A(t)，即找使 B[i+lag] ≈ A[i] 的 lag。
+ * 返回 NCC 最大的 lag；重叠不足 8 点或任一侧方差为 0（轨迹过平）时返回 null。
+ */
+export function bestOffsetByNcc(
+  trackA: number[],
+  trackB: number[],
+  gridSeconds: number,
+  maxOffsetSeconds: number,
+): { offset: number; score: number } | null {
+  const n = Math.min(trackA.length, trackB.length);
+  if (n < 8 || gridSeconds <= 0) return null;
+  const maxLag = Math.floor(maxOffsetSeconds / gridSeconds);
+  let best: { offset: number; score: number } | null = null;
+  for (let lag = -maxLag; lag <= maxLag; lag += 1) {
+    const lo = Math.max(0, -lag);
+    const hi = n - Math.max(0, lag);
+    const count = hi - lo;
+    if (count < 8) continue;
+    let sumA = 0;
+    let sumB = 0;
+    for (let i = lo; i < hi; i += 1) {
+      sumA += trackA[i];
+      sumB += trackB[i + lag];
+    }
+    const meanA = sumA / count;
+    const meanB = sumB / count;
+    let covariance = 0;
+    let varianceA = 0;
+    let varianceB = 0;
+    for (let i = lo; i < hi; i += 1) {
+      const deltaA = trackA[i] - meanA;
+      const deltaB = trackB[i + lag] - meanB;
+      covariance += deltaA * deltaB;
+      varianceA += deltaA * deltaA;
+      varianceB += deltaB * deltaB;
+    }
+    if (varianceA <= 1e-9 || varianceB <= 1e-9) continue;
+    const score = covariance / Math.sqrt(varianceA * varianceB);
+    if (!best || score > best.score) best = { offset: lag * gridSeconds, score };
+  }
+  return best;
 }
 
 /** B 侧应处的媒体时间：主时钟（A）时间 + 偏移，夹在 [0, B 时长] 内 */

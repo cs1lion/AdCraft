@@ -15,6 +15,7 @@ import { CloseIcon } from "../../../icons.tsx";
 import type { AgentCanvasWorkflowV2 } from "../../../types-v2.ts";
 import {
   aspectMismatch,
+  bestOffsetByNcc,
   clampOffsetSeconds,
   collectSyncCompareCandidates,
   expectedRightTime,
@@ -22,6 +23,8 @@ import {
   loopBoundaryTime,
   pickSyncCompareDefaults,
   SYNC_DRIFT_TOLERANCE,
+  SYNC_HARD_SEEK_SECONDS,
+  SYNC_OFFSET_LIMIT,
   type SyncCompareCandidate,
 } from "./syncCompareModel.ts";
 import "./SyncComparePanel.css";
@@ -30,6 +33,8 @@ export interface SyncComparePanelProps {
   workflow: AgentCanvasWorkflowV2;
   open: boolean;
   onClose: () => void;
+  /** 测试注入点：亮度轨迹采样（默认 canvas 实现，逐 seek 读像素均值） */
+  sampleTracks?: (video: HTMLVideoElement, times: number[]) => Promise<number[]>;
 }
 
 type CompareMode = "split" | "wipe" | "diff";
@@ -55,7 +60,35 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
-export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelProps) {
+/** 默认亮度轨迹采样：逐 seek 后把当前帧缩到 32×18 读 luma 均值（同源视频不污染 canvas） */
+async function sampleLumaTrack(video: HTMLVideoElement, times: number[]): Promise<number[]> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 18;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("canvas_2d_unavailable");
+  const track: number[] = [];
+  for (const t of times) {
+    await new Promise<void>((resolve) => {
+      const onSeeked = () => {
+        video.removeEventListener("seeked", onSeeked);
+        resolve();
+      };
+      video.addEventListener("seeked", onSeeked);
+      video.currentTime = t;
+    });
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    track.push(sum / (data.length / 4));
+  }
+  return track;
+}
+
+export function SyncComparePanel({ workflow, open, onClose, sampleTracks }: SyncComparePanelProps) {
   const candidates = useMemo(() => collectSyncCompareCandidates(workflow), [workflow]);
   const defaults = useMemo(() => pickSyncCompareDefaults(candidates), [candidates]);
   const [leftId, setLeftId] = useState<string | null>(defaults.leftId);
@@ -77,9 +110,13 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
   const [loadError, setLoadError] = useState<{ side: "left" | "right"; url: string } | null>(null);
   // 两侧画框尺寸：wipe/diff 叠加对比的错位提示
   const [dims, setDims] = useState<{ left: { w: number; h: number } | null; right: { w: number; h: number } | null }>({ left: null, right: null });
+  // 自动对齐（亮度轨迹 NCC）：运行中标记与结果提示
+  const [aligning, setAligning] = useState(false);
+  const [alignNote, setAlignNote] = useState<string | null>(null);
   const leftRef = useRef<HTMLVideoElement>(null);
   const rightRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const left = candidates.find((c) => c.node.node_id === leftId) ?? null;
   const right = candidates.find((c) => c.node.node_id === rightId) ?? null;
@@ -135,13 +172,22 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
       if (b.seeking || b.readyState < 3) return;
       const expected = expectedRightTime(a.currentTime, offsetB, b.duration);
       const drift = b.currentTime - expected;
-      if (Math.abs(drift) > SYNC_DRIFT_TOLERANCE) {
+      const absDrift = Math.abs(drift);
+      if (absDrift > SYNC_HARD_SEEK_SECONDS) {
+        // 大漂移：硬 seek 回位并复位速率
         b.currentTime = expected;
+        b.playbackRate = rate;
         setDriftFixed((n) => n + 1);
+      } else if (absDrift > SYNC_DRIFT_TOLERANCE) {
+        // 小漂移：±12% playbackRate 微调平滑追平
+        b.playbackRate = drift > 0 ? rate * 0.88 : rate * 1.12;
+      } else if (b.playbackRate !== rate) {
+        // 回到阈值内：复位到基准倍速
+        b.playbackRate = rate;
       }
     }, SYNC_POLL_MS);
     return () => window.clearInterval(id);
-  }, [open, playing, offsetB, inPoint, outPoint]);
+  }, [open, playing, offsetB, inPoint, outPoint, rate]);
 
   // 偏移改变立即对齐 B 侧，反馈不等待下一轮轮询
   useEffect(() => {
@@ -228,6 +274,53 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
     setOutPoint(null);
   }, []);
 
+  // 自动对齐：采样两条视频的亮度轨迹做互相关，把峰值偏移写进 offsetB（通览标定 NCC 的浏览器版）
+  const runAutoAlign = useCallback(async () => {
+    const a = leftRef.current;
+    const b = rightRef.current;
+    if (!a || !b || aligning) return;
+    const durationA = Number.isFinite(a.duration) ? a.duration : 0;
+    const durationB = Number.isFinite(b.duration) ? b.duration : 0;
+    const total = Math.min(durationA, durationB);
+    if (total <= 1) {
+      setAlignNote("元数据未就绪，稍后再试");
+      return;
+    }
+    const resumeA = a.currentTime;
+    const wasPlaying = playing;
+    setAligning(true);
+    setAlignNote(null);
+    setPlaying(false);
+    a.pause();
+    b.pause();
+    try {
+      const grid = 0.5;
+      const times: number[] = [];
+      for (let t = 0.25; t < total; t += grid) times.push(t);
+      const sample = sampleTracks ?? sampleLumaTrack;
+      const [trackA, trackB] = await Promise.all([sample(a, times), sample(b, times)]);
+      const result = bestOffsetByNcc(trackA, trackB, grid, SYNC_OFFSET_LIMIT);
+      if (!result) {
+        setAlignNote("亮度轨迹过平，无法对齐");
+        return;
+      }
+      const clamped = clampOffsetSeconds(result.offset);
+      setOffsetB(clamped);
+      setAlignNote(`自动对齐 ${clamped >= 0 ? "+" : ""}${clamped.toFixed(1)}s（相关 ${result.score.toFixed(2)}）`);
+      a.currentTime = resumeA;
+      b.currentTime = expectedRightTime(resumeA, clamped, b.duration);
+    } catch {
+      setAlignNote("对齐失败（采样不可用）");
+    } finally {
+      setAligning(false);
+      if (wasPlaying) {
+        void a.play().catch(() => undefined);
+        void b.play().catch(() => undefined);
+        setPlaying(true);
+      }
+    }
+  }, [aligning, playing, sampleTracks]);
+
   // 键盘：空格播放/暂停，左右 ±1s，逗号/句号逐帧，I/O 设区间（NLE 惯例）
   useEffect(() => {
     if (!open) return;
@@ -307,6 +400,36 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  // 焦点陷阱：打开时聚焦面板，Tab 循环限制在面板内，卸载时归还焦点
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const previous = document.activeElement as HTMLElement | null;
+    panel.focus();
+    const onTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusables = panel.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onTab);
+    return () => {
+      window.removeEventListener("keydown", onTab);
+      previous?.focus();
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const picker = (side: "left" | "right") => (
@@ -328,7 +451,7 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
 
   return createPortal(
     <div className="sync-compare" role="dialog" aria-modal="true" aria-label="同步对比播放" data-testid="sync-compare">
-      <div className="sync-compare__panel">
+      <div className="sync-compare__panel" ref={panelRef} tabIndex={-1} data-testid="sync-compare-panel">
         <header className="sync-compare__header">
           <div className="sync-compare__title-group">
             <h2 className="sync-compare__title">同步对比播放</h2>
@@ -492,6 +615,19 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
               0
             </button>
           </div>
+          <button
+            type="button"
+            className="sync-compare__auto-align"
+            onClick={() => void runAutoAlign()}
+            disabled={aligning || !left || !right}
+            title="亮度轨迹互相关自动对齐（采样 0.5s 网格，NCC 取峰）"
+            data-testid="sync-compare-auto-align"
+          >
+            {aligning ? "对齐中…" : "自动对齐"}
+          </button>
+          {alignNote ? (
+            <span className="sync-compare__align-note" data-testid="sync-compare-align-note">{alignNote}</span>
+          ) : null}
           <div className="sync-compare__region" title="NLE 式 I/O：I 设入点、O 设出点，播放到出点回入点循环">
             <button type="button" onClick={markIn} aria-label="设置入点">入</button>
             <span className="sync-compare__region-value" data-testid="sync-compare-region">

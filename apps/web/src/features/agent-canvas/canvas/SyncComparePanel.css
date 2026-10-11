@@ -24,6 +24,16 @@
   box-shadow: var(--shadow, 0 24px 70px rgba(0, 0, 0, 0.42));
 }
 
+.sync-compare__panel:focus {
+  outline: none;
+}
+
+.sync-compare__align-note {
+  color: var(--brand, #9dafe6);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .sync-compare__header {
   display: flex;
   align-items: flex-start;
