@@ -1,4 +1,4 @@
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentCanvasWorkflowV2, CanvasNodeV2, ProjectAssetSummaryV2 } from "../../../types-v2.ts";
@@ -6,9 +6,11 @@ import {
   SyncComparePanel,
 } from "./SyncComparePanel.tsx";
 import {
+  aspectMismatch,
   clampOffsetSeconds,
   collectSyncCompareCandidates,
   expectedRightTime,
+  loopBoundaryTime,
   pickSyncCompareDefaults,
   SYNC_DRIFT_TOLERANCE,
   SYNC_OFFSET_LIMIT,
@@ -168,6 +170,24 @@ describe("clampOffsetSeconds", () => {
   });
 });
 
+describe("loopBoundaryTime", () => {
+  it("越过出点回入点；未设出点不循环；未设入点回 0", () => {
+    expect(loopBoundaryTime(5.2, 1, 5)).toBe(1);
+    expect(loopBoundaryTime(4.9, 1, 5)).toBeNull();
+    expect(loopBoundaryTime(5.2, null, 5)).toBe(0);
+    expect(loopBoundaryTime(5.2, 1, null)).toBeNull();
+  });
+});
+
+describe("aspectMismatch", () => {
+  it("宽高比差超 1% 视为错位；缺尺寸不判错", () => {
+    expect(aspectMismatch({ w: 1280, h: 720 }, { w: 1280, h: 720 })).toBe(false);
+    expect(aspectMismatch({ w: 1280, h: 720 }, { w: 720, h: 720 })).toBe(true);
+    expect(aspectMismatch(null, { w: 720, h: 720 })).toBe(false);
+    expect(aspectMismatch({ w: 0, h: 0 }, { w: 720, h: 720 })).toBe(false);
+  });
+});
+
 describe("SyncComparePanel", () => {
   it("打开时双播放器就位，默认选中白模与成片", () => {
     const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
@@ -277,5 +297,111 @@ describe("SyncComparePanel", () => {
     expect(left.currentTime).toBeCloseTo(1 / 24, 5);
     fireEvent.keyDown(window, { key: "，" });
     expect(left.currentTime).toBeCloseTo(0, 5);
+  });
+
+  it("I/O 键设区间，越点自动交换，可清除", () => {
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+    const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+    left.currentTime = 5;
+    fireEvent.keyDown(window, { key: "o" });
+    left.currentTime = 7;
+    fireEvent.keyDown(window, { key: "i" });
+    expect(screen.getByTestId("sync-compare-region").textContent).toBe("0:05.0–0:07.0");
+    fireEvent.click(screen.getByRole("button", { name: "清除区间" }));
+    expect(screen.getByTestId("sync-compare-region").textContent).toBe("区间");
+  });
+
+  it("播放越过出点回跳入点（I/O 区间循环）", () => {
+    vi.useFakeTimers();
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    try {
+      const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+      render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+      const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+      const right = screen.getByTestId("sync-compare-video-right") as HTMLVideoElement;
+      left.currentTime = 1;
+      fireEvent.keyDown(window, { key: "i" });
+      left.currentTime = 5;
+      fireEvent.keyDown(window, { key: "o" });
+      fireEvent.click(screen.getByTestId("sync-compare-play"));
+      left.currentTime = 5.3;
+      right.currentTime = 5.3;
+      act(() => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(left.currentTime).toBe(1);
+      expect(right.currentTime).toBe(1);
+    } finally {
+      playSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("B 在 seeking/缓冲中跳过漂移校正（防 seek 风暴拉扯）", () => {
+    vi.useFakeTimers();
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    try {
+      const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+      render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+      const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+      const right = screen.getByTestId("sync-compare-video-right") as HTMLVideoElement;
+      fireEvent.click(screen.getByTestId("sync-compare-play"));
+      left.currentTime = 5;
+      right.currentTime = 5.5;
+      Object.defineProperty(right, "seeking", { value: true, configurable: true });
+      Object.defineProperty(right, "readyState", { value: 4, configurable: true });
+      act(() => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(right.currentTime).toBe(5.5);
+      Object.defineProperty(right, "seeking", { value: false, configurable: true });
+      act(() => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(right.currentTime).toBe(5);
+    } finally {
+      playSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("分割线方向键 ±2% 且不触发全局 ±1s 步进", () => {
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "滑动分割" }));
+    const divider = screen.getByRole("slider", { name: "分割位置" });
+    const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+    fireEvent.keyDown(divider, { key: "ArrowRight" });
+    expect(divider.getAttribute("aria-valuenow")).toBe("52");
+    expect(left.currentTime).toBe(0);
+  });
+
+  it("加载失败显示错误 pill，重试清除", () => {
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+    const left = screen.getByTestId("sync-compare-video-left");
+    fireEvent(left, new Event("error"));
+    expect(screen.getByTestId("sync-compare-error-left").textContent).toContain("加载失败");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(screen.queryByTestId("sync-compare-error-left")).toBeNull();
+  });
+
+  it("宽高比不同时叠加视图提示错位，一致时不提示", () => {
+    const wf = workflow([WM_NODE, FIN_NODE], [asset("asset_wm"), asset("asset_fin")]);
+    render(<SyncComparePanel workflow={wf} open onClose={() => undefined} />);
+    const left = screen.getByTestId("sync-compare-video-left") as HTMLVideoElement;
+    const right = screen.getByTestId("sync-compare-video-right") as HTMLVideoElement;
+    Object.defineProperty(left, "videoWidth", { value: 1280, configurable: true });
+    Object.defineProperty(left, "videoHeight", { value: 720, configurable: true });
+    Object.defineProperty(right, "videoWidth", { value: 720, configurable: true });
+    Object.defineProperty(right, "videoHeight", { value: 720, configurable: true });
+    fireEvent(left, new Event("loadedmetadata"));
+    fireEvent(right, new Event("loadedmetadata"));
+    fireEvent.click(screen.getByRole("button", { name: "差异" }));
+    expect(screen.getByTestId("sync-compare-aspect-warn").textContent).toContain("错位");
+    Object.defineProperty(right, "videoWidth", { value: 1280, configurable: true });
+    fireEvent(right, new Event("loadedmetadata"));
+    expect(screen.queryByTestId("sync-compare-aspect-warn")).toBeNull();
   });
 });

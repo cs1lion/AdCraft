@@ -38,16 +38,17 @@
 
 | 条目 | 位置 | 状态 |
 |---|---|---|
-| base.css padding 改动影响全站 ≤900px/≤620px 断点 | `base.css:655,668,690` | 待确认（录屏补偿→还原；侧栏对齐→CHANGELOG 补记） |
-| 视频加载失败无反馈；资产版本更新静默重载丢进度 | `<video>` 无 `onError` | 待办 |
-| 漂移校正硬 seek 拉扯 | `SyncComparePanel.tsx:97` | 待办（校正前跳过 `b.seeking \|\| b.readyState < 3`） |
-| wipe 两侧宽高比不同时错位 | stage 叠加布局 | 待办（不一致时提示条） |
-| divider `role="slider"` 拿不到键盘（方向键被全局拦截） | 键盘 handler | 待办（divider 自行处理方向键并 stopPropagation） |
-| 小屏 transport 溢出（8 控件一行） | `SyncComparePanel.css` | 待办 |
+| base.css padding 改动影响全站 ≤900px/≤620px 断点 | `base.css:655,668,690` | 待确认（录屏补偿→还原；侧栏对齐→CHANGELOG 补记）；**未入提交** |
+| 视频加载失败无反馈；资产版本更新静默重载丢进度 | `<video>` 无 `onError` | ✅ 已修：onError 错误 pill + 重试（`load()` 重拉）；url 变化纳入 Transport 重置依赖 |
+| 漂移校正硬 seek 拉扯 | 轮询校正 | ✅ 已修：`b.seeking \|\| b.readyState < 3` 跳过本轮，防弱网 seek 风暴 |
+| wipe 两侧宽高比不同时错位 | stage 叠加布局 | ✅ 已修：`aspectMismatch`（差超 1%）时叠加视图显示警告角标 |
+| divider `role="slider"` 拿不到键盘（方向键被全局拦截） | 键盘 handler | ✅ 已修：divider 自行处理方向键 ±2% 并 stopPropagation |
+| 小屏 transport 溢出（8 控件一行） | `SyncComparePanel.css` | ✅ 已修：≤860px 换行、进度条独占一行 |
 | modal 无 Esc 关闭/焦点陷阱 | dialog | ✅ Esc 已做；焦点陷阱待办 |
-| 逐帧步进硬编码 24fps；`,`/`.` 中文输入法不命中 | 键盘 handler | ✅ IME 全角 `，`/`。` 已接入；fps 常量化待办 |
+| 逐帧步进硬编码 24fps；`,`/`.` 中文输入法不命中 | 键盘 handler | ✅ IME 全角已接入；fps 已常量化 `FRAME_RATE` |
 | `nudgeOffset` 限幅逻辑长在组件里不可测 | 组件 | ✅ 已抽 `clampOffsetSeconds` 进 model + 单测 |
 | 工具栏按钮图标 ⏸ 语义像暂停 | 工具栏 | ✅ 已换 ⇄ |
+| 漂移平滑升级：小漂移用 playbackRate ±5% 微调代替硬 seek | 轮询校正 | 待办（现有 seeking/readyState 守卫已消除风暴，此项是体验打磨） |
 
 ---
 
@@ -58,7 +59,7 @@
 | # | 功能 | 抄谁 | 落法 | 规模 |
 |---|---|---|---|---|
 | B1-1 | 单路参考音 + A/B/静音切换 | Premiere 参考监视器 | ✅ 已实施（音源 segmented control，默认 A；兼修 A3） | 0.5 天 |
-| B1-2 | In/Out 点 + 区间循环 | 全体 NLE 的 I/O 键 | 新增 `inPoint/outPoint` state，I/O 键 + transport 色带 + 循环播放 | 1 天 |
+| B1-2 | In/Out 点 + 区间循环 | 全体 NLE 的 I/O 键 | ✅ 已实施：I/O 键 + 入/出按钮 + 进度条色带；越出点回入点循环（`loopBoundaryTime`，越点自动交换保持 in ≤ out） | 1 天 |
 | B1-3 | Difference / 叠化混合模式 | Figma onion skin、开源 video-compare | ✅ 已实施：新增第三视图「差异」（顶层 `mix-blend-mode: difference`，黑=一致亮=差异 + 提示角标）；叠化 opacity 滑杆仍待办 | 0.5 天 |
 | B1-4 | 版本栈对比 | Frame.io Version Stack | 节点右键「与上一版对比」→ 按 `output_asset_version_id` 取相邻两版 | 2 天 |
 | B1-5 | 一键自动对齐 | Resolve/Premiere 音频波形 merge；自有亮度轨迹互相关（NCC 0.978，见通览视频标定） | 把已有标定代码搬进面板：跑亮度轨迹相关 → 算出 offsetB 自动填 | 1-2 天 |

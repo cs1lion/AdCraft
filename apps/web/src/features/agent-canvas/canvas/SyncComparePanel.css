@@ -118,11 +118,41 @@
 }
 
 .sync-compare__pane {
+  position: relative;
   display: grid;
   min-height: 0;
   margin: 0;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.sync-compare__pane-error {
+  position: absolute;
+  bottom: 34px;
+  left: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgb(220 120 120 / 55%);
+  border-radius: 8px;
+  background: rgb(40 14 14 / 88%);
+  color: #f2b8b8;
+  font-size: 12px;
+}
+
+.sync-compare__pane-error button {
+  padding: 3px 10px;
+  border: 1px solid rgb(220 120 120 / 55%);
+  border-radius: 6px;
+  background: transparent;
+  color: #f2b8b8;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .sync-compare__pane video {
@@ -239,6 +269,43 @@
   font-size: 12px;
 }
 
+.sync-compare__diff-hint.is-warn {
+  color: #e8c37a;
+}
+
+.sync-compare__region {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary, #9399a9);
+  font-size: 12px;
+}
+
+.sync-compare__region button {
+  padding: 4px 7px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 8px;
+  background: var(--surface-input, #101218);
+  color: var(--text-primary, #f1f2f6);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sync-compare__region button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sync-compare__region-value {
+  min-width: 88px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #f1f2f6);
+  white-space: nowrap;
+}
+
 .sync-compare__audio {
   display: flex;
   overflow: hidden;
@@ -259,6 +326,18 @@
 .sync-compare__audio button.is-active {
   background: var(--brand-subtle, #20283f);
   color: var(--brand, #9dafe6);
+}
+
+/* 小屏：transport 控件多，换行并让进度条独占一行 */
+@media (max-width: 860px) {
+  .sync-compare__transport {
+    flex-wrap: wrap;
+  }
+
+  .sync-compare__seek {
+    order: 10;
+    flex-basis: 100%;
+  }
 }
 
 .sync-compare__transport {

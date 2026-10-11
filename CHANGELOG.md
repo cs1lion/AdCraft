@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **音源三档（A/B/静音，默认 A）**：此前两个 `<video>` 都不静音，白模与成片都带音轨时两路声音直接打架。现在对标 Premiere 参考监视器的单路参考音——transport 内新增 segmented control，React 受控 `muted`。
 - **差异混合视图**：对比视图从两档扩为三档（并排/滑动分割/**差异**）。差异档顶层视频 `mix-blend-mode: difference`——黑=完全一致、亮=差异，两版画面哪里变了直接发光（开源 video-compare 工具的标配技法），附提示角标。
 - **dev-up.sh --resume 一键复活**：服务被杀/会话中断后一条命令幂等拉起三服务、等 backend 健康至多 90s 并打印恢复证据（FastAPI lifespan 启动恢复本就自动跑执行/续跑/auto-run/provider 四类恢复，命令的职责是让"恢复已发生"可见）。故障恢复设计见 `docs/plans/fault-recovery-checkpoint-snapshot-design.md` §4.5。
+- **In/Out 区间循环（对标全体 NLE 的 I/O 键）**：I 设入点、O 设出点（transport 内也有按钮），进度条画色带，播放越过出点自动回跳入点循环——审片"反复看那一段"的核心工作流；越点自动交换保持 in ≤ out。
+- **加载失败反馈**：`<video>` `onError` 显示错误 pill + 重试（`load()` 重拉）；资产版本更新（url 变化）纳入 Transport 重置，不再静默重载丢进度。
+- **漂移校正防拉扯**：B 侧 `seeking` 或缓冲不足（`readyState < 3`）时跳过本轮校正，消除弱网下的 seek 风暴。
+- **杂项**：分割线方向键 ±2%（stopPropagation，不再被全局步进拦截）；wipe/差异视图两侧宽高比不一致时显示错位警告（`aspectMismatch`，差超 1%）；≤860px transport 换行、进度条独占一行；逐帧步进帧率常量化 `FRAME_RATE`。
 - **杂项**：Esc 关闭对比面板；中文全角 `，`/`。` 接入逐帧步进；`clampOffsetSeconds` 抽进 model 层可测；工具栏对比按钮图标 ⏸→⇄（语义不再像暂停）。
 
 ### Fixed — 同步对比播放两个 P2：切视图丢进度、A 播完 B 抖动

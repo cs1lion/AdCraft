@@ -14,9 +14,12 @@ import { createPortal } from "react-dom";
 import { CloseIcon } from "../../../icons.tsx";
 import type { AgentCanvasWorkflowV2 } from "../../../types-v2.ts";
 import {
+  aspectMismatch,
   clampOffsetSeconds,
   collectSyncCompareCandidates,
   expectedRightTime,
+  FRAME_RATE,
+  loopBoundaryTime,
   pickSyncCompareDefaults,
   SYNC_DRIFT_TOLERANCE,
   type SyncCompareCandidate,
@@ -67,19 +70,32 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
   const [driftFixed, setDriftFixed] = useState(0);
   // B 侧偏移（秒）：B 的媒体时间 = A 的主时钟时间 + 偏移。左侧内容领先时取正值。
   const [offsetB, setOffsetB] = useState(0);
+  // NLE I/O 区间（秒）：主时钟越过出点回入点；入/出都未设时自然播放
+  const [inPoint, setInPoint] = useState<number | null>(null);
+  const [outPoint, setOutPoint] = useState<number | null>(null);
+  // 视频加载失败反馈（404/资产清理）；换源或重试时清除
+  const [loadError, setLoadError] = useState<{ side: "left" | "right"; url: string } | null>(null);
+  // 两侧画框尺寸：wipe/diff 叠加对比的错位提示
+  const [dims, setDims] = useState<{ left: { w: number; h: number } | null; right: { w: number; h: number } | null }>({ left: null, right: null });
   const leftRef = useRef<HTMLVideoElement>(null);
   const rightRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
   const left = candidates.find((c) => c.node.node_id === leftId) ?? null;
   const right = candidates.find((c) => c.node.node_id === rightId) ?? null;
+  const leftUrl = left?.url ?? null;
+  const rightUrl = right?.url ?? null;
 
-  // 打开时重置 Transport；候选变化（换源）也重置（偏移按对记忆，换对归零）
+  // 打开时重置 Transport；候选或产物版本变化（url 变）也重置（偏移/区间按对记忆，换对归零）
   useEffect(() => {
     setPlaying(false);
     setTime(0);
     setDriftFixed(0);
     setOffsetB(0);
+    setInPoint(null);
+    setOutPoint(null);
+    setLoadError(null);
+    setDims({ left: null, right: null });
     for (const ref of [leftRef, rightRef]) {
       const el = ref.current;
       if (el) {
@@ -87,7 +103,7 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
         el.currentTime = 0;
       }
     }
-  }, [leftId, rightId, open]);
+  }, [leftId, rightId, open, leftUrl, rightUrl]);
 
   // 倍速同步
   useEffect(() => {
@@ -107,6 +123,16 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
       if (Number.isFinite(a.duration) && a.duration > 0) setDuration(a.duration);
       // A 已到结尾时由 onEnded 统一收尾；继续校正会把更长的 B 钉在 A 结尾反复抖动
       if (!b || !playing || a.ended) return;
+      // NLE I/O 区间循环：越过出点即回入点（轮询粒度内允许小幅越线，回跳即校正）
+      const boundary = loopBoundaryTime(a.currentTime, inPoint, outPoint);
+      if (boundary !== null) {
+        a.currentTime = boundary;
+        b.currentTime = expectedRightTime(boundary, offsetB, b.duration);
+        setTime(boundary);
+        return;
+      }
+      // B 在 seek 中或缓冲不足时跳过本轮校正，避免弱网下 seek 风暴互相拉扯
+      if (b.seeking || b.readyState < 3) return;
       const expected = expectedRightTime(a.currentTime, offsetB, b.duration);
       const drift = b.currentTime - expected;
       if (Math.abs(drift) > SYNC_DRIFT_TOLERANCE) {
@@ -115,7 +141,7 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
       }
     }, SYNC_POLL_MS);
     return () => window.clearInterval(id);
-  }, [open, playing, offsetB]);
+  }, [open, playing, offsetB, inPoint, outPoint]);
 
   // 偏移改变立即对齐 B 侧，反馈不等待下一轮轮询
   useEffect(() => {
@@ -172,7 +198,37 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
     seek((leftRef.current?.currentTime ?? 0) + deltaSeconds);
   }, [seek]);
 
-  // 键盘：空格播放/暂停，左右 ±1s，逗号/句号逐帧
+  // NLE I/O：以主时钟当前位置设入/出点；新点越过旧点时交换，保持 in ≤ out
+  const markIn = useCallback(() => {
+    const current = leftRef.current?.currentTime;
+    if (typeof current !== "number") return;
+    const at = Math.max(0, current);
+    if (outPoint !== null && at > outPoint) {
+      setInPoint(outPoint);
+      setOutPoint(at);
+    } else {
+      setInPoint(at);
+    }
+  }, [outPoint]);
+
+  const markOut = useCallback(() => {
+    const current = leftRef.current?.currentTime;
+    if (typeof current !== "number") return;
+    const at = Math.max(0, current);
+    if (inPoint !== null && at < inPoint) {
+      setOutPoint(inPoint);
+      setInPoint(at);
+    } else {
+      setOutPoint(at);
+    }
+  }, [inPoint]);
+
+  const clearRegion = useCallback(() => {
+    setInPoint(null);
+    setOutPoint(null);
+  }, []);
+
+  // 键盘：空格播放/暂停，左右 ±1s，逗号/句号逐帧，I/O 设区间（NLE 惯例）
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
@@ -188,14 +244,31 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
         event.preventDefault();
         step(1);
       } else if (event.key === "," || event.key === "，") {
-        step(-1 / 24);
+        step(-1 / FRAME_RATE);
       } else if (event.key === "." || event.key === "。") {
-        step(1 / 24);
+        step(1 / FRAME_RATE);
+      } else if (event.key === "i" || event.key === "I") {
+        event.preventDefault();
+        markIn();
+      } else if (event.key === "o" || event.key === "O") {
+        event.preventDefault();
+        markOut();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, togglePlay, step]);
+  }, [open, togglePlay, step, markIn, markOut]);
+
+  // 进度条上的 I/O 区间色带
+  const regionStyle = useMemo(() => {
+    if (inPoint === null && outPoint === null) return undefined;
+    const total = duration > 0 ? duration : 1;
+    const lo = ((inPoint ?? 0) / total) * 100;
+    const hi = ((outPoint ?? total) / total) * 100;
+    return {
+      background: `linear-gradient(to right, transparent ${lo}%, rgb(157 175 230 / 30%) ${lo}%, rgb(157 175 230 / 30%) ${hi}%, transparent ${hi}%)`,
+    };
+  }, [inPoint, outPoint, duration]);
 
   // 滑动分割： divider 拖动
   const onDividerDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -214,6 +287,14 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+  }, []);
+
+  // 分割线键盘：方向键 ±2%（stopPropagation 防止触发全局 ±1s/逐帧步进）
+  const onDividerKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.stopPropagation();
+    event.preventDefault();
+    setDivider((current) => Math.max(0, Math.min(100, current + (event.key === "ArrowRight" ? 2 : -2))));
   }, []);
 
   // Esc 关闭（modal 惯例）
@@ -283,14 +364,25 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
                 preload="metadata"
                 muted={audioSide !== "A"}
                 onEnded={handleLeftEnded}
+                onError={() => setLoadError({ side: "left", url: left.url })}
                 onLoadedMetadata={(event) => {
                   if (Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration);
+                  // currentTarget 只在派发期有效，先取值再进 updater
+                  const w = event.currentTarget.videoWidth;
+                  const h = event.currentTarget.videoHeight;
+                  setDims((previous) => ({ ...previous, left: { w, h } }));
                 }}
                 data-testid="sync-compare-video-left"
               />
             ) : (
               <div className="sync-compare__empty">选择左侧视频</div>
             )}
+            {loadError?.side === "left" ? (
+              <div className="sync-compare__pane-error" data-testid="sync-compare-error-left">
+                加载失败
+                <button type="button" onClick={() => { setLoadError(null); leftRef.current?.load(); }}>重试</button>
+              </div>
+            ) : null}
             <figcaption>{left?.node.title ?? "—"}</figcaption>
           </figure>
           <figure className="sync-compare__pane is-right">
@@ -303,11 +395,23 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
                 preload="metadata"
                 muted={audioSide !== "B"}
                 style={mode === "wipe" ? { clipPath: `inset(0 0 0 ${divider}%)` } : undefined}
+                onError={() => setLoadError({ side: "right", url: right.url })}
+                onLoadedMetadata={(event) => {
+                  const w = event.currentTarget.videoWidth;
+                  const h = event.currentTarget.videoHeight;
+                  setDims((previous) => ({ ...previous, right: { w, h } }));
+                }}
                 data-testid="sync-compare-video-right"
               />
             ) : (
               <div className="sync-compare__empty">选择右侧视频</div>
             )}
+            {loadError?.side === "right" ? (
+              <div className="sync-compare__pane-error" data-testid="sync-compare-error-right">
+                加载失败
+                <button type="button" onClick={() => { setLoadError(null); rightRef.current?.load(); }}>重试</button>
+              </div>
+            ) : null}
             <figcaption>{right?.node.title ?? "—"}</figcaption>
           </figure>
           {mode === "wipe" ? (
@@ -316,6 +420,7 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
                 className="sync-compare__divider"
                 style={{ left: `${divider}%` }}
                 onPointerDown={onDividerDrag}
+                onKeyDown={onDividerKeyDown}
                 role="slider"
                 aria-label="分割位置"
                 aria-valuenow={Math.round(divider)}
@@ -331,15 +436,19 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
               </div>
             </>
           ) : null}
-          {mode === "diff" ? <span className="sync-compare__diff-hint">黑 = 一致 · 亮 = 差异</span> : null}
+          {mode !== "split" && aspectMismatch(dims.left, dims.right) ? (
+            <span className="sync-compare__diff-hint is-warn" data-testid="sync-compare-aspect-warn">两侧宽高比不同，叠加对比会错位</span>
+          ) : mode === "diff" ? (
+            <span className="sync-compare__diff-hint">黑 = 一致 · 亮 = 差异</span>
+          ) : null}
         </div>
 
         <footer className="sync-compare__transport">
           <button type="button" className="sync-compare__play" onClick={togglePlay} aria-label={playing ? "暂停" : "播放"} data-testid="sync-compare-play">
             {playing ? "⏸" : "▶"}
           </button>
-          <button type="button" onClick={() => step(-1 / 24)} aria-label="上一帧">⟨</button>
-          <button type="button" onClick={() => step(1 / 24)} aria-label="下一帧">⟩</button>
+          <button type="button" onClick={() => step(-1 / FRAME_RATE)} aria-label="上一帧">⟨</button>
+          <button type="button" onClick={() => step(1 / FRAME_RATE)} aria-label="下一帧">⟩</button>
           <span className="sync-compare__time" data-testid="sync-compare-time">
             {formatTime(time)} / {formatTime(duration)}
           </span>
@@ -351,6 +460,7 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
             step={0.04}
             value={Math.min(time, duration || 0)}
             onChange={(event) => seek(Number(event.target.value))}
+            style={regionStyle}
             aria-label="播放进度"
             data-testid="sync-compare-seek"
           />
@@ -380,6 +490,21 @@ export function SyncComparePanel({ workflow, open, onClose }: SyncComparePanelPr
               disabled={offsetB === 0}
             >
               0
+            </button>
+          </div>
+          <div className="sync-compare__region" title="NLE 式 I/O：I 设入点、O 设出点，播放到出点回入点循环">
+            <button type="button" onClick={markIn} aria-label="设置入点">入</button>
+            <span className="sync-compare__region-value" data-testid="sync-compare-region">
+              {inPoint === null && outPoint === null ? "区间" : `${formatTime(inPoint ?? 0)}–${formatTime(outPoint ?? duration)}`}
+            </span>
+            <button type="button" onClick={markOut} aria-label="设置出点">出</button>
+            <button
+              type="button"
+              onClick={clearRegion}
+              aria-label="清除区间"
+              disabled={inPoint === null && outPoint === null}
+            >
+              ✕
             </button>
           </div>
           <div className="sync-compare__audio" role="group" aria-label="音源">

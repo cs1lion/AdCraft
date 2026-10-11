@@ -15,6 +15,9 @@ export interface SyncCompareCandidate {
 /** 漂移校正阈值（秒）：双播放器时间差超过它就把从动方拉回主动方 */
 export const SYNC_DRIFT_TOLERANCE = 0.15;
 
+/** 逐帧步进假定的帧率（预演管线 24fps） */
+export const FRAME_RATE = 24;
+
 /** B 侧偏移限幅（秒）：防止误触把对比拉得过远 */
 export const SYNC_OFFSET_LIMIT = 3;
 
@@ -22,6 +25,31 @@ export const SYNC_OFFSET_LIMIT = 3;
 export function clampOffsetSeconds(value: number): number {
   const rounded = Math.round(value * 10) / 10;
   return Math.max(-SYNC_OFFSET_LIMIT, Math.min(SYNC_OFFSET_LIMIT, rounded));
+}
+
+/**
+ * 区间循环的回跳判定（NLE I/O 语义）：主时钟越过出点即回入点（未设入点回 0）。
+ * 返回 null 表示当前不在边界上，自然播放。轮询粒度内允许小幅越线，回跳即校正。
+ */
+export function loopBoundaryTime(
+  currentTime: number,
+  inPoint: number | null,
+  outPoint: number | null,
+): number | null {
+  if (outPoint === null || !Number.isFinite(outPoint)) return null;
+  if (currentTime < outPoint) return null;
+  return inPoint ?? 0;
+}
+
+/** wipe/diff 叠加对比要求两侧画框一致：宽高比相差超 1% 视为错位 */
+export function aspectMismatch(
+  a: { w: number; h: number } | null,
+  b: { w: number; h: number } | null,
+): boolean {
+  if (!a || !b || a.w <= 0 || a.h <= 0 || b.w <= 0 || b.h <= 0) return false;
+  const ratioA = a.w / a.h;
+  const ratioB = b.w / b.h;
+  return Math.abs(ratioA - ratioB) / Math.max(ratioA, ratioB) > 0.01;
 }
 
 /** B 侧应处的媒体时间：主时钟（A）时间 + 偏移，夹在 [0, B 时长] 内 */
