@@ -266,12 +266,16 @@ class Settings:
     # nobody will watch the result.
     scene3d_render_keyframes_only: bool = False
     # Which renderer produces the previs frames.
-    #   "blender"  — the headless Blender renderer (the long-standing default)
+    #   "blender"  — the headless Blender renderer (reference implementation)
     #   "threejs"  — headless Chrome rendering the same SceneScript3DPreview the
     #                author edits in, so there is one scene implementation
     #                instead of two (see docs/plans/threejs-renderer-replacement.md)
-    # Default stays "blender" so nothing changes until it is opted into.
-    scene3d_renderer_backend: Literal["blender", "threejs"] = "blender"
+    # Default is "threejs": the architecture decision (4df577a7) keeps Blender as
+    # the reference implementation rather than retiring it, so the cross-
+    # implementation parity tests have something to compare against, while the
+    # default render path is the one the author also sees. Override with
+    # SCENE3D_RENDERER_BACKEND=blender to measure the reference implementation.
+    scene3d_renderer_backend: Literal["blender", "threejs"] = "threejs"
     # Emit the geometric control passes (depth; normal/flow degrade to
     # unavailable on Blender 5.x and stay absent in three.js) next to the
     # colour frames, in the layout `control_passes.collect_control_passes`

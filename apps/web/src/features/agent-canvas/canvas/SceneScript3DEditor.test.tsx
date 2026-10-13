@@ -106,9 +106,33 @@ describe("SceneScript3DEditor dual view modes", () => {
       document.querySelector(".scene-script-3d-editor")?.getAttribute("data-view-mode"),
     ).toBe("schedule");
     expect(document.querySelector(".scene-script-3d-editor__inspector")).toBeTruthy();
-    expect(previewProps.editMode).toBe(true);
+    // The viewport opens in VIEW mode, not edit mode: an author arriving at the
+    // 3D surface should see the shot as the delivered frames will frame it,
+    // with objects locked, rather than being able to knock them around before
+    // they know what they are looking at. "编辑拖动" is one click away.
+    expect(previewProps.editMode).toBe(false);
     expect(previewProps.showGizmos).not.toBe(false);
     expect(screen.queryByTestId("film-instruction-bar")).toBeNull();
+  });
+
+  it("opens the viewport in view mode and hands editMode over on toggle", () => {
+    renderEditor();
+    // View mode: the camera follows the shot, so cameraMode must not be "orbit".
+    expect(previewProps.editMode).toBe(false);
+    expect(previewProps.cameraMode).toBe("shot");
+
+    // The toggle is one button whose label flips with its state, so target it by
+    // its container class rather than by the text it currently shows.
+    const toggle = document.querySelector(
+      ".scene-script-3d-editor__viewport-bar button",
+    ) as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(toggle);
+
+    expect(previewProps.editMode).toBe(true);
+    expect(previewProps.cameraMode).toBe("orbit");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("switches to film mode and drops the editing surface for the instruction bar", () => {
@@ -407,6 +431,16 @@ describe("SceneScript3DEditor", () => {
     expect(screen.getByRole("button", { name: "放置相机" }).getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: "撤销修改" }).title).toContain("丢弃全部未保存修改");
   });
+  // KNOWN FLAKE (load-dependent, not a defect): under the default parallel
+  // file pool this test intermittently fails with
+  //   Unable to find an element by: [data-testid="scene-script-3d-director-status"]
+  // It passes (a) in this file alone, (b) with --no-file-parallelism, and
+  // (c) next to DirectorCommandBar.test.tsx. The cause is the
+  // `await import(...)` + `vi.spyOn` pair below: under CPU saturation the
+  // dynamic import resolves after the render has already been asserted, so the
+  // bar never gets its rejected-promise response and no status row appears.
+  // Left as-is rather than restructured — the fix belongs with the mock
+  // strategy for the whole director-gate surface, not with this one case.
   it("applies a director command end-to-end: local preview then gate round trip", async () => {
     const { onChange } = renderEditor();
     // The director gate client is mocked so no network call is attempted; the
@@ -464,8 +498,16 @@ describe("SceneScript3DEditor", () => {
     const status = screen.getByTestId("scene-script-3d-director-status");
     expect(status.textContent).toContain("已过闸门");
   });
-  it("passes editMode + callbacks to the preview", () => {
+  it("passes the callbacks to the preview in both viewport modes", () => {
     renderEditor();
+    // Callbacks are wired regardless of mode — view mode locks dragging, it does
+    // not detach selection, so the inspector stays live while the author orbits.
+    expect(typeof previewProps.onSelect).toBe("function");
+    expect(typeof previewProps.onDragCommit).toBe("function");
+
+    fireEvent.click(
+      document.querySelector(".scene-script-3d-editor__viewport-bar button") as HTMLButtonElement,
+    );
     expect(previewProps.editMode).toBe(true);
     expect(typeof previewProps.onSelect).toBe("function");
     expect(typeof previewProps.onDragCommit).toBe("function");
