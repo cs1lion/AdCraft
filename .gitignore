@@ -87,6 +87,11 @@ apps/*/.codegraph/
 
 # Local scratch artifacts: one-off experiment scripts and rendered media.
 # These live untracked; delete or promote them intentionally, never commit.
+/output/
+/tmp/
+# 演示录屏勘察脚本（v1→v7 迭代稿+录制产物）整体本地化；要长期保留的脚本再单个提升进版本库
+apps/web/scripts/demo-video/
+/apps/web/scripts/demo-probe-canvas.mjs
 /.quota-design.html
 /stepfun_docs_llm.txt
 /工具模型.txt

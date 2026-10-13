@@ -226,6 +226,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **验证**：`tsc` exit 0；`eslint` 0 errors（42 warnings 全是既有的）；canvas + timeline + 脚本 109 文件全过；`npm run build` + `perf:bundle` 通过；后端 `ruff` 全净、scene3d 相关 27 passed；浏览器规格 20/21 通过（唯一失败的 `scene-script-character-rig` 像素用例在未改代码的基线上同样失败）。真机：三份 dist 的像素对比见上表；深度通道经 API 通路产出 20 张 `depth_*.png`（12-15KB，非黑）。
 - **环境注记**：`@dagrejs/dagre` 是 `package.json` 里声明了的依赖却没装，导致 `tsc` 在**主检出上**也报 `TS2307`（与本改动无关，阻塞了整条验证阶梯）。已用 `npm install --no-save @dagrejs/dagre@3.1.1` 补装，未改动 `package.json` 与 lock。
 
+### Added — 同步对比播放首批升级：音源三档、差异混合视图、一键复活（对标审片工具的首批抄袭）
+
+- **音源三档（A/B/静音，默认 A）**：此前两个 `<video>` 都不静音，白模与成片都带音轨时两路声音直接打架。现在对标 Premiere 参考监视器的单路参考音——transport 内新增 segmented control，React 受控 `muted`。
+- **差异混合视图**：对比视图从两档扩为三档（并排/滑动分割/**差异**）。差异档顶层视频 `mix-blend-mode: difference`——黑=完全一致、亮=差异，两版画面哪里变了直接发光（开源 video-compare 工具的标配技法），附提示角标。
+- **dev-up.sh --resume 一键复活**：服务被杀/会话中断后一条命令幂等拉起三服务、等 backend 健康至多 90s 并打印恢复证据（FastAPI lifespan 启动恢复本就自动跑执行/续跑/auto-run/provider 四类恢复，命令的职责是让"恢复已发生"可见）。故障恢复设计见 `docs/plans/fault-recovery-checkpoint-snapshot-design.md` §4.5。
+- **版本栈对比（Frame.io Version Stack，跨上下文首批）**：后端新增 `GET /api/v2/assets/{asset_id}/versions`（返回不可变版本链 oldest-first，未知资产 404）；对比面板右 pane 新增「上一版」——把右侧切到左侧节点输出的历史版本，连点沿链回溯，caption/wipe 标签标注「上一版 vN」，unavailable 版本自动跳过。此后"这版和上一版差在哪"不用再靠标题猜。
+- **一键自动对齐（对标 Resolve/Premiere 波形 merge，自家 NCC 的浏览器版）**：transport 新增「自动对齐」——0.5s 网格采样两条视频的亮度轨迹（32×18 canvas luma 均值），`bestOffsetByNcc` 互相关取峰（±3s 限幅），把峰值偏移写进微调B并显示相关度；对齐期间暂停采样、完成后恢复原位与播放态。轨迹过平（零方差）或元数据未就绪时给出明确提示。`sampleTracks` 作为测试注入点。
+- **In/Out 区间循环（对标全体 NLE 的 I/O 键）**：I 设入点、O 设出点（transport 内也有按钮），进度条画色带，播放越过出点自动回跳入点循环——审片"反复看那一段"的核心工作流；越点自动交换保持 in ≤ out。
+- **加载失败反馈**：`<video>` `onError` 显示错误 pill + 重试（`load()` 重拉）；资产版本更新（url 变化）纳入 Transport 重置，不再静默重载丢进度。
+- **漂移校正防拉扯**：B 侧 `seeking` 或缓冲不足（`readyState < 3`）时跳过本轮校正，消除弱网下的 seek 风暴。
+- **杂项**：分割线方向键 ±2%（stopPropagation，不再被全局步进拦截）；wipe/差异视图两侧宽高比不一致时显示错位警告（`aspectMismatch`，差超 1%）；≤860px transport 换行、进度条独占一行；逐帧步进帧率常量化 `FRAME_RATE`。
+- **杂项**：Esc 关闭对比面板；中文全角 `，`/`。` 接入逐帧步进；`clampOffsetSeconds` 抽进 model 层可测；工具栏对比按钮图标 ⏸→⇄（语义不再像暂停）。
+
+### Fixed — 同步对比播放两个 P2：切视图丢进度、A 播完 B 抖动
+
+- **切视图丢进度**：并排↔滑动分割的 JSX 树不同，切换时 `<video>` 卸载重建——进度归零、静默停播，但 `playing` 仍 true（UI 显示 ⏸，再点一次执行的是暂停）。现在**双 pane 常驻**：并排=双列网格，分割/差异=同格叠加（`grid-area: 1/1`），切视图只换 CSS 类，video 元素永不重建。回归测试锁元素同一性。
+- **A 播完 B 被钉死抖动**：无 `onEnded` 时 A 到结尾后轮询仍会把更长的 B 每 220ms 拉回 A 的结尾，一帧一进地抖，Transport 状态失真。现在 A `onEnded` → 暂停 B + 回到暂停态；轮询内 `a.ended` 短路双保险。
+- **顺带修复仓库两处既有红**：① `normalizers.strict-record-extra.test.ts` 冻结基线缺 `acceptance` 字段（commit 76165c69 导出后置验收漏更基线，全树 `npm test` 对所有人都红），已按生产 normalizer 镜像补齐；② `routeProviders.test.tsx` 的构建冒烟测试在套件并行时超 30s 默认超时（CPU 饱和下 tsc+vite 必超），该测试单独放宽至 240s。
+- **验证**：`npm run check:quality` 全绿（typecheck 0 错、lint 0 错、290 文件 3173 测试全过）+ `npm run build` + bundle 预算通过。SyncComparePanel 单测 15→21 条（新增切视图元素同一性、A 结束、音源、差异视图、IME 键、clamp 限幅）。
+- **提交卫生**：`output/`、`tmp/`、`apps/web/scripts/demo-video/` 进 `.gitignore`（scratch 永不提交原则）；demo-video 同步排除出 eslint（一次性脚本的 7 个 `no-empty` 不再打红全量 lint）。
+- **记录一次撤回**：MiniMap 按对标清单实施后撞上既有冻结测试（`AgentCanvasChatPanel.test.tsx:1919` 封禁 MiniMap，commit f2415b30），按工程标准 §6 不静默覆盖既有决策，已还原；重新引入需先弄清当年移除动机并改冻结测试（见 backlog B2-1）。
+
+### Changed — 预览角色剪影换成 Blender 同款七段低多边形人形（一个 box ≠ 一个人）
+
+- **动机**（`docs/plans/threejs-renderer-replacement.md` §3.6，该方案唯一"必须做"的前端改动）：浏览器预览把角色画成**一个 box（躯干）+ 一个球（头）+ 嘴**，而 Blender 渲染出来的是 **torso + neck + head + LegL/LegR + ArmL/ArmR**。同一位角色，作者在导演台拖动的是一个盒子，交付帧里却长出腿来——预览与渲染互相不同意。renderer 一旦换成服务端渲染同一个 `SceneScript3DPreview`，预览即成片，box 角色会直接变成交付物，"形到位"无从谈起。
+- **改动**：新增 `canvas/lowPolyHumanRig.ts`，按转换器 `_build_lowpoly_human` 的**分段比例**原样移植（占 `height*scale` 的比例：腿 0.50、躯干 0.30、颈 0.03、头半径 0.11、臂 0.30、四肢宽 0.055、躯干 0.30×0.16；腿分跨 ±0.075，臂外撇 0.6 肢宽，头心 = 肩 + 颈 + 0.85 头半径）。`LowPolyHuman` 改为逐段渲染：脚踩 y=0、头顶 ≈ 身高，1.65 m 与 1.9 m 两个角色像两个人而不是两个盒子。比例为纯数据 + 单测锁定（段数、堆叠无缝隙、腿长随身高、`scale` 整体缩放），浏览器侧按几何类计数证明真的画出了腿。
+- **保留的既有行为**：选中高亮（emissive/emissiveIntensity，现覆盖全身七段，停在躯干会让作者选中不答应的腿）、编辑态 grab-proxy 圆柱（opacity 0）、顶部 ID 圆锥、语音浮层 `<Html>` 与 `data-testid`、嘴部网格（`data-speaking`，尺寸仍只由帧决定）、头组 `data-gesturing` 与 ≈15° 前倾。躯干/四肢仍取 `appearance.color`，头与颈沿用肤色 `#E8D5C4`。
+- **刻意与 Blender 不一致一处**：转换器不给 neck 赋材质（默认灰，读起来像衣领 bug），预览的颈与头同用肤色。
+- **两处已知小差异（剪影不受影响）**：① 头部球体分段 8×8（Blender `primitive_uv_sphere_add` 默认 32×16），轮廓一致、明暗略糙；② 七段一律 `castShadow`（原先只有躯乾投影，腿下无影）。
+- **顺带**：`SceneScript3DPreview` 增加可选 `children`（渲染在画布内、可读 `useThree`/`useFrame`）——浏览器 harness 的网格探针需要它，除此之外无调用方。
+- **验证**：新增单测 8 条全绿；新增 Playwright 规格 `tests/browser/scene-script-character-rig.spec.ts` 3 条全绿（角色网格数 3 → 9：6 box / 1 sphere / 1 cylinder / 1 cone；截图证明画布非黑且角色以自身颜色在屏）；`tests/browser/lean-scene-canvas-mock.tsx` 增 `?character=1` 夹具（单角色场景 + 复用既有 `leanScene` 计数）。
+
 ### Changed — 预演默认渲染全帧动画：scene-3d 节点的预演终于会动（keyframes-only 改为显式 opt-in）
 
 - **动机**：用户反馈"部分分镜的预演没动起来，像空白场景静止几秒"。根因是 `scene3d_render_keyframes_only` 默认 `True`：节点跑一次只出每镜 5 张关键帧静帧，没有连续动作、没有运镜、没有切点。而这份 MP4 正是导演台发布成预演片段、作者据以判断节奏的东西。

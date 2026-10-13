@@ -678,6 +678,36 @@ export interface V2AssetLibraryEntityDetail extends V2AssetLibraryEntitySummary 
   updated_at?: string | null;
 }
 
+/** One immutable version of a logical asset (backend asset_versions row projection). */
+export interface V2AssetVersionMetadata {
+  version_id: string;
+  asset_id: string;
+  version_no: number;
+  storage_key: string;
+  sha256: string;
+  size_bytes: number;
+  mime_type: string;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
+  prompt?: string | null;
+  provider?: string | null;
+  model_id?: string | null;
+  source_workflow_id?: string | null;
+  source_node_id?: string | null;
+  source_item_id?: string | null;
+  source_slot_id?: string | null;
+  parent_version_id?: string | null;
+  quality?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+  status: "ready" | "unavailable";
+  created_at: string;
+}
+
+export interface V2AssetVersionListResponse {
+  versions: V2AssetVersionMetadata[];
+}
+
 export interface V2AssetLibraryListResponse {
   entities: V2AssetLibraryEntitySummary[];
   next_cursor?: string | null;

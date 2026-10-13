@@ -494,7 +494,8 @@ describe("route providers", () => {
     expect(v2Api.listProjectsWithEtag).not.toHaveBeenCalled();
   });
 
-  test("keeps workspace chunks out of the actual built Home route closure", () => {
+  test("keeps workspace chunks out of the actual built Home route closure", { timeout: 240_000 }, () => {
+    // 全量套件并行时 CPU 饱和，生产构建（tsc+vite）会超过默认 30s；构建本身是必要成本
     // win32 上 npm 的入口是 npm.cmd，且 Node 17+ spawn .cmd 需要 shell:true
     // （否则 EINVAL；直spawn "npm" 在非 shell 环境 ENOENT——跨平台修正）
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";

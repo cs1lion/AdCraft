@@ -73,6 +73,7 @@
   V2AssetLibraryListRequest,
   V2AssetLibraryListResponse,
   V2AssetLibraryPatchRequest,
+  V2AssetVersionListResponse,
   V2EtaggedResponse,
   V2FreeNodeAbsorbRequest,
   V2FreeNodeAbsorbResponse,
@@ -138,6 +139,7 @@ import {
   normalizeProjectV2ListResponse,
   normalizeV2AssetLibraryEntityDetail,
   normalizeV2AssetLibraryListResponse,
+  normalizeV2AssetVersionListResponse,
   normalizeV2RecommendedCatalogStatus,
   normalizeV2ReferenceSelectionsResponse,
   normalizeProviderTaskV2,
@@ -893,6 +895,14 @@ export const v2Api = {
 
   deleteAgentCanvasAsset(assetId: string): Promise<void> {
     return requestV2(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+  },
+
+  listAgentCanvasAssetVersions(assetId: string): Promise<V2AssetVersionListResponse> {
+    return requestV2(
+      `/assets/${encodeURIComponent(assetId)}/versions`,
+      {},
+      normalizeV2AssetVersionListResponse,
+    );
   },
 
   agentCanvasCreativeSession(

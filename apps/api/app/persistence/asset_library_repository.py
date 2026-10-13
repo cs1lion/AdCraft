@@ -396,6 +396,27 @@ class V2AssetLibraryRepository:
             raise _persistence_error() from error
         return {str(row["version_id"]): _version_from_row(row) for row in rows}
 
+    def list_versions(self, asset_id: str) -> tuple[AssetVersionMetadataV2, ...]:
+        """List every immutable version of one asset, oldest first."""
+
+        try:
+            with self._database.engine.connect() as connection:
+                rows = (
+                    connection.execute(
+                        _version_select()
+                        .where(AssetVersionRow.asset_id == asset_id)
+                        .order_by(
+                            AssetVersionRow.version_no.asc(),
+                            AssetVersionRow.version_id.asc(),
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+        except SQLAlchemyError as error:
+            raise _persistence_error() from error
+        return tuple(_version_from_row(row) for row in rows)
+
     def list_versions_for_slot(
         self,
         *,

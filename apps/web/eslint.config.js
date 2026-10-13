@@ -12,6 +12,8 @@ export default [
       ".codegraph/**",
       ".codex/**",
       "coverage/**",
+      // 一次性勘察/录屏脚本（gitignore 同款决策）：本地 scratch 不按仓库 lint 标准要求
+      "scripts/demo-video/**",
     ],
   },
   js.configs.recommended,

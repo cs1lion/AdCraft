@@ -1970,7 +1970,7 @@ export function AgentCanvasPage() {
             title="同步对比播放：两条视频（默认白模 vs 成片）共享一套播放控制"
             onClick={() => setSyncCompareOpen((current) => !current)}
           >
-            <span aria-hidden="true">⏸</span>
+<span aria-hidden="true">⇄</span>
           </button>
           {running ? (
             <button
