@@ -77,7 +77,10 @@ _FORBIDDEN_CREDENTIAL_SUFFIXES = frozenset(
 
 def _is_credential_key(key: str) -> bool:
     lowered = key.lower()
-    if lowered.endswith("_id"):
+    # The bound design's logical key is a domain identity, like an asset id.
+    # Keep this exact spelling exemption narrow; value transport checks still
+    # apply and other credential-bearing *_key names remain forbidden.
+    if lowered.endswith("_id") or lowered == "design_key":
         return False
     if any(fragment in lowered for fragment in ("api_key", "authorization")):
         return True

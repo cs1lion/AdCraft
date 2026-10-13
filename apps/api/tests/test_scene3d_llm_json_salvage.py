@@ -12,8 +12,6 @@ from __future__ import annotations
 import copy
 import json
 
-import pytest
-
 from app.services.scene3d.llm_json_salvage import prune_extra_fields, salvage_json_text
 from app.services.scene3d.parser import parse_llm_output
 from app.services.scene3d.scene_script_generator import LLMSceneScriptGenerator

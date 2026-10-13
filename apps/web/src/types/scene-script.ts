@@ -21,11 +21,28 @@ export interface CharacterAppearance {
   palette?: string[] | null;
 }
 
+/** Optional authored joint angles in radians; omitted fields retain the action pose. */
+export interface CharacterPose {
+  arm_l?: number | null;
+  arm_r?: number | null;
+  arm_l_side?: number | null;
+  arm_r_side?: number | null;
+  head?: number | null;
+  head_yaw?: number | null;
+  leg_l?: number | null;
+  leg_r?: number | null;
+  knee_l?: number | null;
+  knee_r?: number | null;
+  /** Root height offset as a fraction of character height. */
+  bob?: number | null;
+}
+
 export interface CharacterKeyframe {
   frame: number;
   position: [number, number, number];
   rotation_y: number;
   action?: string;
+  pose?: CharacterPose | null;
 }
 
 export interface SceneCharacter {

@@ -12,6 +12,7 @@ import json
 
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.schemas.scene_script import SceneProp, SceneScriptRoot
 from app.services.scene3d.blender_converter import scene_script_to_blender
@@ -128,11 +129,7 @@ class TestFullAnimationReachesBlender:
             assert f'bob_{character.id}.keyframe_insert(' in script
 
     def test_a_character_that_only_stands_gets_a_constant_pose(self) -> None:
-        """A held action is keyed once, not every frame.
-
-        Otherwise a 720-frame scene's script grows by thousands of lines that all say
-        the same thing, and the whole animation pass becomes unreviewable.
-        """
+        """Held poses also need per-frame keys, including explicit zero resets."""
 
         script = _generate(keyframes_only=False)
         scene = _scene()
@@ -141,12 +138,12 @@ class TestFullAnimationReachesBlender:
             if all(k.action in {"stand", "talk", "sit", "gesture"} for k in c.keyframes)
         ]
         for character in standers:
-            # The bob is keyed every frame regardless -- it is cheap, and keeping it
-            # uniform means the frame loop has no branch.
-            assert script.count(f"bob_{character.id}.keyframe_insert(") >= len(
-                [k for k in character.keyframes]
-            )
-            assert script.count(f"_p_{character.id}LegL.keyframe_insert(") == 1
+            from app.services.scene3d.blender_converter import _last_frame
+
+            samples = _last_frame(scene) + 1
+            assert script.count(f"bob_{character.id}.keyframe_insert(") == samples
+            for joint in ("LegL", "LegR", "ShinL", "ShinR", "ArmL", "ArmR", "Head"):
+                assert script.count(f"_p_{character.id}{joint}.keyframe_insert(") == samples
 
     def test_a_non_human_character_builds_its_own_type_not_a_person(self) -> None:
         """A `door`-typed character must build a door.
@@ -229,14 +226,14 @@ class TestFullAnimationReachesBlender:
         # guessed one.
         from app.services.scene3d.held_item_grip import hold_arm_pitch
 
-        assert f"_p_carrierArmR.rotation_euler.x = {hold_arm_pitch():.6f}" in with_item
+        assert f"_p_carrierArmR.rotation_euler.x = {-hold_arm_pitch():.6f}" in with_item
         # And the arm that is NOT carrying keeps its own ACTION's value -- a
         # character standing with a rifle still has its free arm on the stand pose,
         # not pinned to the grip angle.
         from app.services.scene3d import character_pose
 
         stand = character_pose.segment_pose_at("stand", 0.0, 0.925)
-        assert f"_p_carrierArmL.rotation_euler.x = {stand['arm_l']:.6f}" in with_item
+        assert f"_p_carrierArmL.rotation_euler.x = {-stand['arm_l']:.6f}" in with_item
         assert stand["arm_l"] != pytest.approx(hold_arm_pitch())
 
     def test_each_shot_gets_a_timeline_marker_bound_to_its_camera(self) -> None:
@@ -260,3 +257,142 @@ class TestFullAnimationReachesBlender:
                 # Every shot contributes its own five instants in both passes;
                 # only ``rendered_frames`` differs between them.
                 assert len(shot["keyframe_frames"]) == 5
+
+
+class _PoseObject:
+    """Capture writes and default-BEZIER keys, not Blender curve evaluation."""
+
+    def __init__(self, layered=False):
+        self.rotation_euler = SimpleNamespace(x=0.0)
+        self.location = (0.0, 0.0, 0.0)
+        self.parent = None
+        self.curves = []
+        self.slot_reads = []
+        self.foreign_key = SimpleNamespace(co=(9, 7.0), interpolation="BEZIER")
+        if layered:
+            slot = object()
+            foreign_curve = SimpleNamespace(
+                data_path="rotation_euler", array_index=0,
+                keyframe_points=[self.foreign_key],
+            )
+
+            def channelbag(requested_slot):
+                self.slot_reads.append(requested_slot)
+                return SimpleNamespace(fcurves=(self.curves if requested_slot is slot
+                                               else [foreign_curve]))
+
+            strips = [SimpleNamespace(channelbag=lambda requested_slot: None),
+                      SimpleNamespace(channelbag=channelbag)]
+            self.animation_data = SimpleNamespace(
+                action=SimpleNamespace(layers=[SimpleNamespace(strips=strips)]),
+                action_slot=slot,
+            )
+        else:
+            self.animation_data = SimpleNamespace(action=SimpleNamespace(fcurves=self.curves))
+        self.writes = {}
+
+    def keyframe_insert(self, *, data_path, frame, index=-1):
+        indices = range(3) if index == -1 else (index,)
+        for axis in indices:
+            value = self.location[axis] if data_path == "location" else self.rotation_euler.x
+            self.writes[data_path, axis, frame] = value
+            curves = self.curves
+            curve = next((c for c in curves
+                          if c.data_path == data_path and c.array_index == axis), None)
+            if curve is None:
+                curve = SimpleNamespace(data_path=data_path, array_index=axis, keyframe_points=[])
+                curves.append(curve)
+            curve.keyframe_points.append(SimpleNamespace(co=(frame, value), interpolation="BEZIER"))
+
+
+@pytest.mark.integration
+class TestSampledPoseBoundaries:
+    @pytest.mark.parametrize("layered", [False, True])
+    @pytest.mark.parametrize("actions", [
+        ["walk", "stand", "sit", "stand", "sit"],
+        ["gesture", "stand", "talk", "stand", "gesture"],
+    ])
+    def test_every_frame_writes_the_full_pose_without_touching_authored_keys(
+        self, actions, layered,
+    ):
+        """Execute generated code with fake bpy; this is NOT a real Blender test.
+
+        Locks zeros, repeat entries, pre-boundary holds and scoped LINEAR writes.
+        The fake does not prove Blender evaluation, rendering or version compatibility.
+        """
+        from app.schemas.scene_script import SceneCharacter
+        from app.services.scene3d import character_pose
+        from app.services.scene3d.blender_converter import (
+            _character_pose_code,
+            _LIMB_POSE_FIELDS,
+        )
+
+        frames = [0, 4, 8, 12, 16]
+        positions = [[frame * 0.07, 0, 0] for frame in frames]
+        char = SceneCharacter.model_validate({
+            "id": "actor", "type": "lowpoly_human",
+            "appearance": {"color": "#8B4513", "height": 1.85, "scale": 1.0},
+            "keyframes": [
+                {"frame": frame, "position": position, "rotation_y": 0, "action": action}
+                for frame, position, action in zip(frames, positions, actions)
+            ],
+        })
+        joints = [limb for limb, _ in _LIMB_POSE_FIELDS] + ["Head"]
+        objects = {name: _PoseObject(layered=layered) for name in
+                   ["actor", "unrelated"] + [f"actor_{joint}_pivot" for joint in joints]}
+        # Pre-existing authored wrapper and unrelated object keys must stay BEZIER.
+        for name in ("actor", "unrelated"):
+            objects[name].keyframe_insert(data_path="location", frame=9)
+            objects[name].keyframe_insert(data_path="rotation_euler", index=0, frame=9)
+        # Even on a driven pivot, unrelated channels/out-of-range keys are untouched.
+        pivot = objects["actor_Head_pivot"]
+        pivot.keyframe_insert(data_path="location", frame=9)
+        pivot.keyframe_insert(data_path="rotation_euler", index=1, frame=9)
+        pivot.keyframe_insert(data_path="rotation_euler", index=0, frame=0)
+        pivot.keyframe_insert(data_path="rotation_euler", index=0, frame=22)
+        context = SimpleNamespace(object=None)
+
+        def empty_add(**kwargs):
+            context.object = _PoseObject(layered=layered)
+
+        bpy = SimpleNamespace(
+            data=SimpleNamespace(objects=objects), context=context,
+            ops=SimpleNamespace(object=SimpleNamespace(empty_add=empty_add)),
+        )
+        namespace = {"bpy": bpy}
+        code = "\n".join(_character_pose_code(char, SimpleNamespace(props=[]), total_frames=20))
+        exec(compile(code, "<generated-pose>", "exec"), namespace)
+        bob = namespace["bob_actor"]
+        fields = list(_LIMB_POSE_FIELDS) + [("Head", "head")]
+        for frame in range(21):
+            expected = character_pose.pose_at_frame(actions, positions, frames, frame, 0.925)
+            for joint, field in fields:
+                obj = objects[f"actor_{joint}_pivot"]
+                assert obj.writes["rotation_euler", 0, frame + 1] == pytest.approx(
+                    expected.get(field, 0.0) * (1 if field.startswith("knee_") else -1), abs=1e-6
+                ), f"{joint} at frame {frame} (boundary or repeat entry)"
+            assert bob.writes["location", 2, frame + 1] == pytest.approx(
+                expected.get("bob", 0.0) * 1.85, abs=1e-6
+            )
+            assert bob.writes["location", 0, frame + 1] == 0.0
+            assert bob.writes["location", 1, frame + 1] == 0.0
+
+        for obj in [bob] + [objects[f"actor_{joint}_pivot"] for joint in joints]:
+            for curve in obj.curves:
+                driven = ((obj is bob and curve.data_path == "location") or
+                          (obj is not bob and curve.data_path == "rotation_euler"
+                           and curve.array_index == 0))
+                for key in curve.keyframe_points:
+                    expected_mode = "LINEAR" if driven and 1 <= key.co[0] <= 21 else "BEZIER"
+                    assert key.interpolation == expected_mode
+        for name in ("actor", "unrelated"):
+            assert all(key.interpolation == "BEZIER"
+                       for curve in objects[name].curves
+                       for key in curve.keyframe_points)
+
+        if layered:
+            for obj in [bob] + [objects[f"actor_{joint}_pivot"] for joint in joints]:
+                assert obj.slot_reads == [obj.animation_data.action_slot]
+                assert obj.foreign_key.interpolation == "BEZIER"
+            assert objects["actor"].slot_reads == []
+            assert objects["unrelated"].slot_reads == []

@@ -106,6 +106,8 @@ describe("SceneScript3DEditor dual view modes", () => {
       document.querySelector(".scene-script-3d-editor")?.getAttribute("data-view-mode"),
     ).toBe("schedule");
     expect(document.querySelector(".scene-script-3d-editor__inspector")).toBeTruthy();
+    expect(previewProps.editMode).toBe(true);
+    expect(previewProps.showGizmos).not.toBe(false);
     expect(screen.queryByTestId("film-instruction-bar")).toBeNull();
   });
 

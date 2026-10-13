@@ -137,6 +137,32 @@ describe("walk", () => {
   });
 });
 
+describe("stance foot reach is linear, not the angle", () => {
+  for (const legLengthMetres of [0.55, 0.825, 0.925, 1.3875]) {
+    for (const side of ["L", "R"] as const) {
+      it(`plants ${side} within 0.5% drift for leg=${legLengthMetres}`, () => {
+        // Replacing asin(linear * sin(A)) with A * linear must fail this gate.
+        const stride = walkStrideMetres(legLengthMetres);
+        const delta = 0.5 / 100;
+        const offset = side === "L" ? 0 : 0.5;
+        const feet: number[] = [];
+        for (let index = 0; index <= 100; index += 1) {
+          const phase = offset + index * delta;
+          const pose = segmentPoseAt("walk", phase, { legLengthMetres });
+          const angle = pose[side === "L" ? "legL" : "legR"] ?? 0;
+          expect(pose[side === "L" ? "kneeL" : "kneeR"]).toBeCloseTo(0, 12);
+          feet.push(stride * phase - legLengthMetres * Math.sin(angle));
+          const height = legLengthMetres * (1 - Math.cos(angle))
+            + 2 * legLengthMetres * (pose.bob ?? 0);
+          expect(height).toBeCloseTo(0, 12);
+        }
+        const worst = Math.max(...feet.slice(1).map((value, index) => Math.abs(value - feet[index])));
+        expect(worst / (stride * delta)).toBeLessThan(0.005);
+      });
+    }
+  }
+});
+
 describe("the held poses are distinguishable", () => {
   it("gesture raises an arm; stand does not", () => {
     const gesture = segmentPoseAt("gesture", 0.5);

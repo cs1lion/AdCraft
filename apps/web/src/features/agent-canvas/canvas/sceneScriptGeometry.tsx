@@ -192,6 +192,14 @@ const crate: AssetGeometry = ({ scale, rotationY, pos }) => (
   </Mesh>
 );
 
+/** A tabletop chip, with its position at the bottom surface rather than its centre. */
+const chip: AssetGeometry = ({ scale, rotationY, pos }) => (
+  <Group position={pos} rotation={[0, rotationY, 0]}>
+    {column([0, 0.0125 * scale, 0], 0.07 * scale, 0.07 * scale,
+      0.025 * scale, colourFor("chip"), 32)}
+  </Group>
+);
+
 /**
  * Tapered solid. ``cylinderGeometry(radiusTop, radiusBottom, ...)`` is the
  * three.js spelling of Blender's ``primitive_cone_add(radius1, radius2)`` --
@@ -452,6 +460,7 @@ export const SCENE_SCRIPT_GEOMETRY: Record<SceneScriptKind, AssetGeometry> = {
   lantern,
   box: boxProp,
   crate,
+  chip,
   vase,
   weapon,
   scroll,

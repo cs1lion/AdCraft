@@ -148,6 +148,10 @@ def encode_png_sequence(
     # The trailing duplicate of the last file is deliberately absent: with
     # per-entry ``duration`` lines it makes the demuxer collapse the whole
     # sequence to a handful of frames.
+    # PNG inputs otherwise inherit the image demuxer's default 25fps timebase.
+    # Durations alone do not fix that: at 30fps a 60-PNG sequence became 61
+    # encoded frames and repeated/dropped intermediate images. Set each file's
+    # input rate before concat timestamps are quantized, not by trimming output.
     frame_numbers = [_numeric_frame_sort_key(frame) for frame in frame_files]
     durations = _frame_durations(frame_numbers, fps)
     repeat_counts = _frame_repeat_counts(durations, fps)
@@ -161,6 +165,7 @@ def encode_png_sequence(
                 safe_path = str(frame).replace("\\", "/")
                 for _ in range(count):
                     mf.write(f"file '{safe_path}'\n")
+                    mf.write(f"option framerate {fps}\n")
                     mf.write(f"duration {single_duration:.6f}\n")
 
         cmd = [

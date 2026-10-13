@@ -28,17 +28,13 @@ test.beforeEach(async ({ page }) => {
   await expect.poll(async () => (await snapshot(page)).characterMeshes).toBeGreaterThan(0);
 });
 
-test("the character is the converter's seven-segment rig, not a box and a head", async ({ page }) => {
-  // Blender's lowpoly_human draws torso + neck + head + LegL/LegR + ArmL/ArmR
-  // (blender_converter.py _build_lowpoly_human). The preview adds the mouth and
-  // the ID label cone on top: 9 meshes. The rig this replaces drew 3 — one torso
-  // box, one head sphere, the mouth.
+test("the character has articulated thighs and shins, not a box and a head", async ({ page }) => {
+  // Nine body segments: torso + neck + head + two thighs + two shins +
+  // two arms. Mouth and ID label cone add two more meshes (11 total).
   const { characterMeshes, characterParts } = await snapshot(page);
-  expect(characterMeshes).toBe(9);
-  // 6 boxes where the old rig had 2 (torso + mouth): the torso plus four limbs.
-  // A character whose legs are boxes with a gap between them reads as legs;
-  // a character whose whole body is one box does not read as a person.
-  expect(characterParts.box).toBe(6);
+  expect(characterMeshes).toBe(11);
+  // Torso, four leg segments, two arms, and the mouth are boxes.
+  expect(characterParts.box).toBe(8);
   expect(characterParts.sphere).toBe(1); // head
   expect(characterParts.cylinder).toBe(1); // neck: a part the old rig had no place for
   expect(characterParts.cone).toBe(1); // ID label

@@ -45,6 +45,7 @@ import { SceneEditReportPanel } from "./SceneEditReportPanel.tsx";
 import { cameraLabel, shotForFrame, type SceneEditReport } from "./shotLabels.ts";
 import { LayerOwnershipNote } from "./LayerOwnershipNote.tsx";
 import { DirectorCommandBar } from "./DirectorCommandBar.tsx";
+import { SceneSourceEditor } from "./SceneSourceEditor.tsx";
 import { StoryboardPanel } from "./StoryboardPanel.tsx";
 import type { PublishedPrevisClipEntryV2 } from "../../../types-v2.ts";
 
@@ -635,6 +636,12 @@ function SceneScript3DEditorContent({
   const [gestureMode, setGestureMode] = useState(false);
   const [gestureError, setGestureError] = useState<string | null>(null);
   const [gestureSeconds, setGestureSeconds] = useState("2");
+  // 视口交互模式：默认"视角"——物体锁定（拉视角不会误移位置），相机默认跟随
+  // 镜头关键帧，用户在视口拖动即自由环视；"编辑拖动"是显式开关（选中/拖物体）。
+  const [viewportEdit, setViewportEdit] = useState(false);
+  // 视角态下用户拖动过视口后相机归轨道所有；拖动时间轴（playhead 变化）即
+  // 交还镜头跟随——预演的诚实态在每一次 seek 后自动恢复。
+  const [cameraOrbit, setCameraOrbit] = useState(false);
   // 双模式默认回编辑态：审片态是"看看现在是什么"，不是要记住的位置，所以不做
   // 持久化——刷新后总是落在场景调度。
   const [viewMode, setViewMode] = useState<SceneScriptViewMode>("schedule");
@@ -663,6 +670,12 @@ function SceneScript3DEditorContent({
     [onFilmInstruction],
   );
   const playback = useSceneScriptPlayback();
+
+  // 视角态：拖动时间轴（playhead 变化）即交还镜头跟随——预演的诚实态在每次
+  // seek 后自动恢复；播放中逐帧触发同值 setState，React 会跳过，无开销。
+  useEffect(() => {
+    if (!viewportEdit) setCameraOrbit(false);
+  }, [viewportEdit, playback.currentFrame]);
 
   // The shot under the playhead, its camera, its label, and its published clip
   // — everything the floating 机位 card needs. Derived here rather than inside
@@ -918,6 +931,7 @@ function SceneScript3DEditorContent({
           <p>编辑先在草稿中预览；保存场景才会更新节点。预览渲染使用当前草稿，不会代替保存。</p>
         </div>
         <div className="scene-script-3d-editor__draft-actions">
+          <SceneSourceEditor sceneScript={sceneScript} onChange={onChange} disabled={saving} />
           <button type="button" onClick={onRevert} disabled={!dirty || saving} title="丢弃全部未保存修改，恢复节点中已保存的场景">
             撤销修改
           </button>
@@ -1101,6 +1115,13 @@ function SceneScript3DEditorContent({
         publishedClips={publishedPrevisClips}
         onPublished={onPublishedPrevisClip}
       />
+      {/* 生产记录与诊断：唇形 / 意图 / 阻断 / 参考绑定 / 服装漂移——逐条日志行
+          绑定多的项目会有几十条，默认折叠成一行，需要排查时展开。 */}
+      <details className="scene-script-3d-editor__prodnote">
+        <summary>
+          生产记录与诊断（唇形 / 意图 / 阻断发现 / 参考绑定
+          {referenceBindings?.length ? ` · ${referenceBindings.length} 条参考` : ""} / 服装漂移）
+        </summary>
       {autoLipSync?.applied && (
         <p
           className={`scene-script-3d-editor__drift${
@@ -1181,6 +1202,7 @@ function SceneScript3DEditorContent({
             <span className="scene-script-3d-editor__drift-remedy">{finding.remedy}</span>
           </p>
         ))}
+      </details>
       {/* 场景一致性（V0.2 §12 的核心问题）: the pre-render gate's report.
           Errors first — an unbound character or a dead camera is the failure
           the Dramagic lock exists to catch, and it must not sit below the
@@ -1221,25 +1243,45 @@ function SceneScript3DEditorContent({
             onSeekFrame={(frame) => playback.seekToFrame(frame)}
           />
         ) : (
-          <SceneScript3DPreview
-            sceneScript={sceneScript}
-            height={previewHeight}
-            dialogueLines={dialogueLines}
-            speechAudioUrl={speechAudioUrl}
-            editMode
-            selectedObject={selectedObject}
-            onSelect={handleSelect}
-            onDragCommit={handleDragCommit}
-            placementMode={placementMode}
-            onPlacementCommit={handlePlacementCommit}
-            onPlacementCancel={() => setPlacementMode(false)}
-            gestureMode={gestureMode}
-            onGestureCommit={handleGestureCommit}
-            onGestureCancel={() => {
-              setGestureMode(false);
-              setGestureError(null);
-            }}
-          />
+          <div className="scene-script-3d-editor__viewport-wrap">
+            <div className="scene-script-3d-editor__viewport-bar">
+              <button
+                type="button"
+                className={viewportEdit ? "is-edit" : "is-view"}
+                aria-pressed={viewportEdit}
+                title={viewportEdit
+                  ? "编辑拖动：点选/拖动物体，拖空白处飞行视角"
+                  : "视角模式：拖动旋转视角、滚轮缩放，物体不会被误移"}
+                onClick={() => setViewportEdit((current) => !current)}
+              >
+                {viewportEdit ? "✎ 编辑拖动" : "👁 视角"}
+              </button>
+              {!viewportEdit && (
+                <span className="scene-script-3d-editor__viewport-hint">物体已锁定 · 拖时间轴恢复镜头跟随</span>
+              )}
+            </div>
+            <SceneScript3DPreview
+              sceneScript={sceneScript}
+              height={previewHeight}
+              dialogueLines={dialogueLines}
+              speechAudioUrl={speechAudioUrl}
+              editMode={viewportEdit}
+              cameraMode={viewportEdit || cameraOrbit ? "orbit" : "shot"}
+              onViewportGrab={() => setCameraOrbit(true)}
+              selectedObject={selectedObject}
+              onSelect={handleSelect}
+              onDragCommit={handleDragCommit}
+              placementMode={placementMode}
+              onPlacementCommit={handlePlacementCommit}
+              onPlacementCancel={() => setPlacementMode(false)}
+              gestureMode={gestureMode}
+              onGestureCommit={handleGestureCommit}
+              onGestureCancel={() => {
+                setGestureMode(false);
+                setGestureError(null);
+              }}
+            />
+          </div>
         )}
         {/* The 机位 card. It floats over the viewport beside the shot it
             belongs to, because that adjacency is the whole point: a 3D scene

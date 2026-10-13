@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect, useCallback, lazy, Suspense } from "react";
+import { createPortal } from "react-dom";
 import type { SceneScriptRoot } from "../../../types/scene-script";
 import {
   SceneScriptPlaybackProvider,
@@ -14,7 +15,6 @@ import {
 } from "./SceneScriptPlaybackContext";
 import { getTotalFrames, getActiveCameraId } from "../model/sceneScriptUtils";
 import { ReferenceVideoPanel } from "./ReferenceVideoPanel";
-import { useOptionalPlayheadSync } from "../PlayheadSyncContext";
 
 // three.js is a ~1 MB dependency: keep it in an async chunk so the canvas
 // bundle stays within the perf budget (vendor-three in vite.config.ts +
@@ -63,15 +63,22 @@ export function SceneScriptPanel({
   workflowId = null,
 }: SceneScriptPanelProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("3d");
-
-  const playheadSync = useOptionalPlayheadSync();
-  const externalPlayhead =
-    playheadSync && playheadSync.playhead.origin === "timeline"
-      ? {
-          time: playheadSync.playhead.time,
-          playing: playheadSync.playhead.playing,
-        }
-      : null;
+  const [cameraExpanded, setCameraExpanded] = useState(false);
+  const [expandedPreviewHeight, setExpandedPreviewHeight] = useState(540);
+  useEffect(() => {
+    if (!cameraExpanded) return;
+    const resize = () => setExpandedPreviewHeight(Math.max(160, Math.min(720, window.innerHeight - 140)));
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCameraExpanded(false);
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [cameraExpanded]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "3d", label: "3D Preview" },
@@ -85,9 +92,9 @@ export function SceneScriptPanel({
   return (
     <SceneScriptPlaybackProvider
       sceneScript={sceneScript}
-      externalPlayhead={externalPlayhead}
-      onTimeChange={(time) => playheadSync?.setFromPreview({ time })}
-      onPlayingChange={(playing) => playheadSync?.setFromPreview({ playing })}
+      // A scene node has no published timeline-clip association here. Its
+      // own provider owns both the card and expanded camera; broadcasting to
+      // a zero-duration timeline stopped playback and changed other versions.
     >
       <div
         style={{
@@ -111,8 +118,8 @@ export function SceneScriptPanel({
         }}
       >
         {tabs.map((tab) => (
+          <span key={tab.key} style={{ display: "contents" }}>
           <button
-            key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             style={{
               padding: "3px 10px",
@@ -127,6 +134,18 @@ export function SceneScriptPanel({
           >
             {tab.label}
           </button>
+          {tab.key === "3d" && (
+            <button
+              type="button"
+              aria-label="放大相机预览"
+              onClick={() => setCameraExpanded(true)}
+              style={{ flexShrink: 0, border: "1px solid #666", borderRadius: 3,
+                background: "#252541", color: "#fff", fontSize: 11, cursor: "pointer" }}
+            >
+              放大相机
+            </button>
+          )}
+          </span>
         ))}
       </div>
 
@@ -150,7 +169,7 @@ export function SceneScriptPanel({
               </div>
             }
           >
-            <SceneScript3DPreview sceneScript={sceneScript} height={height - 32} />
+            <SceneScript3DPreview sceneScript={sceneScript} height={height - 32} showGizmos={false} />
           </Suspense>
         )}
 
@@ -192,6 +211,28 @@ export function SceneScriptPanel({
         )}
       </div>
       </div>
+      {cameraExpanded && createPortal(
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="相机预览"
+          className="nodrag nopan nowheel"
+          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.8)",
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+        >
+          <div style={{ width: "min(1400px, 100%)", background: "#1a1a2e", border: "1px solid #555", borderRadius: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", color: "#fff" }}>
+              <span>相机输出 · 16:9 · {sceneScript.scene.name}</span>
+              <button type="button" autoFocus aria-label="关闭相机预览" onClick={() => setCameraExpanded(false)}>
+                关闭
+              </button>
+            </div>
+            <Suspense fallback={<p style={{ color: "#fff", padding: 16 }}>Loading 3D preview…</p>}>
+              <SceneScript3DPreview sceneScript={sceneScript} height={expandedPreviewHeight} showGizmos={false} />
+            </Suspense>
+          </div>
+        </div>, document.body,
+      )}
     </SceneScriptPlaybackProvider>
   );
 }

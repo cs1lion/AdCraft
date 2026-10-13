@@ -24,6 +24,7 @@ compares the two renderers.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,27 @@ def test_travelled_metres_is_monotonic_and_clamped() -> None:
     assert character_pose.travelled_metres(positions, frames, 999) == pytest.approx(5.0)
     halfway = character_pose.travelled_metres(positions, frames, 15)
     assert 0.0 < halfway < 2.0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("leg_length", [0.55, 0.825, 0.925, 1.3875])
+@pytest.mark.parametrize("side,offset", [("l", 0.0), ("r", 0.5)])
+def test_stance_has_less_than_half_percent_horizontal_drift(leg_length, side, offset):
+    """Locks linear FOOT REACH; replacing asin with linear angle must fail."""
+    stride = character_pose.walk_stride_metres(leg_length)
+    delta = 0.5 / 100
+    foot_positions = []
+    for index in range(101):
+        phase = offset + index * delta
+        pose = character_pose.segment_pose_at("walk", phase, leg_length)
+        assert pose[f"knee_{side}"] == pytest.approx(0.0, abs=1e-12)
+        root_forward = stride * phase
+        foot_positions.append(root_forward - leg_length * math.sin(pose[f"leg_{side}"]))
+        # The same actual stance angle drives the bob: the planted foot stays at z=0.
+        foot_height = leg_length * (1 - math.cos(pose[f"leg_{side}"])) + 2 * leg_length * pose["bob"]
+        assert foot_height == pytest.approx(0.0, abs=1e-12)
+    worst = max(abs(b - a) for a, b in zip(foot_positions, foot_positions[1:]))
+    assert worst / (stride * delta) < 0.005
 
 
 class TestTheKnee:

@@ -138,7 +138,7 @@ def walk_leg_amplitude(leg_length_metres: float = DEFAULT_LEG_LENGTH_METRES) -> 
     return math.asin(min(1.0, walk_stride_metres(leg_length_metres) / (4.0 * length)))
 
 
-def walk_leg_shape(q: float) -> float:
+def walk_leg_shape(q: float, amplitude: float = 0.0) -> float:
     """Leg angle as a fraction of the amplitude, over one cycle.
 
     The sign is the whole of the no-slide property. A planted foot means
@@ -146,13 +146,18 @@ def walk_leg_shape(q: float) -> float:
     advances: the leg starts at ``-A`` with the foot AHEAD of the hip at heel
     strike, and ends at ``+A`` with the foot behind it at toe off.
 
-    Stance is linear and swing a raised cosine, and the split matters as much as
-    the sign: a sine is steepest exactly where the foot meets the ground, so it
-    slides hardest at the contact it is supposed to be planting.
+    Stance is linear in horizontal REACH, not angle: a linear angle makes
+    ``sin(theta)`` nonlinear and the planted foot slides. Inverting that sine
+    gives ``theta = asin(linear * sin(amplitude))``. Omitting amplitude retains
+    the original normalized shape (the zero-amplitude limit) for existing callers.
+    Swing remains the original raised cosine.
     """
     t = q % 1.0
     if t < STANCE_FRACTION:
-        return -1.0 + (2.0 * t) / STANCE_FRACTION
+        linear = -1.0 + (2.0 * t) / STANCE_FRACTION
+        if amplitude == 0.0:
+            return linear
+        return math.asin(linear * math.sin(amplitude)) / amplitude
     swing = (t - STANCE_FRACTION) / (1.0 - STANCE_FRACTION)
     return 1.0 - 2.0 * (0.5 - 0.5 * math.cos(math.pi * swing))
 
@@ -202,7 +207,8 @@ def walk_foot_lift_metres(
     knee = walk_knee_shape(cycle_phase) * WALK_KNEE_BEND_RADIANS
     if knee == 0.0:
         return 0.0
-    thigh = walk_leg_amplitude(length) * walk_leg_shape(cycle_phase)
+    amplitude = walk_leg_amplitude(length)
+    thigh = amplitude * walk_leg_shape(cycle_phase, amplitude)
     return shin * (math.cos(thigh) - math.cos(thigh - knee))
 
 
@@ -249,8 +255,8 @@ def _pose_for_action(
 
     if action == "walk":
         amplitude = walk_leg_amplitude(leg_length_metres)
-        left = walk_leg_shape(phase)
-        right = walk_leg_shape(phase + STANCE_FRACTION)
+        left = walk_leg_shape(phase, amplitude)
+        right = walk_leg_shape(phase + STANCE_FRACTION, amplitude)
         # Whichever leg is on the ground drives the hip. A rigid leg's reach is
         # shortest when it points straight down, so holding the hip still would lift
         # the planted foot by L*(1-cos A). Letting the hip follow puts the foot back
@@ -372,6 +378,7 @@ def pose_at_frame(
     frame: int,
     leg_length_metres: float,
     holding: str | None = None,
+    poses: list[dict[str, float] | None] | None = None,
 ) -> dict[str, float]:
     """The pose for a character at an arbitrary frame.
 
@@ -384,9 +391,48 @@ def pose_at_frame(
         phase = 0.0
     else:
         phase = distance / walk_stride_metres(leg_length_metres)
-    return segment_pose_at(
+    base_pose = segment_pose_at(
         action_at_frame(actions, frames, frame), phase, leg_length_metres, holding
     )
+    if poses is None:
+        return base_pose
+    return {**base_pose, **authored_pose_at_frame(poses, frames, frame)}
+
+
+def authored_pose_at_frame(
+    poses: list[dict[str, float] | None], frames: list[int], frame: int
+) -> dict[str, float]:
+    """Resolve each explicit joint track independently and without play state.
+
+    A missing field does not reset another field's track. Zero is authored data;
+    only None is absent. A future first sample must not change an earlier action.
+    """
+    fields = {
+        field for pose in poses if pose is not None
+        for field, value in pose.items() if value is not None
+    }
+    resolved: dict[str, float] = {}
+    for field in fields:
+        samples = sorted(
+            ((sample_frame, pose[field])
+             for sample_frame, pose in zip(frames, poses)
+             if pose is not None and pose.get(field) is not None),
+            key=lambda sample: sample[0],
+        )
+        if not samples or frame < samples[0][0]:
+            continue
+        # Last sample at this instant wins, including duplicate frame numbers.
+        previous = samples[0]
+        for current in samples[1:]:
+            if current[0] <= frame:
+                previous = current
+                continue
+            ratio = (frame - previous[0]) / (current[0] - previous[0])
+            resolved[field] = previous[1] + (current[1] - previous[1]) * ratio
+            break
+        else:
+            resolved[field] = previous[1]
+    return resolved
 
 
 def held_sides_by_character(script) -> dict[str, str]:

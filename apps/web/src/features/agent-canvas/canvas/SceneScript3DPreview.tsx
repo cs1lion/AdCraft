@@ -94,6 +94,7 @@ import {
   useThree,
 } from "./LeanSceneCanvas";
 import {
+  authoredPoseAtFrame,
   bobOffset,
   cyclePhaseForDistance,
   segmentPoseAt,
@@ -106,6 +107,7 @@ import { shotCameraPoseAtFrame } from "./sceneDepthPass";
 import { useRef, useMemo, useCallback, useEffect, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSceneScriptPlayback } from "./SceneScriptPlaybackContext";
+import { applySceneOutputCamera, sceneCameraOutputCanvasStyle, SCENE_OUTPUT_WORLD_SCALE } from "./sceneCameraOutput";
 import { activeDialogueLineAtFrame } from "./activeDialogueLine.ts";
 import { audioTimeForFrame, shouldSeekAudio } from "./animaticAudio.ts";
 import { blockingPathLength, characterPathPoints, type BlockingPathPoint } from "./blockingPath";
@@ -264,11 +266,16 @@ function LowPolyHuman({
   // .md §3.6): after the renderer swap, the preview IS the render.
   const rig = useMemo(() => characterRig(character.appearance), [character.appearance]);
   const { height, headY, headRadius } = rig;
+  const headPivotY = rig.torsoTop + 0.03 * height;
+  const headOffsetY = headY - headPivotY;
+  const hasAuthoredPose = character.keyframes.some((keyframe) => keyframe.pose != null);
   // The head is a rig segment like any other, except that a gesture keyframe
   // tilts it: it renders inside its own group so the tilt cannot drag the
   // torso, the mouth or the label with it.
   const head = rig.segments.find((segment) => segment.part === "head")!;
-  const bodySegments = rig.segments.filter((segment) => segment.part !== "head");
+  // Shins inherit hip motion through their thighs, not through sibling groups.
+  const bodySegments = rig.segments.filter((segment) =>
+    segment.part !== "head" && segment.part !== "ShinL" && segment.part !== "ShinR");
 
   const ref = useMemo<SceneObjectRef>(() => ({ kind: "character", id: character.id }), [character.id]);
   const interpolated = useMemo(() => {
@@ -285,6 +292,36 @@ function LowPolyHuman({
   const action = characterActionAtFrame(character, frame);
   const isSpeaking = action === "talk";
   const isGesturing = action === "gesture";
+
+  // The POSE: what the limbs are doing at this frame. Before this existed the
+  // rig built the seven segments once and never rotated them again, so `walk`
+  // slid the whole body along the ground with its legs welded in place — the
+  // schema had said "walk" all along and nothing translated it.
+  //
+  // Phase comes from how far the character has TRAVELLED, not from the wall
+  // clock: a character whose keyframes hold it still keeps both feet down, and
+  // one that runs takes more steps per second. A clock would also desynchronise
+  // from the motion, and the feet would skate.
+  //
+  // The rig's own leg length comes along because the walk amplitude is derived
+  // from it: a stride is only plantable by a leg long enough to reach it, so a
+  // fixed angle makes short figures skate.
+  const pose = useMemo(() => {
+    const keyframes = character.keyframes;
+    const distance = travelledMetres(
+      keyframes.map((keyframe) => keyframe.position),
+      keyframes.map((keyframe) => keyframe.frame),
+      frame,
+    );
+    const actionPose = segmentPoseAt(action, cyclePhaseForDistance(distance, rig.legLength), {
+      legLengthMetres: rig.legLength,
+      // A character carrying something reaches for it. Derived from the scene's own
+      // `held_by`, not from an authored action, so the arms and the item cannot
+      // disagree about whether anything is being held.
+      holding: heldSide ?? undefined,
+    });
+    return { ...actionPose, ...authoredPoseAtFrame(keyframes, frame) };
+  }, [character, frame, action, rig.legLength, heldSide]);
 
   // NON-HUMAN ACTOR BRANCH.
   //
@@ -325,35 +362,6 @@ function LowPolyHuman({
   }
   const mouthOpen = isSpeaking ? headRadius * 0.5 : headRadius * 0.08;
 
-  // The POSE: what the limbs are doing at this frame. Before this existed the
-  // rig built the seven segments once and never rotated them again, so `walk`
-  // slid the whole body along the ground with its legs welded in place — the
-  // schema had said "walk" all along and nothing translated it.
-  //
-  // Phase comes from how far the character has TRAVELLED, not from the wall
-  // clock: a character whose keyframes hold it still keeps both feet down, and
-  // one that runs takes more steps per second. A clock would also desynchronise
-  // from the motion, and the feet would skate.
-  //
-  // The rig's own leg length comes along because the walk amplitude is derived
-  // from it: a stride is only plantable by a leg long enough to reach it, so a
-  // fixed angle makes short figures skate.
-  const pose = useMemo(() => {
-    const keyframes = character.keyframes;
-    const distance = travelledMetres(
-      keyframes.map((keyframe) => keyframe.position),
-      keyframes.map((keyframe) => keyframe.frame),
-      frame,
-    );
-    return segmentPoseAt(action, cyclePhaseForDistance(distance, rig.legLength), {
-      legLengthMetres: rig.legLength,
-      // A character carrying something reaches for it. Derived from the scene's own
-      // `held_by`, not from an authored action, so the arms and the item cannot
-      // disagree about whether anything is being held.
-      holding: heldSide ?? undefined,
-    });
-  }, [character, frame, action, rig.legLength, heldSide]);
-
   // The bob is a TRANSLATION of the whole figure, and it is deliberately not
   // multiplied by a limb length: that is how a walk ends up bouncing someone off
   // the ground.
@@ -380,22 +388,27 @@ function LowPolyHuman({
           bones — seven boxes is what the converter emits — so pivoting about
           the top end is the whole of the articulation. */}
       {bodySegments.map((segment) => {
-                const pitchField = POSE_FIELD[segment.part];
+        const pitchField = POSE_FIELD[segment.part];
         const pitch = pitchField ? (pose[pitchField] ?? 0) : 0;
-        // The pivot is the segment's TOP end, so the extent below it is what
-        // matters: a box's height, a cylinder's depth, and a sphere has none
-        // (the head carries no limb rotation, and its own pitch is on its group).
+        const sideSwing = segment.part === "ArmL" ? (pose.armLSide ?? 0)
+          : segment.part === "ArmR" ? (pose.armRSide ?? 0) : 0;
         const reach =
           segment.geometry.kind === "box" ? segment.geometry.size[1] / 2
             : segment.geometry.kind === "cylinder" ? segment.geometry.depth / 2
               : 0;
+        const shinPart = segment.part === "LegL" ? "ShinL"
+          : segment.part === "LegR" ? "ShinR" : undefined;
+        const shin = shinPart ? rig.segments.find((part) => part.part === shinPart) : undefined;
+        const shinReach = shin?.geometry.kind === "box" ? shin.geometry.size[1] / 2 : 0;
+        const knee = segment.part === "LegL" ? (pose.kneeL ?? 0) : (pose.kneeR ?? 0);
         return (
           <Group
             key={segment.part}
+            name={`character-${character.id}-${segment.part}-pivot`}
             position={[segment.position[0], segment.position[1] + reach, segment.position[2]]}
-            rotation={[pitch, 0, 0]}
+            rotation={[pitch, 0, sideSwing]}
           >
-            <Mesh position={[0, -reach, 0]} castShadow>
+            <Mesh name={`character-${character.id}-${segment.part}`} position={[0, -reach, 0]} castShadow>
               <SegmentGeometry segment={segment} />
               <MeshStandardMaterial
                 color={segment.paint === "skin" ? CHARACTER_SKIN_COLOR : color}
@@ -403,15 +416,33 @@ function LowPolyHuman({
                 emissiveIntensity={handlers.selected ? 0.35 : 0}
               />
             </Mesh>
+            {shin && (
+              <Group
+                name={`character-${character.id}-${shin.part}-pivot`}
+                position={[0, -2 * reach, 0]}
+                // Flexion is relative to the thigh, in the opposite pitch direction.
+                // This makes world shin pitch thigh - knee, as the clearance formula requires.
+                rotation={[-knee, 0, 0]}
+              >
+                <Mesh name={`character-${character.id}-${shin.part}`} position={[0, -shinReach, 0]} castShadow>
+                  <SegmentGeometry segment={shin} />
+                  <MeshStandardMaterial
+                    color={color}
+                    emissive={handlers.selected ? "#FFD166" : "#000000"}
+                    emissiveIntensity={handlers.selected ? 0.35 : 0}
+                  />
+                </Mesh>
+              </Group>
+            )}
           </Group>
         );
       })}
-      {/* Head: a gesture keyframe tilts the whole head group forward ~15 deg.
-          The segment's own position is the head centre, which this group
-          carries, so the mesh sits at its group's origin. */}
-      <Group rotation={[headTilt, 0, 0]} position={[0, headY, 0]}
+      {/* The head pivots at the neck, matching Blender. Offsets keep its resting
+          silhouette intact; the face and mouth follow both pitch and yaw. */}
+      <Group name={`character-${character.id}-Head-pivot`}
+        rotation={[headTilt, -(pose.headYaw ?? 0), 0]} position={[0, headPivotY, 0]}
         data-gesturing={isGesturing ? "true" : "false"}>
-        <Mesh castShadow>
+        <Mesh position={[0, headOffsetY, 0]} castShadow>
           <SegmentGeometry segment={head} />
           <MeshStandardMaterial
             color={CHARACTER_SKIN_COLOR}
@@ -419,19 +450,22 @@ function LowPolyHuman({
             emissiveIntensity={handlers.selected ? 0.35 : 0}
           />
         </Mesh>
+        {hasAuthoredPose && (
+          <Mesh name={`character-${character.id}-Nose`}
+            position={[0, headOffsetY + headRadius * 0.08, headRadius * 0.9]} castShadow>
+            <SphereGeometry args={[headRadius * 0.16, 8, 8]} />
+            <MeshStandardMaterial color={CHARACTER_SKIN_COLOR} />
+          </Mesh>
+        )}
+        <Mesh
+          position={[0, headOffsetY - headRadius * 0.18, headRadius * 0.82]}
+          data-testid={`character-mouth-${character.id}`}
+          data-speaking={isSpeaking ? "true" : "false"}
+        >
+          <BoxGeometry args={[headRadius * 0.5, mouthOpen, headRadius * 0.12]} />
+          <MeshStandardMaterial color={isSpeaking ? "#3B2F2F" : "#C9A88F"} />
+        </Mesh>
       </Group>
-      {/* Mouth: opens on the talk keyframes the dialogue pipeline wrote.
-          Deterministic from the frame (no animation loop) so the preview,
-          the inspector and the Blender render agree. Anchored to the head
-          exactly as before: just below the head centre, forward of the face. */}
-      <Mesh
-        position={[0, headY - headRadius * 0.18, headRadius * 0.82]}
-        data-testid={`character-mouth-${character.id}`}
-        data-speaking={isSpeaking ? "true" : "false"}
-      >
-        <BoxGeometry args={[headRadius * 0.5, mouthOpen, headRadius * 0.12]} />
-        <MeshStandardMaterial color={isSpeaking ? "#3B2F2F" : "#C9A88F"} />
-      </Mesh>
       {/* Speech overlay: the current line floats above its speaker.
           DOM (not troika text): the viewport already loads three.js and drei,
           and a canvas-texture sprite would cost a texture upload per line. */}
@@ -921,8 +955,9 @@ function TrajectoryLine({
  *
  * Three things this has to get right, each of which was wrong before:
  *   - AXES. SceneScript is Z-up ([right, forward, up]); three.js is Y-up
- *     ([right, up, back]). The pose goes through `sceneToThreePosition` like
- *     every other position in this file. Passing the raw keyframe put shot 1 of
+ *     ([right, up, back]). Camera output uses the proper (x,z,-y) rotation;
+ *     the world group compensates the legacy editing swap's reflection.
+ *     Passing the raw keyframe put shot 1 of
  *     the jinghai scene 18 m UNDERGROUND instead of 6 m up — a render that
  *     produced an empty green screen, identical to having no fix at all.
  *   - AIM. The pose carries a `look_at`, and the canvas camera is only ever
@@ -952,11 +987,7 @@ function ShotCameraRig({
   useFrame(() => {
     const current = poseRef.current;
     if (!enabled || !current) return;
-    const position = sceneToThreePosition(current.position);
-    const lookAt = sceneToThreePosition(current.lookAt);
-    camera.position.set(position[0], position[1], position[2]);
-    camera.lookAt(target.set(lookAt[0], lookAt[1], lookAt[2]));
-    camera.updateMatrixWorld();
+    applySceneOutputCamera(camera, current, target);
   });
 
   return null;
@@ -1293,6 +1324,14 @@ export interface SceneScript3DPreviewProps {
   /** Interactive editing mode (3D director workbench). Read-only when false. */
   editMode?: boolean;
   /**
+   * 相机主权（单写者仲裁的另一半）："shot" 由镜头关键帧驱动（预演预览的
+   * 诚实态），"orbit" 由轨道控制接管（视角检查/编辑飞行）。编辑态强制
+   * orbit；视角态默认 shot，用户在视口按下拖动时经 onViewportGrab 切 orbit。
+   */
+  cameraMode?: "shot" | "orbit";
+  /** 视角态下用户在视口按下拖动的瞬间（轨道开始接管相机）。 */
+  onViewportGrab?: () => void;
+  /**
    * Keep the drawing buffer readable after compositing, so a caller can read
    * pixels OUTSIDE the render callback. Required by the headless render path;
    * off by default because it costs a buffer copy per frame.
@@ -1414,6 +1453,8 @@ export function SceneScript3DPreview({
   sceneScript,
   height = 400,
   editMode = false,
+  cameraMode = "shot",
+  onViewportGrab,
   selectedObject = null,
   dialogueLines = [],
   onSelect,
@@ -1528,7 +1569,7 @@ export function SceneScript3DPreview({
 
   return (
     <div
-      style={{ width: "100%", height, position: "relative", background: "#1a1a2e" }}
+      style={{ width: "100%", height, position: "relative", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center" }}
       data-testid="scene-script-3d-preview"
     >
       <Canvas
@@ -1539,7 +1580,7 @@ export function SceneScript3DPreview({
         // two attempts to do it through this prop are what left a 720-frame
         // render looking at nothing.
         camera={{ position: [8, -12, 6], fov: 50 }}
-        style={{ width: "100%", height: "100%" }}
+        style={sceneCameraOutputCanvasStyle(height, editMode)}
         onPointerMissed={() => {
           if (!editMode) return;
           // A committed drop ends over empty space: that is a drop, not a
@@ -1549,6 +1590,11 @@ export function SceneScript3DPreview({
         }}
       >
         <Color attach="background" args={["#1a1a2e"]} />
+        {/* Legacy editing uses (x,z,y), a reflection. Camera output adds the
+            matching Z reflection to the complete world and uses (x,z,-y) for
+            its camera: source positions and Orbit authoring remain unchanged,
+            while Three's normal matrix and face winding stay correct. */}
+        <Group scale={editMode ? [1, 1, 1] : SCENE_OUTPUT_WORLD_SCALE}>
         <AmbientLight intensity={0.4} />
         <DirectionalLight position={[5, -5, 8]} intensity={1.0} castShadow shadow-mapSize={[1024, 1024]} />
         <DirectionalLight position={[-5, -3, 5]} intensity={0.3} />
@@ -1738,12 +1784,11 @@ export function SceneScript3DPreview({
 
                 <OrbitControls
                   makeDefault
-                  // Shot camera wins by default: with `makeDefault` an enabled
-                  // OrbitControls owns the camera and would fight the
-                  // interpolated shot pose on every rendered frame. In edit mode
-                  // the author genuinely wants to fly around, and the shot pose
-                  // resumes as soon as the playhead moves or the mode is left.
-                  enabled={Boolean(editMode) && !drag.active}
+                  // 相机单写者：orbit 与 ShotCameraRig 由 cameraMode/editMode
+                  // 互斥授权——视角态默认镜头关键帧驱动，用户按下拖动的瞬间经
+                  // onViewportGrab 切 orbit；编辑态恒为 orbit（拖物体+飞行）。
+                  enabled={(Boolean(editMode) || cameraMode === "orbit") && !drag.active}
+                  onInteract={onViewportGrab}
                   enableDamping
                   dampingFactor={0.05}
                   minDistance={2}
@@ -1757,6 +1802,7 @@ export function SceneScript3DPreview({
             );
           }}
         </SceneDragLayer>
+        </Group>
 
         {/* DEPTH control pass: opt-in, and only ever a second render of the
             frame the author is already looking at. */}
@@ -1765,7 +1811,7 @@ export function SceneScript3DPreview({
             write lands before the recorder reads the same camera for the depth
             pass — colour and control frames then come from one viewpoint, which
 is the entire point of a control pass. */}
-        <ShotCameraRig pose={shotPose} enabled={!editMode} />
+        <ShotCameraRig pose={shotPose} enabled={cameraMode === "shot" && !editMode} />
 
         {controlDepthPass && (
           <DepthPassRecorder

@@ -55,6 +55,7 @@ PropType = Literal[
     "scroll",
     "book",
     "cup",
+    "chip",
 ]
 
 # Which hand carries a held prop (Continuity State's prop dimension, V0.2 §5:
@@ -189,6 +190,33 @@ class CharacterAppearance(BaseModel):
         return tuple(kept[:MAX_APPEARANCE_PALETTE_COLORS]) if kept else None
 
 
+class CharacterPose(BaseModel):
+    """Optional authored joint angles, in radians, over the action pose.
+
+    Each non-null field is its own sparse track. Before its first authored
+    frame the action remains in charge; between authored values it interpolates
+    linearly, then holds its last value. Authors explicitly write zero to release
+    a raised limb. This is direct joint authoring, not an IK/contact solver.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    arm_l: float | None = Field(default=None, ge=-math.pi, le=math.pi)
+    arm_r: float | None = Field(default=None, ge=-math.pi, le=math.pi)
+    arm_l_side: float | None = Field(default=None, ge=-math.pi / 2, le=math.pi / 2)
+    arm_r_side: float | None = Field(default=None, ge=-math.pi / 2, le=math.pi / 2)
+    head: float | None = Field(default=None, ge=-math.pi / 2, le=math.pi / 2)
+    head_yaw: float | None = Field(default=None, ge=-math.pi, le=math.pi)
+    leg_l: float | None = Field(default=None, ge=-math.pi / 2, le=math.pi / 2)
+    leg_r: float | None = Field(default=None, ge=-math.pi / 2, le=math.pi / 2)
+    knee_l: float | None = Field(default=None, ge=0, le=2.4)
+    knee_r: float | None = Field(default=None, ge=0, le=2.4)
+    bob: float | None = Field(
+        default=None, ge=-0.15, le=0.15,
+        description="Vertical body offset as a fraction of character height",
+    )
+
+
 class CharacterKeyframe(BaseModel):
     """A single character keyframe: position, facing direction, and action."""
 
@@ -203,6 +231,10 @@ class CharacterKeyframe(BaseModel):
     # to decide what it means. `_validate_actor_actions` rejects it.
     action: CharacterAction | NonHumanActorAction = Field(
         default="stand", description="Character action at this keyframe"
+    )
+    pose: CharacterPose | None = Field(
+        default=None,
+        description="Optional sparse authored joint angles in radians; overrides action per field",
     )
 
     @field_validator("position")
@@ -262,12 +294,12 @@ class PropKeyframe(BaseModel):
 
     frame: int = Field(ge=0, description="Frame number (0-based)")
     position: list[float] = Field(description="[x, y, z] position in meters")
-    # Full rotation, not just yaw: a wheel turning and a door swinging open both
-    # rotate about a horizontal axis, which `rotation_y` cannot express. Degrees
-    # about [x, y, z], applied at the prop's pivot.
+    # Preview-axis [pitch, yaw, roll], matching the Three geometry contract.
+    # SceneScript positions are Z-up, so Blender maps these axes/signs once;
+    # treating the middle entry as Blender Y would pitch an authored yaw.
     rotation: list[float] = Field(
         default=[0.0, 0.0, 0.0],
-        description="Rotation in degrees about [x, y, z]",
+        description="Rotation in degrees [pitch, yaw, roll] using the preview axes",
     )
     scale: float | None = Field(default=None, gt=0, le=50.0, description="Uniform scale at this frame")
 
@@ -636,6 +668,11 @@ class SceneScriptRoot(BaseModel):
                 else nonhuman_actions
             )
             for keyframe in character.keyframes:
+                if character.type != "lowpoly_human" and keyframe.pose is not None:
+                    raise ValueError(
+                        f"character '{character.id}' has type '{character.type}' but declares "
+                        "human joint pose angles"
+                    )
                 if keyframe.action not in allowed:
                     raise ValueError(
                         f"character '{character.id}' has type "

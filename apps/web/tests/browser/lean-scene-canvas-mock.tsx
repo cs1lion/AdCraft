@@ -35,7 +35,7 @@ import {
   useThree as leanUseThree,
 } from "../../src/features/agent-canvas/canvas/LeanSceneCanvas";
 import { SceneScript3DPreview } from "../../src/features/agent-canvas/canvas/SceneScript3DPreview";
-import { SceneScriptPlaybackProvider } from "../../src/features/agent-canvas/canvas/SceneScriptPlaybackContext";
+import { SceneScriptPlaybackProvider, useSceneScriptPlayback } from "../../src/features/agent-canvas/canvas/SceneScriptPlaybackContext";
 import type { SceneScriptRoot } from "../../src/types/scene-script";
 import { SCENE_SCRIPT_GEOMETRY } from "../../src/features/agent-canvas/canvas/sceneScriptGeometry";
 
@@ -221,7 +221,11 @@ const loneCharacterScene = {
   characters: [{ id: "lone", type: "lowpoly_human", appearance: { color: "#FF4422", height: 1.7, scale: 1 }, keyframes: [{ frame: 0, position: [0, 0, 0], rotation_y: 0, action: "talk" }] }],
   props: [],
   environment: [],
-  cameras: [],
+  // A deliberate fixture camera, rather than the distant default overview:
+  // keep the character large enough for an absolute body-colour pixel check.
+  cameras: [{ id: "stand-in", shot_type: "wide", keyframes: [
+    { frame: 0, position: [4, -6, 3], look_at: [0, 0, 0.85] },
+  ] }],
   shots: [{ id: "shot", camera: "stand-in", start_frame: 0, end_frame: 59, description: "rig" }],
   speech_bindings: [],
 } as SceneScriptRoot;
@@ -232,13 +236,106 @@ function CharacterFixture() {
   // converter emits -- muddying that count with viewport furniture would blunt it.
   // `scene-scale-reference.spec.ts` covers the aids with gizmos left on.
   const nogizmos = new URLSearchParams(location.search).has("nogizmos");
-  return <SceneScriptPlaybackProvider sceneScript={loneCharacterScene}>
+  // Keep the scale-reference fixture free of camera gizmos. The closer camera
+  // is only needed by the isolated character's pixel-colour test.
+  const fixtureScene = nogizmos ? loneCharacterScene : { ...loneCharacterScene, cameras: [] };
+  return <SceneScriptPlaybackProvider sceneScript={fixtureScene}>
     <output data-testid="character-fixture">lone</output>
-    <SceneScript3DPreview sceneScript={loneCharacterScene} height={400} editMode={false} selectedObject={null} showGizmos={!nogizmos} dialogueLines={[{ character_id: "lone", text: "rig check", start_time: 0, end_time: 2 }]}>
+    <SceneScript3DPreview sceneScript={fixtureScene} height={400} editMode={false} selectedObject={null} showGizmos={!nogizmos} dialogueLines={[{ character_id: "lone", text: "rig check", start_time: 0, end_time: 2 }]}>
       <CharacterMeshProbe />
     </SceneScript3DPreview>
   </SceneScriptPlaybackProvider>;
 }
+
+// Opt-in only: existing character/production/general fixtures keep their scripts
+// and count probes unchanged. All observations below come from mounted THREE
+// objects, not characterRig(), segmentPoseAt(), or a reconstructed skeleton.
+type PosePoint = [number, number, number];
+type PoseLegSnapshot = {
+  hip: PosePoint;
+  thighBottom: PosePoint;
+  shinTop: PosePoint;
+  shinBottom: PosePoint;
+  shinCenter: PosePoint;
+  thighPitch: number;
+  kneePitch: number;
+  connectedParent: boolean;
+};
+type PoseSnapshot = { frame: number; sample: number; legs: Record<"L" | "R", PoseLegSnapshot> };
+let poseSnapshot: PoseSnapshot | null = null;
+Object.assign((window as unknown as { leanScene: object }).leanScene, {
+  poseSnapshot: () => poseSnapshot,
+});
+function CharacterPoseProbe() {
+  const state = leanUseThree();
+  const { currentFrame } = useSceneScriptPlayback();
+  const sample = useRef(0);
+  leanUseFrame(() => {
+    // Seeks commit React transforms before rendering; explicitly refresh matrices
+    // here rather than relying on the previous WebGL render's matrixWorld.
+    state.scene.updateMatrixWorld(true);
+    const legs = {} as PoseSnapshot["legs"];
+    for (const side of ["L", "R"] as const) {
+      const thigh = state.scene.getObjectByName(`character-lone-Leg${side}`);
+      const shin = state.scene.getObjectByName(`character-lone-Shin${side}`);
+      const hip = state.scene.getObjectByName(`character-lone-Leg${side}-pivot`);
+      const knee = state.scene.getObjectByName(`character-lone-Shin${side}-pivot`);
+      if (!(thigh instanceof ThreeMesh) || !(shin instanceof ThreeMesh) || !hip || !knee) {
+        poseSnapshot = null;
+        return;
+      }
+      const endpoint = (mesh: ThreeMesh, end: "min" | "max"): PosePoint => {
+        mesh.geometry.computeBoundingBox();
+        const bounds = mesh.geometry.boundingBox;
+        if (!bounds) throw new Error(`Missing geometry bounds for ${mesh.name}`);
+        return new Vector3(
+          (bounds.min.x + bounds.max.x) / 2,
+          bounds[end].y,
+          (bounds.min.z + bounds.max.z) / 2,
+        ).applyMatrix4(mesh.matrixWorld).toArray() as PosePoint;
+      };
+      legs[side] = {
+        hip: hip.getWorldPosition(new Vector3()).toArray() as PosePoint,
+        thighBottom: endpoint(thigh, "min"),
+        shinTop: endpoint(shin, "max"),
+        shinBottom: endpoint(shin, "min"),
+        shinCenter: shin.getWorldPosition(new Vector3()).toArray() as PosePoint,
+        thighPitch: hip.rotation.x,
+        kneePitch: knee.rotation.x,
+        connectedParent: knee.parent === hip && shin.parent === knee,
+      };
+    }
+    poseSnapshot = { frame: currentFrame, sample: ++sample.current, legs };
+  });
+  return null;
+}
+function PoseFixture() {
+  const params = new URLSearchParams(location.search);
+  const height = Number(params.get("height") ?? 1.85);
+  const scale = Number(params.get("scale") ?? 1);
+  const sceneScript: SceneScriptRoot = {
+    ...loneCharacterScene,
+    scene: { ...loneCharacterScene.scene, name: "Dynamic knee regression", duration: 5 },
+    shots: [{ id: "shot", camera: "stand-in", start_frame: 0, end_frame: 149, description: "pose seek" }],
+    characters: [{
+      id: "lone", type: "lowpoly_human", appearance: { color: "#FF4422", height, scale },
+      keyframes: [
+        { frame: 0, position: [0, 0, 0], rotation_y: 23, action: "stand" },
+        { frame: 30, position: [0, 0, 0], rotation_y: 23, action: "walk" },
+        { frame: 60, position: [0.6, 0, 0], rotation_y: 23, action: "sit" },
+        { frame: 90, position: [0.6, 0, 0], rotation_y: 23, action: "stand" },
+        { frame: 120, position: [0.6, 0, 0], rotation_y: 23, action: "sit" },
+      ],
+    }],
+  };
+  return <SceneScriptPlaybackProvider sceneScript={sceneScript}>
+    <output data-testid="pose-fixture">{height}/{scale}</output>
+    <SceneScript3DPreview sceneScript={sceneScript} height={400} editMode={false} selectedObject={null} showGizmos={false}>
+      <CharacterPoseProbe />
+    </SceneScript3DPreview>
+  </SceneScriptPlaybackProvider>;
+}
+
 const camera = { position: [0, 3, 7] as [number, number, number], fov: 50 };
 function Fixture() {
   const [color, setColor] = useState("red");
@@ -268,5 +365,5 @@ function Fixture() {
     </div>
   </>;
 }
-const mode = new URLSearchParams(location.search).has("production") ? "production" : new URLSearchParams(location.search).has("character") ? "character" : "scene";
-createRoot(document.getElementById("root")!).render(<StrictMode>{mode === "production" ? <ProductionFixture /> : mode === "character" ? <CharacterFixture /> : <Fixture />}</StrictMode>);
+const mode = new URLSearchParams(location.search).has("pose") ? "pose" : new URLSearchParams(location.search).has("production") ? "production" : new URLSearchParams(location.search).has("character") ? "character" : "scene";
+createRoot(document.getElementById("root")!).render(<StrictMode>{mode === "pose" ? <PoseFixture /> : mode === "production" ? <ProductionFixture /> : mode === "character" ? <CharacterFixture /> : <Fixture />}</StrictMode>);

@@ -22,6 +22,7 @@ from app.schemas.agent_canvas_runtime import (
 )
 
 DIGEST = "a" * 64
+pytestmark = pytest.mark.integration
 
 
 def _snapshot(**overrides) -> NodeRunIntentSnapshotV2:
@@ -111,3 +112,41 @@ def test_plain_content_is_accepted() -> None:
     snapshot = _snapshot(requested_parameters={"aspect_ratio": "16:9", "seconds": 5})
     assert snapshot.requested_parameters["aspect_ratio"] == "16:9"
     assert not _contains_forbidden_transport({"text": "# 复刻脚本"})
+
+
+def test_scene3d_design_reference_identity_survives_run_snapshot_admission() -> None:
+    """Lock the real native admission boundary, then mutate it with a secret."""
+    binding = NodeRunBindingSnapshotV2(
+        binding_id="binding_design",
+        input_role="image_reference",
+        order=0,
+        source_kind="image_asset",
+        source_id="asset_turnaround",
+        source_asset_id="asset_turnaround",
+        source_asset_version_id="version_turnaround",
+        binding_metadata={"design_key": "S1-B-turnaround-candidate2", "reference_kind": "character_main"},
+    )
+    snapshot = _snapshot(
+        node_type="scene-3d",
+        creative_role="scene_3d_previs",
+        binding_snapshots=(binding,),
+    )
+    assert snapshot.binding_snapshots[0].binding_metadata["design_key"] == "S1-B-turnaround-candidate2"
+
+    secret_binding = binding.model_copy(
+        update={"binding_metadata": {**binding.binding_metadata, "provider": {"api_key": "secret"}}}
+    )
+    with pytest.raises(ValueError, match="transport"):
+        _snapshot(node_type="scene-3d", creative_role="scene_3d_previs", binding_snapshots=(secret_binding,))
+
+
+@pytest.mark.parametrize("credential_key", ["provider_key", "design_api_key", "design_key_secret", "auth_token"])
+def test_design_reference_does_not_exempt_credential_names(credential_key: str) -> None:
+    with pytest.raises(ValueError, match="transport"):
+        _snapshot(requested_parameters={"design_key": "S1-scene-board", credential_key: "secret"})
+
+
+@pytest.mark.parametrize("transport_value", ["/absolute/secret", "file://asset/path", "data:image/png;base64,AAAA", "https://x.example/y?signature=abc"])
+def test_design_reference_values_still_reject_transport(transport_value: str) -> None:
+    with pytest.raises(ValueError, match="transport"):
+        _snapshot(requested_parameters={"design_key": transport_value})

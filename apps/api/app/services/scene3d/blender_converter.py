@@ -47,6 +47,7 @@ def _build_lowpoly_human(
     color: str,
     height: float,
     scale: float,
+    show_pose_marker: bool = False,
 ) -> str:
     """Build a low-poly human: head, torso, two arms, two legs.
 
@@ -128,6 +129,16 @@ bpy.ops.object.empty_add(type='PLAIN_AXES', location=({cx:.4f}, 0, {shin_h:.4f})
 {shin}.parent = {shin}_pivot
 {shin}.matrix_parent_inverse = {shin}_pivot.matrix_world.inverted()"""
 
+    face_marker = f"""
+# Authored pose marker: legacy characters keep their previous appearance.
+bpy.ops.mesh.primitive_uv_sphere_add(radius={head_r * 0.16:.4f}, location=(0, {head_r * 0.9:.4f}, {head_z + head_r * 0.08:.4f}))
+nose = bpy.context.object
+nose.name = "{_esc(obj_id)}_Nose"
+nose.data.materials.append(mat_head)
+nose.parent = head_pivot
+nose.matrix_parent_inverse = head_pivot.matrix_world.inverted()
+""" if show_pose_marker else ""
+
     return f"""
 # Character: {_esc(obj_id)}
 bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, {torso_bottom + torso_h / 2:.4f}))
@@ -159,6 +170,7 @@ mat_head = bpy.data.materials.new(name="{_esc(obj_id)}_HeadMat")
 mat_head.use_nodes = True
 mat_head.node_tree.nodes["Principled BSDF"].inputs[0].default_value = (0.9, 0.8, 0.7, 1.0)
 head.data.materials.append(mat_head)
+{face_marker}
 """
 
 
@@ -439,6 +451,14 @@ box.scale = ({size * scale:.4f}, {size * scale:.4f}, {size * scale:.4f})
 """
 
 
+def _build_chip(obj_id: str, scale: float) -> str:
+    return f"""
+bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius={0.07 * scale:.4f}, depth={0.025 * scale:.4f}, location=(0, 0, {0.0125 * scale:.4f}))
+chip = bpy.context.object
+chip.name = "{_esc(obj_id)}_Disk"
+"""
+
+
 _ASSET_BUILDERS: dict[str, Any] = {
     "lowpoly_human": _build_lowpoly_human,
     "round_table": _build_round_table,
@@ -468,6 +488,7 @@ _ASSET_BUILDERS: dict[str, Any] = {
     "scroll": _build_scroll,
     "book": _build_book,
     "cup": _build_cup,
+    "chip": _build_chip,
 }
 
 
@@ -521,6 +542,7 @@ _ASSET_COLORS: dict[str, str] = {
     "scroll": "#E8DCC0",
     "book": "#8B3A3A",
     "cup": "#D9D8D0",
+    "chip": "#32B7A5",
 }
 
 # A placeholder must never be mistaken for geometry. Magenta is the usual
@@ -608,12 +630,15 @@ wrapper.parent = pivot_{_esc(obj_id)}
 # Blender resolves a child's location against its parent, so the wrapper is now
 # relative to the pivot: minus the offset puts it back where it was authored.
 wrapper.location = {_vec([-o for o in offset])}
+# Keyframed pivot angles replace the rest rotation; do not apply yaw twice.
+wrapper.rotation_euler = (0, 0, 0)
 """
 
 
 def _build_asset(obj_id: str, obj_type: str, position: list[float], rotation_y: float,
                  scale: float = 1.0,
-                 color: str = "#8B4513", height: float = 1.7) -> str:
+                 color: str = "#8B4513", height: float = 1.7,
+                 show_pose_marker: bool = False) -> str:
     """Build an asset at the given position with a wrapper empty."""
     builder = _ASSET_BUILDERS.get(obj_type)
     if builder is None:
@@ -627,7 +652,7 @@ def _build_asset(obj_id: str, obj_type: str, position: list[float], rotation_y: 
             "no geometry for this type, rendered as a placeholder box"
         )
     elif obj_type == "lowpoly_human":
-        code = builder(obj_id, color, height, scale)
+        code = builder(obj_id, color, height, scale, show_pose_marker=show_pose_marker)
         degraded_marker = ""
     else:
         code = builder(obj_id, scale)
@@ -647,7 +672,7 @@ def _build_asset(obj_id: str, obj_type: str, position: list[float], rotation_y: 
 bpy.ops.object.empty_add(type="PLAIN_AXES", location={_vec(position)})
 wrapper = bpy.context.object
 wrapper.name = "{_esc(obj_id)}"
-wrapper.rotation_euler.z = math.radians({rotation_y:.2f})
+wrapper.rotation_euler.z = -math.radians({rotation_y:.2f})
 _parts_before = set(bpy.data.objects)
 {code}
 # Give every part a material. Parts that already have one (a character colours
@@ -661,6 +686,13 @@ _part_materials = {{}}
 # deselects the body cube), which otherwise left the first part unparented at
 # the world origin (characters rendered as floating heads).
 for _part in [o for o in bpy.data.objects if o not in _parts_before and o is not wrapper]:
+    # Primitive builders often request the asset id for their mesh too.
+    # Blender adds a numeric collision suffix; give that mesh an explicit name
+    # and keep the canonical id on the wrapper used by motion keyframes.
+    if (_part.name == "{_esc(obj_id)}" or
+        (_part.name.startswith("{_esc(obj_id)}.") and
+         _part.name[len("{_esc(obj_id)}."):].isdecimal())):
+        _part.name = "{_esc(obj_id)}_Mesh"
     # A limb already hangs off its own proximal pivot so the pose library can swing
     # it. Re-parenting it to the wrapper here would flatten that chain and the limb
     # would orbit its own centre again, so only unparented parts are adopted --
@@ -685,6 +717,7 @@ for _part in [o for o in bpy.data.objects if o not in _parts_before and o is not
         )
         _part_materials[_rgb] = _mat
     _part.data.materials.append(_mat)
+wrapper.name = "{_esc(obj_id)}"
 bpy.ops.object.select_all(action="DESELECT")
 """
 
@@ -721,10 +754,6 @@ _LIMB_POSE_FIELDS = (
     ("ArmR", "arm_r"),
 )
 
-#: The pose fields that hold for the whole shot rather than cycling.
-_HELD_ACTIONS = frozenset({"stand", "talk", "sit", "gesture"})
-
-
 def _character_pose_code(char, script, total_frames: int) -> list[str]:
     """Keyframe the character's joints from the pose library.
 
@@ -733,10 +762,11 @@ def _character_pose_code(char, script, total_frames: int) -> list[str]:
     figure sliding along the ground with its limbs welded in place -- the "moonwalk"
     the preview no longer has. Silently: nothing in the script said so.
 
-    A walk is a continuous cycle keyed EVERY FRAME, since its phase comes from
-    distance travelled and no closed-form keyframe can express it. A held action is
-    keyed once per action change instead, which keeps a 720-frame scene from growing
-    its script by ten thousand lines.
+    Write the complete pose EVERY FRAME, including zero angles and held actions.
+    Action selection is STEP: sparse keys would let Blender ease toward a future
+    action before its boundary, and omitted zeros would leave old joint bends alive.
+    Linear interpolation between adjacent samples preserves the pose at integer
+    frames; subframes may blend across the single interval at an action boundary.
 
     The pivots themselves are created by the limb builders, which know where each
     limb's proximal end is; this only drives them.
@@ -748,6 +778,15 @@ def _character_pose_code(char, script, total_frames: int) -> list[str]:
     actions = [kf.action for kf in char.keyframes]
     positions = [list(kf.position) for kf in char.keyframes]
     frames = [kf.frame for kf in char.keyframes]
+    poses = [
+        pose.model_dump(exclude_none=True) if pose is not None else None
+        for pose in (getattr(kf, "pose", None) for kf in char.keyframes)
+    ]
+    pose_channels = {field for pose in poses if pose is not None for field in pose}
+    side_channels = [
+        (limb, field) for limb, field in (("ArmL", "arm_l_side"), ("ArmR", "arm_r_side"))
+        if field in pose_channels
+    ]
     # Which hand is carrying something, from the scene's own `held_by` links. Same
     # reader the preview uses, so the arm that reaches and the item that is held
     # cannot disagree about which side that is.
@@ -778,14 +817,19 @@ def _character_pose_code(char, script, total_frames: int) -> list[str]:
     for limb, _ in _LIMB_POSE_FIELDS:
         lines.append(f"_p_{_esc(char.id)}{limb} = bpy.data.objects[{char.id + '_' + limb + '_pivot'!r}]")
     lines.append(f"_p_{_esc(char.id)}Head = bpy.data.objects[{char.id + '_Head_pivot'!r}]")
+    # Three's XYZ matrix order maps to Blender ZYX after reflecting Y/Z.
+    # Single-axis legacy pitches are unchanged; only new compound channels opt in.
+    for limb, _ in side_channels:
+        lines.append(f"_p_{_esc(char.id)}{limb}.rotation_mode = 'ZYX'")
+    if "head_yaw" in pose_channels:
+        lines.append(f"_p_{_esc(char.id)}Head.rotation_mode = 'ZYX'")
     lines.append("")
 
-    emitted: set[str] = set()
     for frame in range(total_frames + 1):
         pose = character_pose.pose_at_frame(
-            actions, positions, frames, frame, leg_length, holding=held_side
+            actions, positions, frames, frame, leg_length, holding=held_side,
+            poses=poses,
         )
-        action = character_pose.action_at_frame(actions, frames, frame)
         bob = pose.get("bob", 0.0) * char.appearance.height * char.appearance.scale
         blender_frame = frame + 1
         lines.append(f"# frame {frame}")
@@ -796,34 +840,71 @@ def _character_pose_code(char, script, total_frames: int) -> list[str]:
             f"bob_{_esc(char.id)}.keyframe_insert(data_path='location', frame={blender_frame})"
         )
         for limb, field in _LIMB_POSE_FIELDS:
-            angle = pose.get(field, 0.0)
-            if action in _HELD_ACTIONS:
-                # A held pose is constant, so one key per action change is enough --
-                # provided the action has not already been written for this frame.
-                key = (action, field)
-                if key in emitted:
-                    continue
-                emitted.add(key)
-                if abs(angle) < 1e-9:
-                    continue
+            # Preview coordinates swap Y/Z without a sign: this reflection reverses
+            # X pitch. Hip/arm pitch is -pose; relative knee flexion is +pose, so
+            # Blender's world shin angle is -(thigh - knee), matching the preview.
+            angle = pose.get(field, 0.0) * (1 if field in {"knee_l", "knee_r"} else -1)
             lines.append(f"_p_{_esc(char.id)}{limb}.rotation_euler.x = {angle:.6f}")
             lines.append(
                 f"_p_{_esc(char.id)}{limb}.keyframe_insert("
                 f"data_path='rotation_euler', index=0, frame={blender_frame})"
             )
-        head = pose.get("head", 0.0)
-        if action in _HELD_ACTIONS:
-            key = (action, "head")
-            if key in emitted:
-                head = 0.0
-            else:
-                emitted.add(key)
-        if abs(head) > 1e-9:
-            lines.append(f"_p_{_esc(char.id)}Head.rotation_euler.x = {head:.6f}")
+        head = -pose.get("head", 0.0)
+        lines.append(f"_p_{_esc(char.id)}Head.rotation_euler.x = {head:.6f}")
+        lines.append(
+            f"_p_{_esc(char.id)}Head.keyframe_insert("
+            f"data_path='rotation_euler', index=0, frame={blender_frame})"
+        )
+        for limb, field in side_channels:
+            side = -pose.get(field, 0.0)
+            lines.append(f"_p_{_esc(char.id)}{limb}.rotation_euler.y = {side:.6f}")
+            lines.append(
+                f"_p_{_esc(char.id)}{limb}.keyframe_insert("
+                f"data_path='rotation_euler', index=1, frame={blender_frame})"
+            )
+        if "head_yaw" in pose_channels:
+            yaw = pose.get("head_yaw", 0.0)
+            lines.append(f"_p_{_esc(char.id)}Head.rotation_euler.z = {yaw:.6f}")
             lines.append(
                 f"_p_{_esc(char.id)}Head.keyframe_insert("
-                f"data_path='rotation_euler', index=0, frame={blender_frame})"
+                f"data_path='rotation_euler', index=2, frame={blender_frame})"
             )
+
+    # Only this pass's bob/location and joint/X-rotation samples become LINEAR.
+    # Do not touch authored wrapper curves, other channels, or other objects.
+    pose_targets = [f"(bob_{_esc(char.id)}, 'location', (0, 1, 2))"]
+    pose_targets.extend(
+        f"(_p_{_esc(char.id)}{limb}, 'rotation_euler', (0,))"
+        for limb in [name for name, _ in _LIMB_POSE_FIELDS] + ["Head"]
+    )
+    pose_targets.extend(
+        f"(_p_{_esc(char.id)}{limb}, 'rotation_euler', (1,))"
+        for limb, _ in side_channels
+    )
+    if "head_yaw" in pose_channels:
+        pose_targets.append(f"(_p_{_esc(char.id)}Head, 'rotation_euler', (2,))")
+    lines.extend([
+        "# Linear sampled pose; authored wrapper interpolation stays untouched.",
+        "for _pose_obj, _pose_path, _pose_indices in (",
+        *[f"    {target}," for target in pose_targets],
+        "):",
+        "    if _pose_obj.animation_data and _pose_obj.animation_data.action:",
+        "        _pose_action = _pose_obj.animation_data.action",
+        "        _pose_curves = getattr(_pose_action, 'fcurves', None)",
+        "        if _pose_curves is None:",
+        "            _pose_curves = []",
+        "            for _pose_layer in _pose_action.layers:",
+        "                for _pose_strip in _pose_layer.strips:",
+        "                    _pose_bag = _pose_strip.channelbag(_pose_obj.animation_data.action_slot)",
+        "                    if _pose_bag is not None:",
+        "                        _pose_curves.extend(_pose_bag.fcurves)",
+        "        for _pose_curve in _pose_curves:",
+        "            if (_pose_curve.data_path == _pose_path",
+        "                    and _pose_curve.array_index in _pose_indices):",
+        "                for _pose_key in _pose_curve.keyframe_points:",
+        f"                    if 1 <= _pose_key.co[0] <= {total_frames + 1}:",
+        "                        _pose_key.interpolation = 'LINEAR'",
+    ])
     lines.append("")
     return lines
 
@@ -990,9 +1071,12 @@ def scene_script_to_blender(
                 for kf in env.keyframes:
                     rx, ry, rz = kf.rotation
                     lines.append(f"# frame {kf.frame}")
-                    lines.append(f"env_obj.location = {_vec(kf.position)}")
-                    lines.append(f"{env_rot_target}.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
-                    lines.append(f"env_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
+                    offset = rotation_pivot_for(env.type) if needs_pivot_empty(env.type) else (0, 0, 0)
+                    live_position = [kf.position[i] + offset[i] * env.scale for i in range(3)]
+                    lines.append(f"{env_rot_target}.location = {_vec(live_position)}")
+                    lines.append(f"{env_rot_target}.rotation_mode = 'ZYX'")
+                    lines.append(f"{env_rot_target}.rotation_euler = (-math.radians({rx:.4f}), -math.radians({rz:.4f}), -math.radians({ry:.4f}))")
+                    lines.append(f"{env_rot_target}.keyframe_insert(data_path='location', frame={kf.frame + 1})")
                     lines.append(f"{env_rot_target}.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
                     if kf.scale is not None and abs(kf.scale - env.scale) > 1e-9:
                         lines.append(f"env_obj.scale = ({kf.scale!r}, {kf.scale!r}, {kf.scale!r})")
@@ -1039,9 +1123,12 @@ def scene_script_to_blender(
                 for kf in prop.keyframes:
                     rx, ry, rz = kf.rotation
                     lines.append(f"# frame {kf.frame}")
-                    lines.append(f"prop_obj.location = {_vec(kf.position)}")
-                    lines.append(f"{prop_rot_target}.rotation_euler = (math.radians({rx:.4f}), math.radians({ry:.4f}), math.radians({rz:.4f}))")
-                    lines.append(f"prop_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
+                    offset = rotation_pivot_for(prop.type) if needs_pivot_empty(prop.type) else (0, 0, 0)
+                    live_position = [kf.position[i] + offset[i] * prop.scale for i in range(3)]
+                    lines.append(f"{prop_rot_target}.location = {_vec(live_position)}")
+                    lines.append(f"{prop_rot_target}.rotation_mode = 'ZYX'")
+                    lines.append(f"{prop_rot_target}.rotation_euler = (-math.radians({rx:.4f}), -math.radians({rz:.4f}), -math.radians({ry:.4f}))")
+                    lines.append(f"{prop_rot_target}.keyframe_insert(data_path='location', frame={kf.frame + 1})")
                     lines.append(f"{prop_rot_target}.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
                     if kf.scale is not None and abs(kf.scale - prop.scale) > 1e-9:
                         lines.append(f"prop_obj.scale = ({kf.scale!r}, {kf.scale!r}, {kf.scale!r})")
@@ -1066,6 +1153,7 @@ def scene_script_to_blender(
                 scale=char.appearance.scale,
                 color=char.appearance.color,
                 height=char.appearance.height,
+                show_pose_marker=any(getattr(kf, "pose", None) is not None for kf in char.keyframes),
             ))
             # Character keyframes
             lines.append(f"# Character keyframes: {char.id}")
@@ -1090,7 +1178,7 @@ def scene_script_to_blender(
             for kf in char.keyframes:
                 lines.append(f"# frame {kf.frame}")
                 lines.append(f"char_obj.location = {_vec(kf.position)}")
-                lines.append(f"char_obj.rotation_euler.z = math.radians({kf.rotation_y:.2f})")
+                lines.append(f"char_obj.rotation_euler.z = -math.radians({kf.rotation_y:.2f})")
                 lines.append(f"char_obj.keyframe_insert(data_path='location', frame={kf.frame + 1})")
                 lines.append(f"char_obj.keyframe_insert(data_path='rotation_euler', frame={kf.frame + 1})")
             lines.append("")

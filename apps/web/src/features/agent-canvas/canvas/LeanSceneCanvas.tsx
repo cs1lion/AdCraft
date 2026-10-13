@@ -258,6 +258,7 @@ function SlotProvider({ target, children }: { target: SlotTarget | null; childre
 // ---------------------------------------------------------------------------
 
 function applyCommonProps(object: THREE.Object3D, props: Props): void {
+  object.name = typeof props.name === "string" ? props.name : "";
   const position = props.position as [number, number, number] | undefined;
   if (position) object.position.set(position[0], position[1], position[2]);
   const rotation = props.rotation as [number, number, number] | undefined;
@@ -292,6 +293,8 @@ function applyEventHandlers(object: THREE.Object3D, props: Props): void {
 // ---------------------------------------------------------------------------
 
 interface SceneNodeProps {
+  /** Stable live-object identity for diagnostics and integration assertions. */
+  name?: string;
   position?: readonly [number, number, number];
   rotation?: readonly [number, number, number];
   scale?: readonly [number, number, number] | number;
@@ -813,6 +816,8 @@ export interface OrbitControlsProps {
   maxPolarAngle?: number;
   minPolarAngle?: number;
   target?: [number, number, number];
+  /** 用户在视口按下拖动（接管相机）的瞬间——视角模式用它把相机主权交给轨道。 */
+  onInteract?: () => void;
 }
 
 /**
@@ -831,6 +836,7 @@ export function OrbitControls({
   maxPolarAngle = Math.PI / 2,
   minPolarAngle = 0,
   target,
+  onInteract,
 }: OrbitControlsProps) {
   const state = useThree();
   // Held in a ref so the frame callback always reads current props without
@@ -843,6 +849,7 @@ export function OrbitControls({
     maxDistance,
     maxPolarAngle,
     minPolarAngle,
+    onInteract,
   });
   options.current = {
     enabled,
@@ -852,6 +859,7 @@ export function OrbitControls({
     maxDistance,
     maxPolarAngle,
     minPolarAngle,
+    onInteract,
   };
 
   useEffect(() => {
@@ -870,6 +878,7 @@ export function OrbitControls({
 
     const onPointerDown = (event: PointerEvent) => {
       if (!options.current.enabled) return;
+      options.current.onInteract?.();
       activePointer = event.pointerId;
       lastX = event.clientX;
       lastY = event.clientY;

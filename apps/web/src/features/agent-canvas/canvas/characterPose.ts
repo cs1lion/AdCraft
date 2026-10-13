@@ -35,6 +35,7 @@
  */
 
 import type { CharacterRig } from "./lowPolyHumanRig";
+import type { CharacterKeyframe, CharacterPose } from "../../../types/scene-script";
 import { HOLD_GRIP, POSE_CONSTANTS } from "../../../types/scene-script.generated";
 
 const {
@@ -82,14 +83,63 @@ export interface SegmentPose {
   /** Shoulders: same sense as the legs. */
   armL?: number;
   armR?: number;
+  /** Side swing about the shoulder, distinct from forward pitch. */
+  armLSide?: number;
+  armRSide?: number;
   /** Whole upper body, about the hip line. Small values only. */
   torso?: number;
   /** About the neck, where the head hangs. */
   head?: number;
+  headYaw?: number;
   /** About the waist — the torso's own hinge, so the body can lean. */
   spine?: number;
   /** Vertical offset as a fraction of body height; a walk bobs. */
   bob?: number;
+}
+
+const AUTHORED_POSE_FIELDS: readonly (readonly [keyof CharacterPose, keyof SegmentPose])[] = [
+  ["arm_l", "armL"], ["arm_r", "armR"],
+  ["arm_l_side", "armLSide"], ["arm_r_side", "armRSide"],
+  ["head", "head"], ["head_yaw", "headYaw"],
+  ["leg_l", "legL"], ["leg_r", "legR"],
+  ["knee_l", "kneeL"], ["knee_r", "kneeR"],
+  ["bob", "bob"],
+];
+
+/**
+ * Sparse authored tracks override the action pose, one joint at a time.
+ * Before a joint's first explicit point it stays on its action; between points
+ * it interpolates linearly, and after the last it holds. A written zero resets
+ * the joint. Reading solely from the requested frame makes backward seek and
+ * repeated playback independent of the previously rendered pose.
+ */
+export function authoredPoseAtFrame(
+  keyframes: readonly Pick<CharacterKeyframe, "frame" | "pose">[],
+  frame: number,
+): SegmentPose {
+  const ordered = [...keyframes].sort((a, b) => a.frame - b.frame);
+  const overrides: SegmentPose = {};
+  for (const [authoredField, segmentField] of AUTHORED_POSE_FIELDS) {
+    const points: { frame: number; value: number }[] = [];
+    for (const keyframe of ordered) {
+      const value = keyframe.pose?.[authoredField];
+      if (value != null) points.push({ frame: keyframe.frame, value });
+    }
+    if (!points.length || frame < points[0].frame) continue;
+    let value = points[0].value;
+    for (let index = 1; index < points.length; index += 1) {
+      const next = points[index];
+      if (frame < next.frame) {
+        const previous = points[index - 1];
+        value = previous.value + (next.value - previous.value)
+          * (frame - previous.frame) / (next.frame - previous.frame);
+        break;
+      }
+      value = next.value;
+    }
+    overrides[segmentField] = value;
+  }
+  return overrides;
 }
 
 /**
@@ -181,15 +231,17 @@ export function walkLegAmplitude(legLengthMetres: number = DEFAULT_LEG_LENGTH_ME
  * this backwards and the stance foot skates forward at 212% of the body's own
  * travel -- the same defect, only with the sign flipped.
  *
- * Stance is LINEAR and swing a raised cosine, and the split matters as much as the
- * sign: a sine is steepest exactly where the foot meets the ground, so it slides
- * hardest at the contact it is supposed to be planting. A linear stance sweeps
- * ``-A`` to ``+A`` at the rate that keeps the foot still; the swing then eases the
- * leg forward, fastest through vertical where it has to clear.
+ * Stance is linear in horizontal REACH, not angle: a linear angle makes
+ * sin(theta) nonlinear and the planted foot slides. Inverting that sine gives
+ * theta = asin(linear * sin(amplitude)). Omitting amplitude retains the original
+ * normalized shape (the zero-amplitude limit). Swing keeps its raised cosine.
  */
-function walkLegShape(q: number): number {
+function walkLegShape(q: number, amplitude = 0): number {
   const t = ((q % 1) + 1) % 1;
-  if (t < STANCE_FRACTION) return -1 + (2 * t) / STANCE_FRACTION;
+  if (t < STANCE_FRACTION) {
+    const linear = -1 + (2 * t) / STANCE_FRACTION;
+    return amplitude === 0 ? linear : Math.asin(linear * Math.sin(amplitude)) / amplitude;
+  }
   const swing = (t - STANCE_FRACTION) / (1 - STANCE_FRACTION);
   return 1 - 2 * (0.5 - 0.5 * Math.cos(Math.PI * swing));
 }
@@ -222,7 +274,8 @@ export function walkFootLiftMetres(
   const knee = walkKneeShape(phase) * WALK_KNEE_BEND;
   if (knee === 0) return 0;
   const shin = length * KNEE_FRACTION;
-  const thigh = walkLegAmplitude(length) * walkLegShape(phase);
+  const amplitude = walkLegAmplitude(length);
+  const thigh = amplitude * walkLegShape(phase, amplitude);
   return shin * (Math.cos(thigh) - Math.cos(thigh - knee));
 }
 
@@ -285,8 +338,8 @@ function poseForAction(
     case "walk": {
       const { armOverLeg, torso } = POSE.walk;
       const amplitude = walkLegAmplitude(legLengthMetres);
-      const left = walkLegShape(phase);
-      const right = walkLegShape(phase + STANCE_FRACTION);
+      const left = walkLegShape(phase, amplitude);
+      const right = walkLegShape(phase + STANCE_FRACTION, amplitude);
       const legL = amplitude * left;
       const legR = amplitude * right;
       // Whichever leg is on the ground drives the hip. A rigid leg's reach is

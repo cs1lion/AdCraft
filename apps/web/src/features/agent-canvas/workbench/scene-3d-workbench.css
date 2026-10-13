@@ -22,6 +22,9 @@
 }
 
 .scene-script-3d-editor__stage {
+  /* 三栏网格（托盘|视口|检查器）里视口固定居中列——日志行与条件块众多，
+     自动布局会把视口冲进托盘列（实测 198px 竖条），必须显式锁列。 */
+  grid-column: 2;
   min-width: 0;
   border: 1px solid rgb(255 255 255 / 9%);
   border-radius: 8px;
@@ -29,6 +32,7 @@
 }
 
 .scene-script-3d-editor__inspector {
+  grid-column: 3;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -316,8 +320,71 @@
   }
 }
 
-/* Cross-node character drift (V0.2 §5 服装维度). */
+/* 生产记录与诊断折叠块（横贯整行，默认收起）。 */
+.scene-script-3d-editor__prodnote {
+  grid-column: 1 / -1;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.scene-script-3d-editor__prodnote summary {
+  padding: 5px 8px;
+  color: var(--text-secondary, #9399a9);
+  cursor: pointer;
+  user-select: none;
+}
+
+.scene-script-3d-editor__prodnote[open] {
+  padding: 4px 8px 8px;
+}
+
+.scene-script-3d-editor__prodnote[open] summary {
+  margin-bottom: 4px;
+}
+
+/* 视口交互模式切换条（视角 / 编辑拖动）。 */
+.scene-script-3d-editor__viewport-wrap {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.scene-script-3d-editor__viewport-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.scene-script-3d-editor__viewport-bar button {
+  padding: 3px 10px;
+  border: 1px solid var(--border-default, #222733);
+  border-radius: 999px;
+  background: var(--glass-button, #191d26);
+  color: var(--text-secondary, #9399a9);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.scene-script-3d-editor__viewport-bar button.is-edit {
+  border-color: rgb(255 209 102 / 55%);
+  color: #ffd666;
+}
+
+.scene-script-3d-editor__viewport-hint {
+  color: var(--text-secondary, #9399a9);
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* Cross-node character drift (V0.2 §5 服装维度).
+   这些是逐条日志行（唇形/阻断发现/参考绑定/衣柜漂移），绑定多的项目会有几十条——
+   已收进 scene-script-3d-editor__prodnote 折叠块；此跨列规则保留给直接渲染的
+   场景（折叠块本身也横贯整行）。 */
 .scene-script-3d-editor__drift {
+  grid-column: 1 / -1;
   margin: 0;
   font-size: 10px;
   color: #ffd666;
@@ -333,6 +400,7 @@
    Amber for "the reading explains this" (informational), red for "the reading
    contradicts this" — a declaration that lies is the one worth stopping for. */
 .scene-script-3d-editor__intent {
+  grid-column: 1 / -1;
   margin: 0;
   font-size: 10px;
   color: #b7e3c0;
@@ -362,6 +430,7 @@
 }
 
 .scene-script-3d-editor__toolbar {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -404,6 +473,9 @@
 /* Consistency gate banner (Dramagic-style live warnings). */
 
 .scene-script-3d-editor__consistency {
+  /* 条件渲染的横幅块必须独占整行——否则会在三栏网格（托盘|视口|检查器）
+     里占掉一个单元格，把后续的 3D 视口挤进 200px 托盘列。 */
+  grid-column: 1 / -1;
   margin: 0 0 8px;
   padding: 6px 8px 6px 22px;
   border: 1px solid rgb(255 209 102 / 35%);
@@ -489,6 +561,7 @@
 }
 
 .scene-asset-tray {
+  grid-column: 1;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -789,6 +862,7 @@
    /* laid out as a compact row above the preview stage so it never pushes */
    /* the viewport down. */
 .scene-script-3d-editor__director {
+  grid-column: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -844,6 +918,7 @@
 }
 
 .scene-script-3d-editor__storyboard {
+  grid-column: 2;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1947,6 +2022,8 @@
 /* 场景快捷入口（#3）：三个胶囊 + 一句说明。说明写出来而不是留白，因为"为什么
    只有三个"和"有哪三个"一样是需要答案的问题。 */
 .scene-3d-pill-row {
+  /* 同上：胶囊行是横贯整行的工具条，不占单列（否则 3D 视口被挤进托盘列）。 */
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

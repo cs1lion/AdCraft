@@ -119,6 +119,7 @@ export function SceneScriptPlaybackProvider({
 
   // Refs for the animation loop (avoid stale closures)
   const frameRef = useRef(0);
+  const startFrameRef = useRef(0);
   const lastTimeRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
   const onTimeChangeRef = useRef(onTimeChange);
@@ -128,11 +129,6 @@ export function SceneScriptPlaybackProvider({
   // True while an external transport (global timeline) owns the clock; our
   // RAF ticks then advance visuals without echoing time updates back.
   const externallyDrivenRef = useRef(false);
-
-  // Keep frameRef in sync with currentFrame when seeking
-  useEffect(() => {
-    frameRef.current = currentFrame;
-  }, [currentFrame]);
 
   // Mirror externally driven seeks (time in seconds; quantize to our fps).
   const externalTime = externalPlayhead?.time;
@@ -144,11 +140,15 @@ export function SceneScriptPlaybackProvider({
       Math.min(totalFrames - 1, Math.round(externalTime * fps)),
     );
     frameRef.current = targetFrame;
+    lastTimeRef.current = null;
     setCurrentFrame((previous) => (previous === targetFrame ? previous : targetFrame));
   }, [externalTime, fps, totalFrames]);
 
   useEffect(() => {
-    if (externalPlaying === undefined) return;
+    if (externalPlaying === undefined) {
+      externallyDrivenRef.current = false;
+      return;
+    }
     externallyDrivenRef.current = externalPlaying;
     setIsPlaying((previous) =>
       previous === externalPlaying ? previous : externalPlaying,
@@ -169,19 +169,27 @@ export function SceneScriptPlaybackProvider({
     const tick = (timestamp: number) => {
       if (lastTimeRef.current === null) {
         lastTimeRef.current = timestamp;
+        startFrameRef.current = frameRef.current;
       }
-      const deltaSeconds = (timestamp - lastTimeRef.current) / 1000;
-      lastTimeRef.current = timestamp;
-
-      // Advance frame based on real elapsed time
-      frameRef.current = (frameRef.current + deltaSeconds * fps) % totalFrames;
-      const newFrame = Math.floor(frameRef.current);
+      // Anchor to elapsed wall time, never to the integer React display state.
+      // Resetting a fractional frame at each commit silently slowed playback.
+      const elapsedSeconds = Math.max(0, timestamp - lastTimeRef.current) / 1000;
+      const nextFrame = startFrameRef.current + elapsedSeconds * fps;
+      frameRef.current = Math.min(totalFrames, nextFrame);
+      const newFrame = Math.min(totalFrames - 1, Math.floor(frameRef.current));
 
       setCurrentFrame(newFrame);
 
       // Notify external listener, unless an external transport owns the clock.
       if (onTimeChangeRef.current && !externallyDrivenRef.current) {
         onTimeChangeRef.current(newFrame / fps, newFrame);
+      }
+
+      if (nextFrame >= totalFrames) {
+        setIsPlaying(false);
+        if (!externallyDrivenRef.current) onPlayingChangeRef.current?.(false);
+        rafRef.current = null;
+        return;
       }
 
       rafRef.current = requestAnimationFrame(tick);
@@ -199,26 +207,28 @@ export function SceneScriptPlaybackProvider({
 
   // Playback controls
   const play = useCallback(() => {
+    if (frameRef.current >= totalFrames) {
+      frameRef.current = 0;
+      setCurrentFrame(0);
+    }
+    lastTimeRef.current = null;
     setIsPlaying(true);
     if (!externallyDrivenRef.current) onPlayingChangeRef.current?.(true);
-  }, []);
+  }, [totalFrames]);
   const pause = useCallback(() => {
     setIsPlaying(false);
     if (!externallyDrivenRef.current) onPlayingChangeRef.current?.(false);
   }, []);
   const toggle = useCallback(() => {
-    setIsPlaying((currentlyPlaying) => {
-      if (!externallyDrivenRef.current) {
-        onPlayingChangeRef.current?.(!currentlyPlaying);
-      }
-      return !currentlyPlaying;
-    });
-  }, []);
+    if (isPlaying) pause();
+    else play();
+  }, [isPlaying, pause, play]);
 
   const seekToFrame = useCallback(
     (frame: number) => {
       const clamped = Math.max(0, Math.min(totalFrames - 1, Math.floor(frame)));
       frameRef.current = clamped;
+      lastTimeRef.current = null;
       setCurrentFrame(clamped);
       if (onTimeChangeRef.current && !externallyDrivenRef.current) {
         onTimeChangeRef.current(clamped / fps, clamped);
@@ -237,6 +247,7 @@ export function SceneScriptPlaybackProvider({
   const reset = useCallback(() => {
     setIsPlaying(false);
     frameRef.current = 0;
+    lastTimeRef.current = null;
     setCurrentFrame(0);
     if (!externallyDrivenRef.current) {
       onPlayingChangeRef.current?.(false);

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed — 膝盖 P0 收尾：实际层级、动作边界与支撑足端闭环
+
+- three.js 小腿现在挂在大腿的膝点下，膝弯曲相对大腿；不再把两段平铺成 sibling。
+- Blender 完整逐帧写六个关节、头和 bob（包括零），修复 walk→stand 归零及 stand→sit→stand→sit 重入。只对这些采样通道使用 LINEAR；作者的根运动曲线不变。兼容旧 Action 与 Blender 5.2 layered Action。
+- 轴转换 `[x,z,y]` 是反射，X pitch 必须反号：Blender 大腿/臂/头为 `-pose`，膝为 `+knee`。保留前端方向，不把两侧统一成滑步方向。
+- 更正之前的 <0.5% 测量结论：线性角度只保证支撑期端点位移，逐帧实测仍滑 2.4%–3.7%。支撑期改为 `asin(linear*sin(A))`，让足端位移线性，摆动期与膝鼓包保持不变。
+- 真实 Blender 5.2.1 evaluated 世界关节测试覆盖 1.1/1.85 m × scale 1/1.5。四组最坏逐帧支撑足滑移分别为 **0.000596%、0.006855%、0.005960%、0.001192%**，门禁仍为 <0.5%；12 条真实 Blender 测试通过。
+- 姿态 parity 生成器补上膝字段；完整采样/新版 Action/实际 FK 合计 53 passed。真实 Edge 浏览器检查膝连接 ≤1 mm、重复坐姿与站姿恢复，另更新带小腿的 11 meshes/8 boxes 数量。
+- 验收范围是 rig 与姿态接线，不代表根运动插值、持物接触、动物骨架或付费全链路演示完成。
+
 ### Fixed — 走路时摆动腿会穿过地面：骨骼终于有了膝盖
 
 一个铰在髋部的**刚性**腿，抬脚和落脚时高度完全相同——所以摆动腿从地面穿过去。这是 rig 的限制，不是 bug：7 个盒子没有关节。

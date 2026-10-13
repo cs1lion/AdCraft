@@ -84,6 +84,37 @@ ffmpeg = shutil.which("ffmpeg")
 requires_ffmpeg = pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not on PATH")
 
 
+@pytest.mark.media
+@requires_ffmpeg
+@pytest.mark.parametrize("fps", [24, 25, 30, 60])
+def test_two_second_animation_preserves_every_frame_at_declared_rate(tmp_path, fps):
+    """Lock input PNG timing, not just clip length; default 25fps drops/repeats.
+
+    Every source frame has a distinct colour. Checking decoded order rejects
+    a fix that merely trims the extra output frame while hiding resampling.
+    """
+    directory = tmp_path / "frames"
+    directory.mkdir()
+    colours = [((index * 37) % 256, (index * 67) % 256, (index * 91) % 256)
+               for index in range(fps * 2)]
+    for index, colour in enumerate(colours, start=1):
+        _write_png(directory / f"frame_{index:04d}.png", colour)
+    video = tmp_path / "animation.mp4"
+    result = encode_png_sequence(str(directory), str(video), fps=fps, crf=0, preset="ultrafast")
+    assert result.success, result.error
+    count, duration = _ffprobe(video)
+    assert count == len(colours)
+    assert duration == pytest.approx(2, abs=.001)
+    decoded = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    frame_bytes = 16 * 16 * 3
+    assert len(decoded) == len(colours) * frame_bytes
+    for index, colour in enumerate(colours):
+        assert tuple(decoded[index * frame_bytes:index * frame_bytes + 3]) == pytest.approx(colour, abs=3)
+
+
 # ---------------------------------------------------------------------------
 # 1. Durations become whole frame counts
 # ---------------------------------------------------------------------------

@@ -36,6 +36,8 @@ describe("dump", () => {
           phase,
           legL: pose.legL ?? 0,
           legR: pose.legR ?? 0,
+          kneeL: pose.kneeL ?? 0,
+          kneeR: pose.kneeR ?? 0,
           armL: pose.armL ?? 0,
           armR: pose.armR ?? 0,
           bob: pose.bob ?? 0,

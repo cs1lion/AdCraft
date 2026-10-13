@@ -77,6 +77,7 @@ import { AgentCanvasLayoutConfirmation } from "./canvas/AgentCanvasLayoutConfirm
 import { AgentCanvasNodePicker } from "./canvas/AgentCanvasNodePicker.tsx";
 import { OutlineStarter } from "./OutlineStarter.tsx";
 import { ProjectCheckupPanel } from "./canvas/ProjectCheckupPanel.tsx";
+import { SyncComparePanel } from "./canvas/SyncComparePanel.tsx";
 import { createPrevisPipelineTemplate } from "./model/previsPipelineTemplate.ts";
 import { canvasProgressModel } from "./canvas/canvasProgressModel.ts";
 import { AgentCanvasPointerBackgrounds } from "./canvas/AgentCanvasPointerBackgrounds.tsx";
@@ -327,6 +328,7 @@ export function AgentCanvasPage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [checkupOpen, setCheckupOpen] = useState(false);
+  const [syncCompareOpen, setSyncCompareOpen] = useState(false);
   const [templateBusy, setTemplateBusy] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -1960,6 +1962,16 @@ export function AgentCanvasPage() {
           >
             <span aria-hidden="true">🩺</span>
           </button>
+          <button
+            type="button"
+            className={syncCompareOpen ? "is-active" : ""}
+            aria-label="Sync compare"
+            aria-expanded={syncCompareOpen}
+            title="同步对比播放：两条视频（默认白模 vs 成片）共享一套播放控制"
+            onClick={() => setSyncCompareOpen((current) => !current)}
+          >
+            <span aria-hidden="true">⏸</span>
+          </button>
           {running ? (
             <button
               type="button"
@@ -2253,6 +2265,12 @@ export function AgentCanvasPage() {
             />
           </Suspense>
         ) : null}
+
+        <SyncComparePanel
+          workflow={workflow}
+          open={syncCompareOpen}
+          onClose={() => setSyncCompareOpen(false)}
+        />
 
         <input
           ref={referenceUploadInputRef}

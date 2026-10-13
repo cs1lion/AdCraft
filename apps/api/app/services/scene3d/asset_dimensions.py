@@ -84,6 +84,7 @@ ASSET_DIMENSIONS: dict[str, AssetDimensions] = {
     "scroll": AssetDimensions(0.24, 0.9, 0.24, 0.55, "cylinder", "a rolled tube on a stand"),
     "book": AssetDimensions(0.34, 0.08, 0.26, 0.0, "box"),
     "cup": AssetDimensions(0.14, 0.14, 0.14, 0.0, "cylinder"),
+    "chip": AssetDimensions(0.14, 0.025, 0.14, 0.0, "cylinder", "flat disc; base sits on the authored surface"),
     # --- characters --------------------------------------------------------
     "lowpoly_human": AssetDimensions(0.7, 1.8, 0.7, 0.0, "segments",
                                      "nine segments, knees included; `appearance.height` sets the real size"),
