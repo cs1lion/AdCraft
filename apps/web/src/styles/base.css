@@ -652,7 +652,7 @@ a {
 
 .page-header {
   margin-bottom: 18px;
-  padding: 10px 28px 6px;
+  padding: 10px 0 6px;
 }
 
 @media (max-width: 900px) {
@@ -665,7 +665,7 @@ a {
   }
 
   .main-view {
-    padding: 0 18px 48px 80px;
+    padding: 0 18px 48px 102px;
   }
 
   .content-wrap {
@@ -685,6 +685,10 @@ a {
   .topbar {
     height: var(--topbar-height);
     padding: 0 12px 0 72px;
+  }
+
+  .main-view {
+    padding: 0 12px 48px 84px;
   }
 
   .brand-logo {
