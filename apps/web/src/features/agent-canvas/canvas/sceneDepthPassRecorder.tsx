@@ -90,13 +90,18 @@ function withShotCameraPose<T>(
   const target = sceneToThreePosition(pose.lookAt);
   camera.position.set(...sceneToThreePosition(pose.position));
   camera.lookAt(target[0], target[1], target[2]);
-  camera.updateMatrixWorld();
+  // `true` = FORCE. Without it three.js only recomposes `matrixWorld` when
+  // `matrixWorldNeedsUpdate` is set, and any completed render has already cleared
+  // that flag -- so `updateMatrixWorld()` recomposes `matrix` from the new
+  // position/quaternion and then leaves `matrixWorld` (and `matrixWorldInverse`,
+  // which is what the depth pass frustum-culls against) on the PREVIOUS pose.
+  camera.updateMatrixWorld(true);
   try {
     return run();
   } finally {
     camera.position.copy(position);
     camera.quaternion.copy(quaternion);
-    camera.updateMatrixWorld();
+    camera.updateMatrixWorld(true);
   }
 }
 

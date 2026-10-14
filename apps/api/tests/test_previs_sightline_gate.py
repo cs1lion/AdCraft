@@ -15,6 +15,10 @@ Two detectors, because they fail differently:
 - ``subjects_under_floating`` is a footprint overlap plus a z-interval test, and it is
   exact. No raycasting needed.
 
+A third, ``shot_frames_nothing``, asks the prior question neither of the other two
+can: is there ANY geometry in the cone. Both of the above raycast to ``look_at`` and
+read "no hit" as clean, which is exactly what an empty shot also produces.
+
 The fixtures carry the doc's own evidence: the hand-un-tuned jinghai must fail and the
 hand-tuned recomposition must mostly pass. That asymmetry is the point -- a check
 that passes everything is not a check, and one that fails everything gets deleted.
@@ -33,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from previs_camera_sightlines import (  # noqa: E402
     blocked_by_subject,
     findings,
+    shot_frames_nothing,
     subjects_under_floating,
 )
 
@@ -198,3 +203,77 @@ def test_every_floating_kind_is_actually_floating() -> None:
         f"{sorted(unexplained)} float but are not in the list; if one of them can "
         "bury a character standing at z = 0, add it, and say why here"
     )
+
+
+# ---------------------------------------------------------------------------
+# shot_frames_nothing: the cone that holds nothing at all
+# ---------------------------------------------------------------------------
+
+
+def _looking_up_scene() -> dict:
+    """A camera 1.2 m off the ground, aimed 5.4 m UP, with nothing on that ray.
+
+    Every solid sits on the ground (z between 0 and ~1.8 m), so a camera at
+    z = 1.2 pitched steeply upward puts the whole frame above the site plate: no ray
+    can come down to it. That is the geometry of the ``cam_sky`` case in §7 of the
+    gap doc, rebuilt small enough to assert on.
+
+    The solids are 30 m away rather than adjacent on purpose: a camera at z = 1.2
+    is inside a 1.8 m human's bounding box, and ``segment_hits_box`` reports a ray
+    starting inside a box as a hit at 0.0, which would make this fixture pass for
+    the wrong reason.
+    """
+    scene = _minimal_scene(environment=[
+        {"id": "crate", "type": "crate", "position": [30, 30, 0], "scale": 1.0}
+    ])
+    for person in scene["characters"]:
+        person["keyframes"] = [{"frame": 0, "position": [30, 30, 0], "rotation_y": 0,
+                                "action": "stand"}]
+    for camera in scene["cameras"]:
+        camera["keyframes"] = [
+            {"frame": 0, "position": [0, 0, 1.2], "look_at": [0, -3, 6.6]},
+        ]
+    return scene
+
+
+def test_a_shot_pointing_at_nothing_is_caught() -> None:
+    """The frame renders as background colour, so every pixel is the same.
+
+    This is the case the other two detectors cannot see: nothing occludes the
+    subject because there is no subject in frame, and `blocked_by_subject` reports
+    "no hit" for a clean shot and for this one identically.
+    """
+    problems = shot_frames_nothing(_looking_up_scene())
+    assert [f.kind for f in problems] == ["shot_frames_nothing"]
+    assert "nothing within" in problems[0].detail
+
+
+def test_the_minimal_scene_is_not_reported_as_empty() -> None:
+    """The negative case. Without it the detector could be reporting every shot."""
+    assert shot_frames_nothing(_minimal_scene()) == []
+    assert shot_frames_nothing(_minimal_scene(environment=[
+        {"id": "site", "type": "ground", "position": [0, 0, 0], "scale": 2.0}
+    ])) == []
+
+
+def test_one_object_anywhere_in_the_cone_is_enough() -> None:
+    """A shot may legitimately have nothing at its centre and still be full.
+
+    A character standing at the bottom of a wide is the everyday case; a detector
+    that sampled only the view axis would call that empty, so the cone is sampled as
+    a grid. The box here sits ~29 deg off the view axis — inside the 48 deg
+    horizontal half-angle, far outside the 0 width the axis itself sweeps — so this
+    fails unless the cone is sampled rather than the centre ray alone.
+    """
+    scene = _looking_up_scene()
+    scene["environment"] = [{"id": "edge", "type": "box", "position": [3, -3, 5], "scale": 1.0}]
+    assert shot_frames_nothing(scene) == []
+
+
+def test_the_small_fixtures_are_not_reported_as_empty() -> None:
+    """The repo's own single-purpose fixtures are all legal shots."""
+    for name in ("motion_scene.json", "pivot_scene.json", "knee_scene.json",
+                 "crater_scene.json", "grip_scene.json"):
+        if not (FIXTURES / name).exists():
+            continue
+        assert shot_frames_nothing(scene(name)) == [], f"{name} was called empty"

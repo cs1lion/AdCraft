@@ -1,5 +1,13 @@
 """Is the shot's subject actually visible, or is something standing in front of it?
 
+THREE DETECTORS, because they fail in different directions
+- ``blocked_by_subject`` -- something between the camera and what it looks at.
+- ``subjects_under_floating`` -- a character authored at z = 0 under a raised slab.
+- ``shot_frames_nothing`` -- no geometry anywhere in the cone, so the frame renders
+  as background colour. This is the prior question the other two cannot ask: both of
+  them raycast to ``look_at`` and read "no hit" as clean, which is exactly what an
+  empty shot also produces. See its own docstring and §7 of the gap doc.
+
 WHY THIS REPLACED THE CYLINDER VERSION
 The first version modelled every asset as a vertical cylinder and got it wrong
 in the direction that costs the most: it reported `habitat_dome_a` blocking two
@@ -290,6 +298,119 @@ def subjects_under_floating(scene: dict) -> list[Finding]:
     return _dedupe(out)
 
 
+# ---------------------------------------------------------------------------
+# Detector 3: a shot that frames nothing at all
+# ---------------------------------------------------------------------------
+
+#: Vertical FOV the preview actually renders at. `SceneScript3DPreview` hands
+#: `LeanSceneCanvas` an explicit `fov: 50`, and that component constructs
+#: `new THREE.PerspectiveCamera(camera?.fov ?? 45, 1, 0.1, 1000)` -- so 45 is the
+#: fallback seed and 50 is what a render uses. The horizontal figure is derived
+#: from the widest aspect the driver renders (`render-frames.mjs` defaults
+#: 1280x540 = 2.37), so the cone here is the frame, not a guess at it.
+#:
+#: Anything that widens this cone can only turn a "frames nothing" into a "frames
+#: something". That is the cheap direction on purpose: a false "frames nothing"
+#: sends someone hunting for geometry that was never there, and the first time
+#: that happens the whole lint gets ignored.
+PREVIEW_FOV_DEG = 50.0
+PREVIEW_ASPECT = 1280.0 / 540.0
+
+#: How far an object counts as "seen" from. The site plate is 15 m per side per
+#: unit of scale, so 30 m reaches past the whole set from anywhere a camera would
+#: sensibly stand.
+EMPTY_SHOT_DISTANCE = 30.0
+
+
+def _normalize(v):
+    n = math.sqrt(sum(c * c for c in v))
+    return [c / n for c in v] if n else v
+
+
+def _camera_basis(eye, target):
+    """(forward, right, up) for a Z-up camera looking from eye at target."""
+    forward = _normalize([target[i] - eye[i] for i in range(3)])
+    # right = forward x world_up. SceneScript is Z-up, so world_up is +z; when the
+    # camera looks straight up or down that cross product degenerates, and a
+    # straight-up shot is precisely the case this detector exists to catch, so it
+    # must not divide by zero there. Fall back to the forward axis as the seed.
+    seed = (0.0, 0.0, 1.0) if abs(forward[2]) < 0.999 else (0.0, 1.0, 0.0)
+    right = _normalize([
+        forward[1] * seed[2] - forward[2] * seed[1],
+        forward[2] * seed[0] - forward[0] * seed[2],
+        forward[0] * seed[1] - forward[1] * seed[0],
+    ])
+    up = _normalize([
+        right[1] * forward[2] - right[2] * forward[1],
+        right[2] * forward[0] - right[0] * forward[2],
+        right[0] * forward[1] - right[1] * forward[0],
+    ])
+    return forward, right, up
+
+
+def shot_frames_nothing(scene: dict) -> list[Finding]:
+    """A shot whose whole cone holds no geometry -- the frame renders as background.
+
+    The prior question the other two detectors cannot ask. Both of them raycast to
+    ``look_at`` and read "no hit" as clean, which is exactly what an empty shot also
+    produces.
+
+    CONE TEST, NOT A RAY GRID. The first version sampled the frame on a 7x7 grid of
+    rays and reported a false positive on a crate that WAS in shot: at 5 m the
+    samples land about 1.9 m apart while a crate is 0.8 m wide, so the grid steps
+    straight over small objects. A check that says "empty" about a frame with
+    something in it sends an author hunting for a hole that is not there.
+
+    So this compares ANGLES instead, and every comparison is widened to include the
+    object's own angular radius: an object counts as seen when its centre is within
+    (cone half-angle + its own angular size). That can only ever over-report "this
+    shot sees something" -- it can miss a sliver at the frame edge by calling the
+    shot non-empty, never the reverse of calling a populated frame empty.
+    """
+    out: list[Finding] = []
+    cameras = {c["id"]: c for c in scene["cameras"]}
+    tan_v = math.tan(math.radians(PREVIEW_FOV_DEG / 2.0))
+    tan_h = tan_v * PREVIEW_ASPECT
+    # The cone's widest reach, measured to a corner rather than along an axis.
+    half_angle = math.atan(math.hypot(tan_h, tan_v))
+
+    for shot in scene["shots"]:
+        camera = cameras[shot["camera"]]
+        for frame in (shot["start_frame"], shot["end_frame"] - 1):
+            eye, target = camera_at(camera, frame)
+            forward, _right, _up = _camera_basis(eye, target)
+            reach = EMPTY_SHOT_DISTANCE
+            seen = False
+            for _, shapes in scene_objects(scene, frame):
+                for cx, cy, cz, hx, hy, hz, _yaw in shapes:
+                    delta = (cx - eye[0], cy - eye[1], cz - eye[2])
+                    distance = math.sqrt(sum(c * c for c in delta))
+                    # The box's own radius, used both as a "camera inside it" test
+                    # and as the widening of the angular threshold.
+                    radius = math.sqrt(hx * hx + hy * hy + hz * hz)
+                    if distance <= radius:
+                        # Camera inside the solid: the frame is the inside of a box,
+                        # which is "something is there" for this check's purposes.
+                        seen = True
+                        break
+                    if distance > reach + radius:
+                        continue
+                    cos = sum(delta[i] * forward[i] for i in range(3)) / distance
+                    angle = math.acos(max(-1.0, min(1.0, cos)))
+                    if angle <= half_angle + math.atan(radius / distance):
+                        seen = True
+                        break
+                if seen:
+                    break
+            if not seen:
+                out.append(Finding(
+                    shot["id"], frame, "shot_frames_nothing",
+                    f"nothing within {reach:g} m anywhere in a {PREVIEW_FOV_DEG:g} deg "
+                    f"frame -- the render is background colour only",
+                ))
+    return _dedupe(out)
+
+
 def _overlaps(
     ax: float, ahx: float, ay: float, ahz: float,
     bx: float, bhx: float, by: float, bhz: float,
@@ -314,13 +435,17 @@ FLOATING_KINDS = {
 
 
 def findings(scene: dict) -> list[Finding]:
-    """Everything wrong with this scene's shots, from both detectors.
+    """Everything wrong with this scene's shots, from all three detectors.
 
     Deduplicated, because a shot is checked at its start and its end frame and a
     static subject reports the identical thing twice -- which reads as two problems
     when it is one, and trains the reader to skim the output.
     """
-    return [*blocked_by_subject(scene), *subjects_under_floating(scene)]
+    return [
+        *blocked_by_subject(scene),
+        *subjects_under_floating(scene),
+        *shot_frames_nothing(scene),
+    ]
 
 
 def main() -> int:
