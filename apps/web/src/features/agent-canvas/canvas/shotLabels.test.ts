@@ -73,17 +73,33 @@ describe("cameraLabelsById", () => {
 });
 
 describe("shotForFrame", () => {
+  // Contiguous shots that SHARE a boundary, which is the only shape the backend
+  // validator produces: `_validate_shot_ranges` rejects `end_frame >
+  // next.start_frame`, so a legal scene's shots are half-open intervals
+  // [start, end) packed against each other. jinghai is 0-240, 240-420, 420-600,
+  // 600-720. A fixture with gaps between shots cannot show the boundary bug,
+  // which is exactly how the `frame <= end_frame` version looked correct.
   const shots: SceneScriptRoot["shots"] = [
     { id: "shot_1", camera: "cam_1", start_frame: 0, end_frame: 89 },
-    { id: "shot_2", camera: "cam_2", start_frame: 90, end_frame: 179 },
+    { id: "shot_2", camera: "cam_2", start_frame: 89, end_frame: 179 },
   ];
 
   it("finds the shot covering the playhead", () => {
     const value = script([camera("cam_1"), camera("cam_2")], shots);
     expect(shotForFrame(value, 0)?.id).toBe("shot_1");
-    expect(shotForFrame(value, 89)?.id).toBe("shot_1");
+    expect(shotForFrame(value, 88)?.id).toBe("shot_1");
     expect(shotForFrame(value, 90)?.id).toBe("shot_2");
-    expect(shotForFrame(value, 179)?.id).toBe("shot_2");
+    expect(shotForFrame(value, 178)?.id).toBe("shot_2");
+  });
+
+  it("gives a shared boundary frame to the shot STARTS at it, not the one that ended", () => {
+    // `end_frame` is exclusive, so frame 89 belongs to shot_2 alone. Testing with
+    // `<=` matched both and `find` returned shot_1 — rendering the first frame of
+    // every shot on the previous shot's camera. That is the frame-599-identical-
+    // to-600 bug in `jinghai_recomposed.json`, where a whole wasted frame per shot
+    // cost nothing a test could see.
+    const value = script([camera("cam_1"), camera("cam_2")], shots);
+    expect(shotForFrame(value, 89)?.id).toBe("shot_2");
   });
 
   it("falls back to the first shot inside a gap rather than blanking", () => {

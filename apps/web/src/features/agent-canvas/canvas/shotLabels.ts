@@ -69,8 +69,23 @@ export function cameraLabelsById(script: SceneScriptRoot): Record<string, string
  */
 export function shotForFrame(script: SceneScriptRoot, frame: number): SceneShot | null {
   if (script.shots.length === 0) return null;
+  // `end_frame` is EXCLUSIVE, so the containing test must be `frame < end_frame`.
+  //
+  // The backend validator is what settles it: `_validate_shot_ranges` rejects
+  // `current.end_frame > next.start_frame`, which permits shots that share a
+  // boundary frame (0-240, 240-420, ...) and forbids any actual overlap. Those are
+  // contiguous half-open intervals. Testing with `<=` instead makes every boundary
+  // frame belong to TWO shots, and `find` then returns the earlier one — so the
+  // first frame of every shot except the first rendered on the PREVIOUS shot's
+  // camera. In `jinghai_recomposed.json` frame 600 is where shot 3 ends and shot 4
+  // begins, and the frame it landed on was a byte-for-byte copy of frame 599: the
+  // same camera, one frame later, from the shot that had just finished.
+  //
+  // A single wasted frame per shot is a cheap-looking bug and is exactly the
+  // class that survives, because the frame is *plausible* — well composed, just
+  // one shot late. Nothing counts it and nothing knows it is wrong.
   const covering = script.shots.find(
-    (shot) => frame >= shot.start_frame && frame <= shot.end_frame,
+    (shot) => frame >= shot.start_frame && frame < shot.end_frame,
   );
   return covering ?? script.shots[0];
 }

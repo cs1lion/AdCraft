@@ -810,18 +810,25 @@ function SceneScript3DEditorContent({
   // The playhead is a real dependency: scrubbing changes which shot the
   // picker's pair starts from, so the memo must recompute on frame change
   // (it used to read a ref with shot-only deps and went stale on scrub).
+  //
+  // `end_frame` is EXCLUSIVE here, matching the backend validator and the
+  // previous fix in `shotLabels.shotForFrame`. With `<=` every boundary frame
+  // matches two shots and the earlier one wins, so the outgoing side of a
+  // transition was always the shot that had just ended.
   const currentShotId = useMemo(() => {
     const frame = playback.currentFrame;
     const atFrame = sceneScript.shots.find(
-      (shot) => frame >= shot.start_frame && frame <= shot.end_frame,
+      (shot) => frame >= shot.start_frame && frame < shot.end_frame,
     );
     return atFrame?.id ?? sceneScript.shots[0]?.id ?? null;
   }, [sceneScript.shots, playback.currentFrame]);
 
   /**
    * Advisory jump: when the lip-sync panel points at a boundary shot, move
-   * the playhead inside it (never onto its first frame — the shot test is
-   * inclusive, so the pair forms) and tell the parent the signal is spent.
+   * the playhead inside it (never onto its first frame — a frame on the shot's
+   * own boundary belongs to whichever shot the half-open test picks, so landing
+   * exactly on it can leave the playhead showing the neighbouring shot) and tell
+   * the parent the signal is spent.
    * The picker then auto-fetches the readings for THAT pair (V0.2 §15).
    *
    * The spent-signal guard matters: the playback value re-identifies on

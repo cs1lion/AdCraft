@@ -358,3 +358,36 @@ PNG 会安静地交付，而深度通道会**少一半**——`collect_control_p
 所以除了修它，还要把守卫的措辞改成能区分这两种情况：现在 `geometryPixels === 0`
 同时意味着"这一机确实没有几何体"和"这一机有几何体但深度解算失效"，而这两件事
 的修法完全不同。
+
+### 查深度通道时撞见的第二个真 bug：彩色相机与深度相机用的不是同一个坐标系
+
+查上面的问题时顺带量到的，与深度整镜为空是两件事，但它更该先修——**它影响交付帧。**
+
+整个预览（`SceneScript3DPreview.tsx` 里 13 处几何、`blockingPath`、角色、道具）都用
+``sceneToThreePosition([x,y,z]) = [x, z, y]``。而彩色通道的相机 rig 用的是另一套：
+
+```ts
+// sceneCameraOutput.ts
+export function sceneCameraOutputPosition(position: SceneVec3): SceneVec3 {
+  return [position[0], position[2], -position[1]];   // 第三项取负
+}
+```
+
+于是同一个机位 ``cam_sky``（scene ``[2.5, 4.5, 1.2]``）：
+
+- **彩色相机**：three ``[2.5, 1.2, -4.5]``
+- **深度相机**（``withShotCameraPose`` 走 ``sceneToThreePosition``）：three ``[2.5, 1.2, +4.5]``
+
+**两者的 forward 轴正负号相反，等于分别站在 forward 轴两侧各拍了一张。**
+
+后果：`cam_sky` 这一机，彩色帧拍的是飞船一侧，深度图画的是飞船另一侧。**深度控制通道存在的意义就是让视频模型照着白模的取景生成**——而现在生成的深度图与彩色帧不是同一个取景，喂给下游等于照着错的那半边生成。
+
+`sceneCameraOutput.ts` 的注释自己写着 "compensate its reflection at output"，
+``SCENE_OUTPUT_WORLD_SCALE = [1, 1, -1]`` 也摆在那里，而**全仓没有任何地方读它**。
+也就是说"两个坐标系统一"这件事当初是被意识到过的，只补偿了输出相机，没有补偿
+用它取景的那个消费者。
+
+**修法**（未实施）：两者统一到一个。要向 ``sceneToThreePosition`` 收敛
+（几何都用它，改动面是相机 rig 一行），还是要向 ``sceneCameraOutputPosition``
+收敛（要跟着改 13 处几何），需要先确认哪一套才是"Blender 交付帧"的朝向——
+因为白模预演最终要对上 Blender 那一侧的产物，`blender_converter` 才是判据。
