@@ -22,6 +22,8 @@ import {
   unpackDepthReadback,
   type DepthPassRenderer,
 } from "./sceneDepthPass";
+import { sceneCameraOutputPosition } from "./sceneCameraOutput";
+import { sceneToThreePosition } from "./sceneScriptAxes";
 
 // The repo runs vitest under jsdom; nothing here renders, but the harness
 // contract is the same one every canvas test in this tree follows.
@@ -675,5 +677,37 @@ describe("encodeDepthPng", () => {
         getContext: () => null,
       }) as unknown as HTMLCanvasElement),
     ).rejects.toThrow(/no 2D canvas context/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The depth pass camera must be posed in the SAME space as the colour camera.
+//
+// The whole point of a control pass is that it is the depth OF the frames it
+// ships beside, so a pass whose camera sits in a different space than the rig
+// that rendered those frames is wrong even when it produces pixels. These two
+// transforms differ by a reflection, and for one release the recorder used the
+// one that did not match.
+describe("the depth pass camera space matches the colour rig's", () => {
+  const POSE = { position: [2.5, 4.5, 1.2] as const, lookAt: [5, -3, 6.6] as const };
+
+  it("poses the camera and its target through sceneCameraOutputPosition", () => {
+    // The Blender parity fixture defines output space as
+    // sceneToThreePosition(p) * SCENE_OUTPUT_WORLD_SCALE, which is exactly
+    // sceneCameraOutputPosition(p). Drifting back to the bare sceneToThreePosition
+    // swap flips the sign of the forward axis, so the pass is rendered from the
+    // mirrored viewpoint -- which measured as an entirely empty depth pass for a
+    // whole shot, while a MeshBasicMaterial override from the same pose filled
+    // the frame.
+    expect(sceneCameraOutputPosition(POSE.position)).toEqual([2.5, 1.2, -4.5]);
+    expect(sceneCameraOutputPosition(POSE.lookAt)).toEqual([5, 6.6, 3]);
+  });
+
+  it("differs from the axis swap by the forward axis only", () => {
+    const [x, up, back] = sceneCameraOutputPosition(POSE.position);
+    const [sx, sup, sback] = sceneToThreePosition(POSE.position);
+    expect(x).toBe(sx);
+    expect(up).toBe(sup);
+    expect(back).toBe(-sback);
   });
 });

@@ -391,3 +391,73 @@ export function sceneCameraOutputPosition(position: SceneVec3): SceneVec3 {
 （几何都用它，改动面是相机 rig 一行），还是要向 ``sceneCameraOutputPosition``
 收敛（要跟着改 13 处几何），需要先确认哪一套才是"Blender 交付帧"的朝向——
 因为白模预演最终要对上 Blender 那一侧的产物，`blender_converter` 才是判据。
+## 8. 上面那条找到了：深度相机的坐标系和彩色相机不同（2026-10-14 已修）
+
+§7 那次没修掉。原因是**排查方向的假设就是错的**——我从"这一机是不是看着空气"开始
+问，一路排的都是几何与 GL 状态，而真正错的是**相机摆在哪套坐标系里**。
+
+## 两套变换，差一个反射
+
+`applySceneOutputCamera`（彩色相机）用：
+
+```ts
+sceneCameraOutputPosition(p) = [p[0], p[2], -p[1]]
+```
+
+`withShotCameraPose`（深度相机）用的是 `sceneToThreePosition`：
+
+```ts
+sceneToThreePosition(p) = [p[0], p[2], p[1]]
+```
+
+第三项差一个负号。**判据是 Blender parity fixture 给的**：它把输出空间定义为
+`sceneToThreePosition(p) * SCENE_OUTPUT_WORLD_SCALE`（`[1,1,-1]`），并断言
+`applySceneOutputCamera` 的姿态从那个空间复现了真实 Blender 相机的 UV 与深度。
+所以**彩色相机那套才是对的**，而深度相机用了另一套。
+
+同一个 `cam_sky` 机位（scene `[2.5, 4.5, 1.2]`）：
+
+| | three 坐标 |
+|---|---|
+| 彩色相机 | `[2.5, 1.2, -4.5]` |
+| 深度相机（修前） | `[2.5, 1.2, +4.5]` |
+
+**前后轴符号相反 = 站在 forward 轴两侧各拍一张。**
+
+## 为什么之前九条假设全都证伪了
+
+因为每一个假设问的都是"画面里有没有东西"或"GL 状态对不对"，而画面里确实有东西、
+GL 状态也确实是对的——`MeshBasicMaterial` 覆盖渲染在那个机位下是 100% 像素非零。
+错的只是**相机被反射到了另一个半空间**，于是视锥指向了一片没有几何体的方向，
+`geometryPixels` 归零，守卫报 `no geometry`。
+
+守卫没错，**但它报的名字错了**：那一机有几何体，只是深度相机看不见。
+这正是 §7 末尾担心的"错误的错误信息会把人送到错方向"。
+
+## 为什么这个 bug 长得像"渲染器坏了"
+
+它只在**机位不对称的场景**里暴露。第 1–3 镜都略微俯视，最近的地面很近，反射之后
+视锥仍然落在地面上，深度通道照常出图；第 4 镜仰视，反射之后视锥对着空的一侧，
+整镜归零。所以症状看起来像"第 4 镜坏了"，而实际是"反射一直存在，只是前三镜看不出来"。
+
+`SCENE_OUTPUT_WORLD_SCALE` 这个常量全仓**没有任何消费者**，只有 parity fixture 读它。
+也就是说"两个坐标系统一"这件事当初是被意识到的，只落在了测试里，没落在代码里。
+
+## 修法与验证
+
+一行改动：`sceneDepthPassRecorder.withShotCameraPose` 改用
+`sceneCameraOutputPosition`。真机（`jinghai_recomposed.json`，720 帧）：
+
+| | 修前 | 修后 |
+|---|---|---|
+| 渲染结果 | `render_depth_black` frame 600 | **success, 721 帧** |
+| 深度文件 | 15 | **20**（4 镜 × 5） |
+| `collect_control_passes` | shot 4 缺失 | **4/4 镜各 5 张** |
+| 耗时 | — | 59.9 秒 |
+
+逐张看回读：20 张都有内容（`nonzero` 0.65–1.00，`distinct` 114–186）。
+`normal` / `flow` 仍按 §4 的可查询降级上报，没有静默。
+
+**教训**：这次的四轮排查里，第一轮的假设是错的，后面三轮都在给一个错假设补证据。
+真正该更早做的事是**直接量两个相机的世界坐标**——那是`camera()` 探针本来就在报的
+东西，而我直到第四轮才去看 `camPos` 在两个路径下差了什么。

@@ -38,7 +38,9 @@ import {
   shotCameraPoseAtFrame,
   type ShotCamera,
 } from "./sceneDepthPass";
-import { sceneToThreePosition } from "./sceneScriptAxes";
+// Poses the depth camera in the SAME space the colour rig poses in -- see the
+// `withShotCameraPose` docstring for why that is not `sceneToThreePosition`.
+import { sceneCameraOutputPosition } from "./sceneCameraOutput";
 import { useSceneScriptPlayback } from "./SceneScriptPlaybackContext";
 import type { SceneScriptRoot } from "../../../types/scene-script";
 
@@ -80,6 +82,36 @@ export type ControlDepthPassOptions = Omit<DepthPassRecorderProps, "sceneScript"
  * restored afterwards so OrbitControls — which re-derives the camera pose from
  * its own spherical state every frame — keeps driving the author's view.
  */
+/**
+ * Pose the camera at the shot camera's keyframe for the duration of `run`.
+ *
+ * The camera object is the preview's own (its fov / aspect / near / far are the
+ * render parameters); only position and orientation are borrowed, and they are
+ * restored afterwards so OrbitControls — which re-derives the camera pose from
+ * its own spherical state every frame — keeps driving the author's view.
+ *
+ * THE POSE MUST BE TRANSFORMED THE SAME WAY THE COLOUR RIG TRANSFORMS IT, which
+ * is `sceneCameraOutputPosition` and NOT the `sceneToThreePosition` the rest of
+ * this module uses for scene geometry.
+ *
+ * The two differ by the `SCENE_OUTPUT_WORLD_SCALE` reflection
+ * (`[x, z, -y]` vs `[x, z, y]`), and which one applies where is decided by the
+ * Blender parity fixture: it computes output space as
+ * `sceneToThreePosition(point) * SCENE_OUTPUT_WORLD_SCALE` and asserts that the
+ * `applySceneOutputCamera` pose reproduces real Blender camera UV and depth from
+ * it. So `applySceneOutputCamera` — the camera the delivered colour frames are
+ * rendered through — poses in the same space as the output space.
+ *
+ * This pass used `sceneToThreePosition` instead, so its camera sat in the
+ * REFLECTED space: for `cam_sky` at scene `[2.5, 4.5, 1.2]` the colour camera is
+ * at three `[2.5, 1.2, -4.5]` and this one was at `[2.5, 1.2, +4.5]`. The depth
+ * map was therefore the depth of a different viewpoint than the frames it ships
+ * beside, which defeats the whole purpose of a control pass: it is meant to tell
+ * the video model where the surfaces are IN THE FRAME IT IS CONTINUING.
+ *
+ * Edit-mode viewport framings are unaffected — the preview's own rig only poses
+ * in `cameraMode === "shot"`, and this pass is only mounted by the render entry.
+ */
 function withShotCameraPose<T>(
   camera: THREE.PerspectiveCamera,
   pose: { position: [number, number, number]; lookAt: [number, number, number] },
@@ -87,8 +119,8 @@ function withShotCameraPose<T>(
 ): T {
   const position = camera.position.clone();
   const quaternion = camera.quaternion.clone();
-  const target = sceneToThreePosition(pose.lookAt);
-  camera.position.set(...sceneToThreePosition(pose.position));
+  const target = sceneCameraOutputPosition(pose.lookAt);
+  camera.position.set(...sceneCameraOutputPosition(pose.position));
   camera.lookAt(target[0], target[1], target[2]);
   // `true` = FORCE. Without it three.js only recomposes `matrixWorld` when
   // `matrixWorldNeedsUpdate` is set, and any completed render has already cleared
