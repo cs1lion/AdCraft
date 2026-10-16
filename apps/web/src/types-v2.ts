@@ -4115,3 +4115,290 @@ export interface CanvasEditingExportImportResponseV2 {
   events_cursor: number;
   replayed: boolean;
 }
+
+export interface CanvasNodeScopeReportV2 {
+  edited_keys?: string[];
+  content_areas?: string[];
+  affected_neighbours?: CanvasScopeNeighbourV2[];
+  dirty_reasons?: string[];
+  notes?: string[];
+}
+
+export interface CanvasScopeNeighbourV2 {
+  node_id?: string;
+  relation?: string;
+  reason?: string;
+}
+
+export interface CanvasVariationDraftResponseV2 {
+  workflow_id: string;
+  workflow_revision: number;
+  node_id: string;
+  variation_draft: CanvasVariationDraftV2;
+}
+
+export interface CanvasVariationDraftV2 {
+  source_node_id: string;
+  source_node_revision: number;
+  title: string;
+  generation_prompt: string;
+  model_id: string | null;
+  model_selection_mode: CanvasModelSelectionModeV2;
+  model_ref: string | null;
+  parameters: Record<string, unknown>;
+  variation_revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CanvasVariationMaterializeResponseV2 {
+  workflow_id: string;
+  workflow_revision: number;
+  source_node_id: string;
+  sibling_node: CanvasNodeV2;
+  copied_binding_ids: string[];
+  run: Record<string, unknown> | null;
+  run_error: CanvasNodeErrorV2 | null;
+  placement_hint: AgentPlacementHintV2;
+  created_node_ids: string[];
+  created_binding_ids: string[];
+  placement_hints: AgentPlacementHintV2[];
+}
+
+export interface CreationFlowAssessmentResponse {
+  workflow_id: string;
+  current_stage: string;
+  current_stage_index: number;
+  completed_stages: string[];
+  progress_percent: number;
+  next_action: string;
+  next_action_detail: string;
+  blockers: string[];
+  warnings: string[];
+  is_complete: boolean;
+  stage_statuses: CreationFlowStageStatus[];
+  flow_stages: CreationFlowStage[];
+}
+
+export interface CreationFlowStage {
+  stage: string;
+  index: number;
+  display_name: string;
+  description: string;
+  next_stage: string | null;
+}
+
+export interface EditingExportAcceptanceCheckV2 {
+  check: string;
+  status: "pass" | "warn" | "fail" | "skipped";
+  detail: string;
+}
+
+export interface EditingExportAcceptanceV2 {
+  checks: EditingExportAcceptanceCheckV2[];
+  ran_at: string | null;
+}
+
+export interface PrevisClipContentV2 {
+  previs_clip_version: "previs-clip-v1";
+  scene_3d_node_id: string;
+  scene_3d_node_title: string;
+  shot_id: string;
+  shot_label: string;
+  take_id: string | null;
+  source_asset_id: string;
+  clip_asset_id: string;
+  clip_asset_version_id: string;
+  frame_range: [number, number];
+  duration_seconds: number;
+  previs_keyframes: {
+    asset_id: string;
+    asset_version_id: string;
+    checksum: string;
+    offset_seconds: number;
+    reference_instruction: string;
+  }[];
+  previs_control_level: "video" | "images_only" | "none";
+}
+
+export interface PrevisClipPublishResponseV2 {
+  workflow_id: string;
+  revision: number;
+  node: CanvasNodeV2;
+  binding: CanvasBindingV2;
+  clip_asset: ProjectAssetSummaryV2;
+  keyframe_asset_ids: string[];
+}
+
+export interface PublishedPrevisClipEntryV2 {
+  node_id: string;
+  shot_id: string;
+  clip_asset_id: string;
+  take_id: string | null;
+}
+
+export interface ReplicaAnchorEventV2 {
+  event_id: string;
+  trigger: string;
+  beat_id: string;
+  kind: ReplicaAnchorKindV2;
+  hint: string;
+  keep: boolean;
+  /** 词级锚定（whisperX 可用时）：绑定的词语与时间跨度；空 = 段落级锚点 */
+  word?: string;
+  word_start_seconds?: number;
+  word_end_seconds?: number;
+  /** G4 narrative token 层：与帧时间解耦的授权序区间（token id 对）；秒数是它的投影 */
+  start_token_id?: string;
+  end_token_id?: string;
+  /** 词锚窗口的端点亲和性（hypit left/right 语义） */
+  affinity?: "left" | "right";
+}
+
+export interface ReplicaBlueprintContentV2 {
+  blueprint_version: "replica-blueprint-v1";
+  source_video_asset_id: string;
+  duration_seconds: number;
+  aspect: string;
+  replica_goal: string;
+  whole_piece_reading: string;
+  format_name: string;
+  slots: ReplicaSlotV2[];
+  beats: ReplicaBeatV2[];
+  anchor_events: ReplicaAnchorEventV2[];
+  shots: ReplicaShotV2[];
+  rhythm_avg_shot_seconds: number;
+  rhythm_cut_points_seconds: number[];
+  rhythm_energy_curve: string;
+  systems_captions: string;
+  systems_music: string;
+  systems_graphics: string[];
+  systems_sfx: string[];
+  constraints: string[];
+  instantiated_script_node_id: string | null;
+}
+
+export interface ReplicaSlotV2 {
+  kind: ReplicaSlotKindV2;
+  label: string;
+  source_value: string;
+  replace_with: string;
+  applied: boolean;
+}
+
+export interface V2AssetVersionListResponse {
+  versions: V2AssetVersionMetadata[];
+}
+
+export interface V2AssetVersionMetadata {
+  version_id: string;
+  asset_id: string;
+  version_no: number;
+  storage_key: string;
+  sha256: string;
+  size_bytes: number;
+  mime_type: string;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
+  prompt?: string | null;
+  provider?: string | null;
+  model_id?: string | null;
+  source_workflow_id?: string | null;
+  source_node_id?: string | null;
+  source_item_id?: string | null;
+  source_slot_id?: string | null;
+  parent_version_id?: string | null;
+  quality?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+  status: "ready" | "unavailable";
+  created_at: string;
+}
+
+export interface WorkflowProgressResponse {
+  workflow_id: string;
+  total_nodes: number;
+  ready_count: number;
+  working_count: number;
+  failed_count: number;
+  draft_count: number;
+  progress_percent: number;
+  blocked_nodes: NodeProgressSummary[];
+  working_nodes: NodeProgressSummary[];
+  overall_status: "idle" | "running" | "blocked" | "complete";
+}
+
+export interface CreationFlowStageStatus {
+  stage: string;
+  display_name: string;
+  description: string;
+  completed: boolean;
+  has_nodes: boolean;
+  ready_nodes: number;
+  total_nodes: number;
+  blockers: string[];
+}
+
+export interface NodeProgressSummary {
+  node_id: string;
+  node_type: string;
+  title: string;
+  status: "draft" | "working" | "ready" | "failed";
+  error_code: string | null;
+  next_action: string | null;
+}
+
+export type ReplicaAnchorKindV2 = "broll" | "caption" | "sfx" | "mg" | "transition";
+
+export interface ReplicaAnchorEventV2 {
+  event_id: string;
+  trigger: string;
+  beat_id: string;
+  kind: ReplicaAnchorKindV2;
+  hint: string;
+  keep: boolean;
+  /** 词级锚定（whisperX 可用时）：绑定的词语与时间跨度；空 = 段落级锚点 */
+  word?: string;
+  word_start_seconds?: number;
+  word_end_seconds?: number;
+  /** G4 narrative token 层：与帧时间解耦的授权序区间（token id 对）；秒数是它的投影 */
+  start_token_id?: string;
+  end_token_id?: string;
+  /** 词锚窗口的端点亲和性（hypit left/right 语义） */
+  affinity?: "left" | "right";
+}
+
+export interface ReplicaBeatV2 {
+  beat_id: string;
+  role: string;
+  description: string;
+  /** 段落台词原文（词级转录可用时）：行内词锚的文本载体 */
+  line?: string;
+  start_seconds: number;
+  end_seconds: number;
+  anchor_event_ids: string[];
+  /** 词级转录词流（whisperX 可用时）：词级锚定/字幕的时间基准；时间为派生数据，不进 .adreplica */
+  words?: Array<{ text: string; start_seconds: number; end_seconds: number }>;
+}
+
+export interface ReplicaShotV2 {
+  index: number;
+  start_seconds: number;
+  end_seconds: number;
+  shot_size: string;
+  camera_motion: string;
+  subject_action: string;
+  on_screen_text: string;
+  transition_to_next: string;
+  recreate_hint: string;
+}
+
+export type ReplicaSlotKindV2 = "character" | "product" | "script" | "style" | "voice" | "scene";
+
+export interface ReplicaSlotV2 {
+  kind: ReplicaSlotKindV2;
+  label: string;
+  source_value: string;
+  replace_with: string;
+  applied: boolean;
+}
