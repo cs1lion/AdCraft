@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from app.schemas.workflow_v2 import WorkflowV2TimelineClip
 
@@ -340,3 +341,30 @@ def _escape_drawtext(value: str) -> str:
 
 def _is_bgm(clip: WorkflowV2TimelineClip) -> bool:
     return clip.metadata.get("role") == "bgm" or clip.metadata.get("is_bgm") is True
+
+
+def validated_ducking_config(value: dict[str, Any] | None) -> dict[str, float] | None:
+    """Validate and fill a ducking config, rejecting out-of-range values loudly.
+
+    A disabled or absent config returns None. Every field is clamped to its
+    documented range rather than silently coerced, so a bad value surfaces as an
+    error instead of a mix nobody asked for.
+    """
+
+    if not value or value.get("enabled") is not True:
+        return None
+    defaults = {"threshold_db": -30.0, "ratio": 12.0, "attack_ms": 50.0, "release_ms": 250.0}
+    limits = {
+        "threshold_db": (-60, 0),
+        "ratio": (1, 20),
+        "attack_ms": (0.01, 2000),
+        "release_ms": (0.01, 9000),
+    }
+    for key, default in defaults.items():
+        raw = value.get(key, default)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            raise ValueError(f"Invalid ducking {key}")
+        if not limits[key][0] <= raw <= limits[key][1]:
+            raise ValueError(f"Invalid ducking {key}")
+        defaults[key] = float(raw)
+    return defaults
