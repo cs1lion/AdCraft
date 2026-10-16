@@ -70,6 +70,9 @@ import type {
   CanvasRuntimeEventsResponseV2,
   CanvasRuntimeSnapshotV2,
   CanvasRunAcceptedV2,
+  CanvasVariationDraftV2,
+  CanvasVariationDraftResponseV2,
+  CanvasVariationMaterializeResponseV2,
   CanvasRunCancelResponseV2,
   ChatArtifactCardV2,
   ChatCapabilityActivityV2,
@@ -86,6 +89,8 @@ import type {
   CreativeGoalV2,
   EditingExportRuntimeV2,
   EditingExportAcceptedV2,
+  EditingExportAcceptanceCheckV2,
+  EditingExportAcceptanceV2,
   EditingExportCancelResponseV2,
   CanvasEditingExportImportResponseV2,
   EditingBgmEntryV2,
@@ -6315,5 +6320,149 @@ export function normalizeEditingExportCancelResponseV2(
     export_id: expectNonEmptyString(record.export_id, `${path}.export_id`),
     status: expectLiteral(record.status, new Set<EditingExportCancelResponseV2["status"]>(["cancelled"]), `${path}.status`),
     events_cursor: expectNonNegativeInteger(record.events_cursor, `${path}.events_cursor`),
+  };
+}
+
+export function normalizeCanvasVariationDraftV2(
+  value: unknown,
+  path = "variationDraft",
+): CanvasVariationDraftV2 {
+  const record = expectRecord(value, path);
+  forbidUnknownFields(
+    record,
+    [
+      "source_node_id",
+      "source_node_revision",
+      "title",
+      "generation_prompt",
+      "model_id",
+      "model_selection_mode",
+      "model_ref",
+      "parameters",
+      "variation_revision",
+      "created_at",
+      "updated_at",
+    ],
+    path,
+  );
+  return {
+    source_node_id: expectNonEmptyString(record.source_node_id, `${path}.source_node_id`),
+    source_node_revision: expectPositiveInteger(
+      record.source_node_revision,
+      `${path}.source_node_revision`,
+    ),
+    title: expectNonEmptyString(record.title, `${path}.title`),
+    generation_prompt: expectNonEmptyString(record.generation_prompt, `${path}.generation_prompt`),
+    model_id: nullableStringWithDefault(record.model_id, `${path}.model_id`),
+    model_selection_mode:
+      record.model_selection_mode === undefined
+        ? "default"
+        : expectLiteral(
+            record.model_selection_mode,
+            CANVAS_MODEL_SELECTION_MODES,
+            `${path}.model_selection_mode`,
+          ),
+    model_ref: nullableStringWithDefault(record.model_ref, `${path}.model_ref`),
+    parameters: optionalUnknownRecord(record.parameters, `${path}.parameters`, {}),
+    variation_revision: expectPositiveInteger(
+      record.variation_revision,
+      `${path}.variation_revision`,
+    ),
+    created_at: expectIsoDateTimeString(record.created_at, `${path}.created_at`),
+    updated_at: expectIsoDateTimeString(record.updated_at, `${path}.updated_at`),
+  };
+}
+
+export function normalizeCanvasVariationDraftResponseV2(
+  value: unknown,
+  path = "variationDraftResponse",
+): CanvasVariationDraftResponseV2 {
+  const record = expectRecord(value, path);
+  forbidUnknownFields(record, ["workflow_id", "workflow_revision", "node_id", "variation_draft"], path);
+  return {
+    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
+    workflow_revision: expectPositiveInteger(record.workflow_revision, `${path}.workflow_revision`),
+    node_id: expectNonEmptyString(record.node_id, `${path}.node_id`),
+    variation_draft: normalizeCanvasVariationDraftV2(record.variation_draft, `${path}.variation_draft`),
+  };
+}
+
+export function normalizeCanvasVariationMaterializeResponseV2(
+  value: unknown,
+  path = "variationMaterialize",
+): CanvasVariationMaterializeResponseV2 {
+  const record = expectRecord(value, path);
+  forbidUnknownFields(
+    record,
+    [
+      "workflow_id",
+      "workflow_revision",
+      "source_node_id",
+      "sibling_node",
+      "copied_binding_ids",
+      "run",
+      "run_error",
+      "placement_hint",
+      "created_node_ids",
+      "created_binding_ids",
+      "placement_hints",
+    ],
+    path,
+  );
+  return {
+    workflow_id: expectNonEmptyString(record.workflow_id, `${path}.workflow_id`),
+    workflow_revision: expectPositiveInteger(record.workflow_revision, `${path}.workflow_revision`),
+    source_node_id: expectNonEmptyString(record.source_node_id, `${path}.source_node_id`),
+    sibling_node: normalizeCanvasNodeV2(record.sibling_node, `${path}.sibling_node`),
+    copied_binding_ids: optionalStringArray(record.copied_binding_ids, `${path}.copied_binding_ids`, []),
+    run:
+      record.run === null || record.run === undefined
+        ? null
+        : expectUnknownRecord(record.run, `${path}.run`),
+    run_error:
+      record.run_error === null || record.run_error === undefined
+        ? null
+        : normalizeCanvasNodeErrorV2(record.run_error, `${path}.run_error`),
+    placement_hint: normalizeAgentPlacementHintV2(record.placement_hint, `${path}.placement_hint`),
+    created_node_ids: optionalStringArray(record.created_node_ids, `${path}.created_node_ids`, []),
+    created_binding_ids: optionalStringArray(
+      record.created_binding_ids,
+      `${path}.created_binding_ids`,
+      [],
+    ),
+    placement_hints: expectArray(record.placement_hints ?? [], `${path}.placement_hints`).map(
+      (item, index) => normalizeAgentPlacementHintV2(item, `${path}.placement_hints[${index}]`),
+    ),
+  };
+}
+
+export function normalizeEditingExportAcceptanceCheckV2(
+  value: unknown,
+  path = "editing.exportAcceptanceCheck",
+): EditingExportAcceptanceCheckV2 {
+  const record = expectRecord(value, path);
+  forbidUnknownFields(record, ["check", "status", "detail"], path);
+  return {
+    check: expectNonEmptyString(record.check, `${path}.check`),
+    status: expectLiteral(
+      record.status,
+      new Set<EditingExportAcceptanceCheckV2["status"]>(["pass", "warn", "fail", "skipped"]),
+      `${path}.status`,
+    ),
+    detail: record.detail === undefined ? "" : expectString(record.detail, `${path}.detail`),
+  };
+}
+
+export function normalizeEditingExportAcceptanceV2(
+  value: unknown,
+  path = "editing.exportAcceptance",
+): EditingExportAcceptanceV2 {
+  const record = expectRecord(value, path);
+  forbidUnknownFields(record, ["checks", "ran_at"], path);
+  return {
+    checks: expectArray(record.checks, `${path}.checks`).map((item, index) =>
+      normalizeEditingExportAcceptanceCheckV2(item, `${path}.checks[${index}]`),
+    ),
+    ran_at: record.ran_at === undefined ? null : nullableString(record.ran_at, `${path}.ran_at`),
   };
 }

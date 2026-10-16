@@ -7,6 +7,8 @@ import type {
   V2AssetLibraryListResponse,
   V2AssetLibraryMember,
   V2AssetLibraryPreviewMember,
+  V2AssetVersionListResponse,
+  V2AssetVersionMetadata,
   ProviderTaskV2,
   SlotVersionRelationV2,
   SlotVersionsResponseV2,
@@ -1707,4 +1709,37 @@ function dedupeById(items: Record<string, unknown>[], key: string) {
     result.push(item);
   }
   return result;
+}
+
+export function normalizeV2AssetVersionListResponse(value: unknown): V2AssetVersionListResponse {
+  const record = isRecord(value) ? value : {};
+  return {
+    versions: recordArray(record.versions).map((item) => {
+      const version = recordValue(item) ?? {};
+      return {
+        version_id: stringOrNull(version.version_id) ?? "",
+        asset_id: stringOrNull(version.asset_id) ?? "",
+        version_no: numberValue(version.version_no),
+        storage_key: stringOrNull(version.storage_key) ?? "",
+        sha256: stringOrNull(version.sha256) ?? "",
+        size_bytes: numberValue(version.size_bytes),
+        mime_type: stringOrNull(version.mime_type) ?? "",
+        width: numberOrNull(version.width) ?? null,
+        height: numberOrNull(version.height) ?? null,
+        duration_seconds: numberOrNull(version.duration_seconds) ?? null,
+        prompt: stringOrNull(version.prompt),
+        provider: stringOrNull(version.provider),
+        model_id: stringOrNull(version.model_id),
+        source_workflow_id: stringOrNull(version.source_workflow_id),
+        source_node_id: stringOrNull(version.source_node_id),
+        source_item_id: stringOrNull(version.source_item_id),
+        source_slot_id: stringOrNull(version.source_slot_id),
+        parent_version_id: stringOrNull(version.parent_version_id),
+        quality: recordValue(version.quality) ?? null,
+        metadata: recordValue(version.metadata) ?? {},
+        status: version.status === "unavailable" ? "unavailable" : "ready",
+        created_at: stringOrNull(version.created_at) ?? "",
+      };
+    }),
+  };
 }
